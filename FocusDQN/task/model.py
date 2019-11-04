@@ -6,7 +6,9 @@ import tfmodule.util as net_util
 import util.config as conf_util
 
 
-config_file = '../config.ini'
+# import os
+# config_file = '/FocusDQN/config.ini'
+# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
 
 
 class DqnAgent:
@@ -16,18 +18,19 @@ class DqnAgent:
             image segmentation task.
     '''
 
-    def __init__(self, name_space):
+    def __init__(self, config, name_space):
         r'''
             The initialization method of implementation.
         '''
 
+        # Assign
+        self._config = config
         self._name_space = name_space
 
-        # Parse configuration.
-        config = conf_util.parse_config(config_file)
-        conf_base = config['Base']
-        conf_train = config['Training']
-        conf_dqn = config['DQN']
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        conf_dqn = self._config['DQN']
 
         # Normal Initialization.
         self._input_shape = conf_base.get('input_shape')
@@ -124,118 +127,118 @@ class DqnAgent:
 
         ##################
 
-        print('------ The begin of the definition of whole model ------')
-
-        # Define the placeholder (Scalar) for the training phrase flag, which will be used
-        #   to control the reshape size of DRQN tensor.
-        self._train_phrase = tf.placeholder(tf.bool, name=self._base_name_scope + 'Training_Phrase')  # scalar
-
-        # Build the "Feature Extract Network".
-        if dqn_name_scope_pair is None:
-            # Means only need raw FEN.
-            print('Raw FEN !')
-            # Building...
-            self._image, \
-            self._fe_output, \
-            self._feature_stride, \
-            feats_dict = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + 'FEN',
-                                                          fuse_RF_feats=fuse_RF_feats)
-        else:
-            # Means duplicate the FEN.
-            print('Double FEN !')
-            origin_scope, target_scope = dqn_name_scope_pair
-            # Build the raw.
-            self._image, \
-            self._fe_output, \
-            self._feature_stride, \
-            feats_dict = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + origin_scope + '/FEN',
-                                                          fuse_RF_feats=fuse_RF_feats)
-            # Build the duplication.
-            self._target_image, \
-            target_fe_output, \
-            _3, \
-            _4 = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + target_scope + '/FEN',
-                                                  fuse_RF_feats=fuse_RF_feats)
-
-        # Build the "Deep Recurrent Q Network" (DQN part).
-        if dqn_name_scope_pair is None:
-            # Means do not use the "Double DQN" architecture.
-            print('Not enable "Double DQN"')
-            # Building the whole network...
-            self._drqn_in, \
-            self._drqn_gru_Sin, \
-            drqn_conv_flat, \
-            self._drqn_gru_state, \
-            self._drqn_output = self.__build_Deep_Recurrent_Q_Net(
-                FEN_output=self._fe_output,
-                name_scope=self._base_name_scope + 'Agent',
-                dueling_network=dueling_network
-            )
-        else:
-            # Means enable the "Double DQN" architecture.
-            print('Define the model in #" Double DQN "# mode !!!')
-            origin_scope, target_scope = dqn_name_scope_pair
-            # Building the "Origin" network...
-            self._drqn_in, \
-            self._drqn_gru_Sin, \
-            drqn_conv_flat, \
-            self._drqn_gru_state, \
-            self._drqn_output = self.__build_Deep_Recurrent_Q_Net(
-                FEN_output=self._fe_output,
-                name_scope=self._base_name_scope + origin_scope + '/Agent',
-                dueling_network=dueling_network
-            )
-            # Building the "Target" network...
-            self._target_drqn_in, \
-            self._target_drqn_gru_Sin, \
-            _3, \
-            _4, \
-            self._target_drqn_output = self.__build_Deep_Recurrent_Q_Net(
-                FEN_output=target_fe_output,
-                name_scope=self._base_name_scope + target_scope + '/Agent',
-                dueling_network=dueling_network
-            )
-
-        # Build the "Up-sample Network". That is, "Segmentation Network".
-        self._selective_mask, upfe_trans, self._un_output, self._un_score_maps = self.__build_Upsample_Net(
-            name_scope=self._base_name_scope + 'UN',
-            feats_dict=feats_dict
-        )
-
-        print('------ The end of the definition of whole model ------')
-
-        # Package the network holders.
-        model_ios_dict = {
-            # public holders.
-            'Training_phrase': self._train_phrase,
-            'FEATURE_Stride': self._feature_stride,
-            'image': self._image,
-            'FEN/output': self._fe_output,
-            'FEN/feats_dict': feats_dict,
-            # DRQN holders.
-            'DRQN/input': self._drqn_in,
-            'DRQN/GRU_sin': self._drqn_gru_Sin,
-            'DRQN/GRU_sout': self._drqn_gru_state,
-            'DRQN/output': self._drqn_output,
-            # UN holders.
-            'UN/select_mask': self._selective_mask,
-            'UN/up_fet': upfe_trans,
-            'UN/output': self._un_output
-        }
-
-        # Finish the network construction and return the holders in map form.
-        return model_ios_dict
-
-
-        ####################################
-
-
-
-
-
-
-        # Define the loss function and summaries of whole model.
-        self._loss_dict, self._summary_dict = self.__loss_summary(prioritized_replay=prioritized_replay)
+        # print('------ The begin of the definition of whole model ------')
+        #
+        # # Define the placeholder (Scalar) for the training phrase flag, which will be used
+        # #   to control the reshape size of DRQN tensor.
+        # self._train_phrase = tf.placeholder(tf.bool, name=self._base_name_scope + 'Training_Phrase')  # scalar
+        #
+        # # Build the "Feature Extract Network".
+        # if dqn_name_scope_pair is None:
+        #     # Means only need raw FEN.
+        #     print('Raw FEN !')
+        #     # Building...
+        #     self._image, \
+        #     self._fe_output, \
+        #     self._feature_stride, \
+        #     feats_dict = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + 'FEN',
+        #                                                   fuse_RF_feats=fuse_RF_feats)
+        # else:
+        #     # Means duplicate the FEN.
+        #     print('Double FEN !')
+        #     origin_scope, target_scope = dqn_name_scope_pair
+        #     # Build the raw.
+        #     self._image, \
+        #     self._fe_output, \
+        #     self._feature_stride, \
+        #     feats_dict = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + origin_scope + '/FEN',
+        #                                                   fuse_RF_feats=fuse_RF_feats)
+        #     # Build the duplication.
+        #     self._target_image, \
+        #     target_fe_output, \
+        #     _3, \
+        #     _4 = self.__build_Feature_Extract_Net(name_scope=self._base_name_scope + target_scope + '/FEN',
+        #                                           fuse_RF_feats=fuse_RF_feats)
+        #
+        # # Build the "Deep Recurrent Q Network" (DQN part).
+        # if dqn_name_scope_pair is None:
+        #     # Means do not use the "Double DQN" architecture.
+        #     print('Not enable "Double DQN"')
+        #     # Building the whole network...
+        #     self._drqn_in, \
+        #     self._drqn_gru_Sin, \
+        #     drqn_conv_flat, \
+        #     self._drqn_gru_state, \
+        #     self._drqn_output = self.__build_Deep_Recurrent_Q_Net(
+        #         FEN_output=self._fe_output,
+        #         name_scope=self._base_name_scope + 'Agent',
+        #         dueling_network=dueling_network
+        #     )
+        # else:
+        #     # Means enable the "Double DQN" architecture.
+        #     print('Define the model in #" Double DQN "# mode !!!')
+        #     origin_scope, target_scope = dqn_name_scope_pair
+        #     # Building the "Origin" network...
+        #     self._drqn_in, \
+        #     self._drqn_gru_Sin, \
+        #     drqn_conv_flat, \
+        #     self._drqn_gru_state, \
+        #     self._drqn_output = self.__build_Deep_Recurrent_Q_Net(
+        #         FEN_output=self._fe_output,
+        #         name_scope=self._base_name_scope + origin_scope + '/Agent',
+        #         dueling_network=dueling_network
+        #     )
+        #     # Building the "Target" network...
+        #     self._target_drqn_in, \
+        #     self._target_drqn_gru_Sin, \
+        #     _3, \
+        #     _4, \
+        #     self._target_drqn_output = self.__build_Deep_Recurrent_Q_Net(
+        #         FEN_output=target_fe_output,
+        #         name_scope=self._base_name_scope + target_scope + '/Agent',
+        #         dueling_network=dueling_network
+        #     )
+        #
+        # # Build the "Up-sample Network". That is, "Segmentation Network".
+        # self._selective_mask, upfe_trans, self._un_output, self._un_score_maps = self.__build_Upsample_Net(
+        #     name_scope=self._base_name_scope + 'UN',
+        #     feats_dict=feats_dict
+        # )
+        #
+        # print('------ The end of the definition of whole model ------')
+        #
+        # # Package the network holders.
+        # model_ios_dict = {
+        #     # public holders.
+        #     'Training_phrase': self._train_phrase,
+        #     'FEATURE_Stride': self._feature_stride,
+        #     'image': self._image,
+        #     'FEN/output': self._fe_output,
+        #     'FEN/feats_dict': feats_dict,
+        #     # DRQN holders.
+        #     'DRQN/input': self._drqn_in,
+        #     'DRQN/GRU_sin': self._drqn_gru_Sin,
+        #     'DRQN/GRU_sout': self._drqn_gru_state,
+        #     'DRQN/output': self._drqn_output,
+        #     # UN holders.
+        #     'UN/select_mask': self._selective_mask,
+        #     'UN/up_fet': upfe_trans,
+        #     'UN/output': self._un_output
+        # }
+        #
+        # # Finish the network construction and return the holders in map form.
+        # return model_ios_dict
+        #
+        #
+        # ####################################
+        #
+        #
+        #
+        #
+        #
+        #
+        # # Define the loss function and summaries of whole model.
+        # self._loss_dict, self._summary_dict = self.__loss_summary(prioritized_replay=prioritized_replay)
 
         return self._ios_dict, self._loss_dict, self._summary_dict
 
@@ -291,11 +294,10 @@ class DqnAgent:
             The holders for each inputs and outputs.
         '''
 
-        # Parse configuration.
-        config = conf_util.parse_config(config_file)
-        conf_base = config['Base']
-        conf_train = config['Training']
-        conf_dqn = config['DQN']
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        conf_dqn = self._config['DQN']
         # Input shape.
         input_shape = conf_base.get('input_shape')
         # Feature normalization method and activation function.
@@ -317,14 +319,14 @@ class DqnAgent:
 
         # --------------------------------- "Feature Extraction" backbone. ------------------------------------
         # Get configuration for ResNet
-        conf_res = config['ResNet']
+        conf_res = self._config['ResNet']
         # Layer number and kernel number of blocks for ResNet.
         kernel_numbers = conf_res.get('kernel_numbers')
         layer_units = conf_res.get('layer_units')
 
         # Start definition.
         FE_name = name_space + '/FeatExt'
-        with tf.variable_scope(FE_name) and tf.op_scope(FE_name):
+        with tf.variable_scope(FE_name):
             # The input tensor holder.
             input_tensor = tf.placeholder(tf.float32, input_shape, name='input')    # [?, 224, 224, ?]
 
@@ -338,7 +340,7 @@ class DqnAgent:
 
             # Recursively build the block part.
             block_tensor = base_conv
-            for idx in range(layer_units):
+            for idx in range(len(layer_units)):
                 # Scale down the feature maps size. Use idx to judge
                 #   whether use "Max Pooling" or "Transition".
                 if idx == 0:
@@ -352,14 +354,14 @@ class DqnAgent:
                                                             activation=activation,
                                                             keep_prob=conv_kprob,
                                                             regularizer=regularizer,
-                                                            name_space='ResNet_trans0'+str(idx+1))
+                                                            name_space='ResNet_Trans0'+str(idx+1))
                 # Pass through the residual block.
-                block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx+1], layer_units[idx],
+                block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx+1], layer_units[idx]-1,
                                                       feature_normalization=fe_norm,
                                                       activation=activation,
                                                       keep_prob=conv_kprob,
                                                       regularizer=regularizer,
-                                                      name_space='ResNet_block0'+str(idx+1))
+                                                      name_space='ResNet_Block0'+str(idx+1))
 
                 # For conveniently usage.
                 fe_tensor = block_tensor    # [?, 7, 7, ?]  default: 2048
@@ -367,7 +369,12 @@ class DqnAgent:
         # --------------------------------- "Region Selection" (DQN) branch. ------------------------------------
         # Start definition.
         DQN_name = name_space + '/DQN'
-        with tf.variable_scope(FE_name) and tf.op_scope(FE_name):
+        with tf.variable_scope(FE_name) and tf.name_scope(FE_name):
+        # with tf.variable_scope(FE_name) and tf.op_scope(FE_name):
+        #     drqn_conv_flat = tf.reshape(fe_tensor, shape=[-1, 7*7*2048],
+        #                                 name='_DRQN_conv_flat')  # [-1, h_size]
+        #     cus_layers.base_fc(drqn_conv_flat, 1000,
+        #                        name_space='testsetest')
             pass
 
 

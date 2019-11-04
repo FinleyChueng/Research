@@ -1,20 +1,28 @@
 import os
 
 from dataset.adapter.bratsAdapter import *
-from task.priorityDQNmodel import *
+# from task.priorityDQNmodel import *
 from util.visualization import *
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 
 
 # Just Test -------
 print('Begin')
 from task.model import *
-dqn = DqnAgent(name_space='TEST')
+import tfmodule.util as netutil
+import os
+config_file = '/FocusDQN/config.ini'
+config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+config = conf_util.parse_config(config_file)
+dqn = DqnAgent(name_space='TEST', config=config)
 dqn.definition()
-print('end')
+netutil.show_all_variables()
+# netutil.count_flops()
+print('End')
 
 
 # ----------------------------------------------------------

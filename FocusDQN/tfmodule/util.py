@@ -1,4 +1,5 @@
 import tensorflow as tf
+import numpy as np
 
 
 def copy_model_parameters(from_scope, to_scope):
@@ -23,3 +24,23 @@ def copy_model_parameters(from_scope, to_scope):
         op = to_model_para.assign(from_model_para)
         update_ops.append(op)
     return update_ops
+
+
+def show_all_variables():
+    r'''
+        Show the quantity of all network variables.
+    '''
+    total_count = 0
+    for idx, op in enumerate(tf.trainable_variables()):
+        shape = op.get_shape()
+        count = np.prod(shape)
+        print ("[%2d]\t%s\t%s\t=\t%s" % (idx, op.name, shape, count))
+        total_count += int(count)
+    print("[Total] variable size: %s" % "{:,}".format(total_count))
+
+
+def count_flops():
+    graph = tf.get_default_graph()
+    flops = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.float_operation())
+    print('FLOPs: {}'.format(flops.total_float_ops))
+

@@ -34,15 +34,15 @@ def is_float(val_str):
     return flag
 
 
-def is_bool(var_str):
-    if var_str == 'True' or var_str == 'true' or var_str == 'False' or var_str == 'false':
+def is_bool(val_str):
+    if val_str == 'True' or val_str == 'true' or val_str == 'False' or val_str == 'false':
         return True
     else:
         return False
 
 
-def parse_bool(var_str):
-    if var_str == 'True' or var_str == 'true':
+def parse_bool(val_str):
+    if val_str == 'True' or val_str == 'true':
         return True
     else:
         return False
@@ -67,9 +67,18 @@ def parse_list(val_str):
             output.append(float(item))
         elif is_bool(item):
             output.append(parse_bool(item))
+        elif is_none(item):
+            output.append(None)
         else:
             output.append(item)
     return output
+
+
+def is_none(val_str):
+    if val_str == 'None' or val_str == 'none':
+        return True
+    else:
+        return False
 
 
 def parse_value_from_string(val_str):
@@ -81,6 +90,8 @@ def parse_value_from_string(val_str):
         val = parse_list(val_str)
     elif is_bool(val_str):
         val = parse_bool(val_str)
+    elif is_none(val_str):
+        val = None
     else:
         val = val_str
     return val
