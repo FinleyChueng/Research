@@ -314,27 +314,65 @@ class DqnAgent:
         # Score maps holder.
         score_maps = None
 
-        # The input tensor holder.
-        input_name = name_space+'/input'
-        input_tensor = tf.placeholder(tf.float32, input_shape, name=input_name)  # [?, 224, 224, ?]
+        # --------------------------------- "Input Justification" part. ------------------------------------
+        # Start definition.
+        IJ_name = name_space + '/InputJustify'
+        with tf.variable_scope(IJ_name):
+            # The input image holder.
+            raw_image = tf.placeholder(tf.float32, input_shape, name='image')     # [?, 240, 240, ?]
 
-        # Crop or resize the input image into suitable size.
+            # The input previous segmentation holder.
+            prev_result = tf.placeholder(tf.float32, input_shape[:-1], name='prev_result')  # [?, 240, 240]
+            # Expand additional dimension for conveniently processing.
+            prev_result = tf.expand_dims(prev_result, axis=-1, name='expa_Pres')    # [?, 240, 240, 1]
+
+            # Determine the introduction method of "Position Information".
+            pos_method = conf_cus.get('position_info', 'map')
+            # Define the "Position Information" placeholder.
+            pos_name = 'position_info'
+            if pos_method == 'map':
+                pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)   # [?, w, h]
+                # Expand additional dimension for conveniently processing.
+                pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')     # [?, w, h, 1]
+            elif pos_method == 'coord':
+                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
+            elif pos_method == 'sight':
+                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
+            elif pos_method == 'none':
+                pos_info = None
+            else:
+                raise TypeError('Unknown position information fusion method !!!')
+
+            # Crop or resize the input image into suitable size if size not matched.
+            suit_w = conf_base.get('suit_width')
+            suit_h = conf_base.get('suit_height')
+            if suit_w != input_shape[1] or suit_h != input_shape[2]:
+                crop_method = conf_cus.get('size_matcher', 'crop')
+                if crop_method == 'crop':
+                    # Crop to target size.
+                    crop_oy = (input_shape[2] - suit_h) // 2
+                    crop_ox = (input_shape[1] - suit_w) // 2
+                    raw_image = tf.image.crop_to_bounding_box(raw_image, crop_oy, crop_ox, suit_h, suit_w)
+                    prev_result = tf.image.crop_to_bounding_box(prev_result, crop_oy, crop_ox, suit_h, suit_w)
+                    if pos_info == 'map':
+                        pos_info = tf.image.crop_to_bounding_box(pos_info, crop_oy, crop_ox, suit_h, suit_w)
+                elif crop_method == 'bilinear':
+                    # Bilinear resize to target size.
+                    raw_image = tf.image.resize_bilinear(raw_image, [suit_w, suit_h], name='bi_image')
+                    prev_result = tf.image.resize_nearest_neighbor(prev_result, [suit_w, suit_h], name='nn_prev')
+                    if pos_info == 'map':
+                        pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_w, suit_h], name='nn_pos')
+                else:
+                    raise TypeError('Unknown size match method !!!')
+
+            # Concat the tensors to generate input for whole model.
+            input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
+            if pos_info == 'map':
+                input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
 
 
-        # Determine the introduction method of "Position Information".
-        pos_method = conf_cus.get('position_info')
-        # Define the "Position Information" placeholder.
-        pos_name = name_space+'/position_info'
-        if pos_method == 'map':
-            pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)   # [?, w, h]
-        elif pos_method == 'coord':
-            pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
-        elif pos_method == 'sight':
-            pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
-        elif pos_method == 'none':
-            pass
-        else:
-            raise TypeError('Unknown position information fusion method !!!')
+
+
 
         # --------------------------------- "Feature Extraction" backbone. ------------------------------------
         # Get configuration for ResNet
@@ -390,7 +428,7 @@ class DqnAgent:
         # Get configuration for DQN.
         conf_dqn = self._config['DQN']
         # Get the dimension reduction method.
-        reduce_dim = conf_dqn['reduce_dim']
+        reduce_dim = conf_dqn.get('reduce_dim', 'residual')
         # Check whether enable "Dueling Network" or not.
         dueling_network = conf_dqn.get('dueling_network', True)
 
@@ -474,7 +512,7 @@ class DqnAgent:
                                                    name_space='action_value')  # [?, act_dim]
                 # Mean the "Action" (Advance) branch.
                 norl_Adval = tf.subtract(action_tensor,
-                                         tf.reduce_mean(action_tensor, axis=-1, keep_dims=True),
+                                         tf.reduce_mean(action_tensor, axis=-1, keepdims=True),
                                          name='advanced_value')   # [?, act_dim]
                 # Add the "State" value and "Action" value to obtain the final output.
                 dqn_output = tf.add(state_tensor, norl_Adval, name='DQN_output')    # [?, act_dim]
