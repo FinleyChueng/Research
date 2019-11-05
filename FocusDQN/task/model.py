@@ -354,23 +354,25 @@ class DqnAgent:
                     crop_ox = (input_shape[1] - suit_w) // 2
                     raw_image = tf.image.crop_to_bounding_box(raw_image, crop_oy, crop_ox, suit_h, suit_w)
                     prev_result = tf.image.crop_to_bounding_box(prev_result, crop_oy, crop_ox, suit_h, suit_w)
-                    if pos_info == 'map':
+                    if pos_method == 'map':
                         pos_info = tf.image.crop_to_bounding_box(pos_info, crop_oy, crop_ox, suit_h, suit_w)
                 elif crop_method == 'bilinear':
                     # Bilinear resize to target size.
                     raw_image = tf.image.resize_bilinear(raw_image, [suit_w, suit_h], name='bi_image')
                     prev_result = tf.image.resize_nearest_neighbor(prev_result, [suit_w, suit_h], name='nn_prev')
-                    if pos_info == 'map':
+                    if pos_method == 'map':
                         pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_w, suit_h], name='nn_pos')
                 else:
                     raise TypeError('Unknown size match method !!!')
 
             # Concat the tensors to generate input for whole model.
             input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
-            if pos_info == 'map':
+            if pos_method == 'map':
                 input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
 
-
+            # Print some information.
+            print('### Finish "Input Justification" (name scope: {}). The output shape: {}'.format(
+                name_space, input_tensor.shape))
 
 
 
@@ -547,6 +549,9 @@ class DqnAgent:
 
 
         return
+
+
+    
 
 
     def __loss_summary(self, prioritized_replay):
