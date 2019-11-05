@@ -264,21 +264,7 @@ class BRATS2015:
         img_array_t1c = self.__read_img_test__(t1c)
         img_array_flair = self.__read_img_test__(flair)
 
-        # num, height, weight = np.shape(arr_ot)
-        # arr_t1 = np.expand_dims(img_array_t1, -1) #np.asarray(img_array_t1).reshape(num, height, weight, 1)
-        # arr_t1c = np.expand_dims(img_array_t1c, -1) #np.asarray(img_array_t1c).reshape(num, height, weight, 1)
-        # arr_t2 = np.expand_dims(img_array_t2, -1) #np.asarray(img_array_t2).reshape(num, height, weight, 1)
-        # arr_flair = np.expand_dims(img_array_flair, -1) #np.asarray(img_array_flair).reshape(num, height, weight, 1)
-
         self.arr_test_imgs = np.stack([img_array_flair, img_array_t1, img_array_t1c, img_array_t2], axis=3)
-
-        # self.arr_test_imgs = np.concatenate((arr_flair, arr_t1, arr_t1c, arr_t2), axis=3)
-        # shape = self.arr_test_imgs.shape
-        # self.arr_test_imgs = self.arr_test_imgs.reshape(-1, shape[3])
-        # self.standard_scaler.fit(self.arr_train_imgs)
-        # Max_min = preprocessing.MinMaxScaler()
-        # self.arr_test_imgs = preprocessing.StandardScaler().fit_transform(self.arr_test_imgs)
-        # self.arr_test_imgs = self.arr_test_imgs.reshape(shape[0], shape[1], shape[2], shape[3])
 
         # # 只训练有肿瘤的部分
         # if not self.test:
@@ -336,31 +322,10 @@ class BRATS2015:
         img_array_flair = self.__readimg__(flair)
 
         arr_ot = np.asarray(img_array)
-        # num, height, weight, chanel = np.shape(arr_ot)
 
-        # index = np.asarray(range(num))
-        # np.random.shuffle(index)
-        #
-        # arr_ot = arr_ot[index]
-        # img_array_t1 = img_array_t1[index]
-        # img_array_t2 = img_array_t2[index]
-        # img_array_flair = img_array_flair[index]
-        # img_array_t1c = img_array_t1c[index]
-        #
-        self.arr_train_ot = arr_ot #.reshape(num, height, weight)
-        # # self.arr_train_ot[self.arr_train_ot == 0] = -1
-        # arr_t1 = np.expand_dims(img_array_t1, -1)#np.asarray(img_array_t1).reshape(num, height, weight, 1)
-        # arr_t1c = np.expand_dims(img_array_t1c, -1)#np.asarray(img_array_t1c).reshape(num, height, weight, 1)
-        # arr_t2 = np.expand_dims(img_array_t2, -1)#np.asarray(img_array_t2).reshape(num, height, weight, 1)
-        # arr_flair = np.expand_dims(img_array_flair, -1)#np.asarray(img_array_flair).reshape(num, height, weight, 1)
-        # self.arr_train_imgs = np.concatenate((arr_flair, arr_t1, arr_t1c, arr_t2), axis=3)
+        self.arr_train_ot = arr_ot
 
         self.arr_train_imgs = np.stack([img_array_flair, img_array_t1, img_array_t1c, img_array_t2], axis=3)
-
-        # shape = self.arr_train_imgs.shape
-        # self.arr_train_imgs = self.arr_train_imgs.reshape(-1, shape[3])
-        # self.arr_train_imgs = self.arr_train_imgs
-        # self.arr_train_imgs = self.arr_train_imgs.reshape([shape[0], shape[1], shape[2], shape[3]])
 
         # # 只训练有肿瘤的部分
         # has = np.max(self.arr_train_ot, axis=(1, 2)) > 0
@@ -379,63 +344,6 @@ class BRATS2015:
         # print(self.arr_train_imgs.shape)
         self.train_batch_count += 1
 
-    def total_train_MHA(self):
-        # if self.train_batch_count > self.train_batch:
-        self.total_arr_train_ot = []
-        self.total_arr_train_imgs = []
-        for i in range(self.train_batch):
-            self.train_batch_count = self.train_batch_count % self.train_batch
-            # print(self.OT_path[self.train_batch_count])
-            ot = self.OT_path[self.train_batch_count]
-            t1 =  self.T1_path[self.train_batch_count]
-            t2 = self.T2_path[self.train_batch_count]
-            t1c = self.T1c_path[self.train_batch_count]
-            flair = self.Flair_path[self.train_batch_count]
-
-            img_array = self.__readimg__(ot, isot=True)
-            img_array_t1 = self.__readimg__(t1)
-            img_array_t2 = self.__readimg__(t2)
-            img_array_t1c = self.__readimg__(t1c)
-            img_array_flair = self.__readimg__(flair)
-
-            arr_ot = np.asarray(img_array)
-            # num, height, weight, chanel = np.shape(arr_ot)
-
-            # index = np.asarray(range(num))
-            # np.random.shuffle(index)
-            #
-            # arr_ot = arr_ot[index]
-            # img_array_t1 = img_array_t1[index]
-            # img_array_t2 = img_array_t2[index]
-            # img_array_flair = img_array_flair[index]
-            # img_array_t1c = img_array_t1c[index]
-            #
-            self.total_arr_train_ot.append(arr_ot) #.reshape(num, height, weight)
-            # self.arr_train_ot[self.arr_train_ot == 0] = -1
-            arr_t1 = np.expand_dims(img_array_t1, -1)#np.asarray(img_array_t1).reshape(num, height, weight, 1)
-            arr_t1c = np.expand_dims(img_array_t1c, -1)#np.asarray(img_array_t1c).reshape(num, height, weight, 1)
-            arr_t2 = np.expand_dims(img_array_t2, -1)#np.asarray(img_array_t2).reshape(num, height, weight, 1)
-            arr_flair = np.expand_dims(img_array_flair, -1)#np.asarray(img_array_flair).reshape(num, height, weight, 1)
-            self.arr_train_imgs = np.concatenate((arr_flair, arr_t1, arr_t1c, arr_t2), axis=3)
-            shape = self.arr_train_imgs.shape
-            self.arr_train_imgs = self.arr_train_imgs.reshape(-1, shape[3])
-            self.arr_train_imgs = self.arr_train_imgs
-            self.arr_train_imgs = self.arr_train_imgs.reshape([shape[0], shape[1], shape[2], shape[3]])
-            self.total_arr_train_imgs.append(self.arr_train_imgs)
-
-            # 只训练有肿瘤的部分
-            # has = np.max(self.arr_train_ot, axis=(1, 2)) > 0
-            # self.arr_train_ot = self.arr_train_ot[has]
-            # self.arr_train_imgs = self.arr_train_imgs[has]
-
-            # index = np.asarray(range(len(self.arr_train_imgs)))
-            # np.random.shuffle(index)
-            # print(index)
-            # self.arr_train_ot[index]
-            # self.arr_train_imgs[index]
-            # print(self.arr_train_imgs.shape)
-            self.train_batch_count += 1
-
     def next_train_batch(self, batch_size):
         endbatch = np.shape(self.arr_train_ot)[0]
         # print(self.train_batch_index + batch_size, endbatch)
@@ -447,13 +355,13 @@ class BRATS2015:
                                  np.zeros_like(clazz_weights),
                                  clazz_weights)  # [cls]
         clazz_weights /= np.sum(clazz_weights)
-        finish_CMHA = False
+        MHA_idx = self.train_batch_count - 1
+        inst_idx = self.train_batch_index
         if self.train_batch_index + batch_size >= endbatch:
             img = self.arr_train_imgs[self.train_batch_index:endbatch]
             label = self.arr_train_ot[self.train_batch_index:endbatch]
             self.train_batch_index = 0
             self.next_train_MHA()
-            finish_CMHA = True
         else:
             img = self.arr_train_imgs[self.train_batch_index:self.train_batch_index + batch_size]
             label = self.arr_train_ot[self.train_batch_index:self.train_batch_index + batch_size]
@@ -462,26 +370,7 @@ class BRATS2015:
         # label = np.eye(5)[label]
         # label[:,:,:,0] = label[:,:,:,0] * 0.01
         # class_weight[:,:,:,0] = class_weight[:,:,:,0] * 0.1
-        return img, label, finish_CMHA, clazz_weights
-
-    def next_train_batch_once_read(self, batch_size):
-        endbatch = np.shape(self.total_arr_train_ot[self.train_MHA_index])[0]
-        # print(self.train_batch_index + batch_size, endbatch)
-        if self.train_batch_index + batch_size >= endbatch:
-            img = (self.total_arr_train_imgs[self.train_MHA_index])[self.train_batch_index:endbatch]
-            label = (self.total_arr_train_ot[self.train_MHA_index])[self.train_batch_index:endbatch]
-            self.train_batch_index = 0
-            self.train_MHA_index += 1
-            # self.next_train_MHA()
-        else:
-            img = (self.total_arr_train_imgs[self.train_MHA_index])[self.train_batch_index:self.train_batch_index + batch_size]
-            label = (self.total_arr_train_ot[self.train_MHA_index])[self.train_batch_index:self.train_batch_index + batch_size]
-            self.train_batch_index += batch_size
-
-        # label = np.eye(5)[label]
-        # label[:,:,:,0] = label[:,:,:,0] * 0.01
-        # class_weight[:,:,:,0] = class_weight[:,:,:,0] * 0.1
-        return img, label
+        return img, label, MHA_idx, inst_idx, clazz_weights
 
 
     def saveItk(self, array, name):
@@ -529,56 +418,39 @@ class BRATS2015:
             sitk.WriteImage(sitk.Cast(img, sitk.sitkUInt8), os.path.join('mhaSavePath/', name), )
             self.saveArr = None
 
-if False:
-    brats = BRATS2015(10)
-    # i = brats.arr_train_imgs#= brats.next_train_batch(1)
-    # image, label = brats.next_train_batch(5)
-    import matplotlib.pyplot as plt
 
-    for i in range(50):
-        image, label = brats.next_train_batch(5)
-        for nnn in range(4):
-            i1 = image[nnn, :, :, 0]
-            sub = plt.subplot(231)
-            sub.imshow(i1, cmap='gray')
-            i1 = image[nnn, :, :, 1]
-            sub = plt.subplot(232)
-            sub.imshow(i1, cmap='gray')
-            i1 = image[nnn, :, :, 2]
-            sub = plt.subplot(233)
-            sub.imshow(i1, cmap='gray')
-            i1 = image[nnn, :, :, 3]
-            sub = plt.subplot(234)
-            sub.imshow(i1, cmap='gray')
-            i1 = label[nnn, :, :]
-            sub = plt.subplot(235)
-            sub.imshow(i1, cmap='gray')
-            i1 = label[nnn, :, :]
-            sub = plt.subplot(236)
-            sub.imshow(i1, cmap='gray')
-            plt.show()
+    def precise_find_sample(self, mha_idx, inst_idx):
+        r'''
+            Use to find precise one.
+        '''
 
-# a = []
-# for i in range(190):
-#    l = brats.arr_train_ot
-#    print(np.sum(l,(0,1,2)))
-#    l = np.eye(5)[l]
-#    # print(np.sum(l,(3)))
-#    print(np.sum(l,(0,1,2)))
-#    a.append(np.sum(l, (0,1,2)))
-#    brats.next_train_MHA()
-#
-# a = np.asarray(a)
-# print(a.sum(0))
+        # Get the sample path.
+        ot = self.OT_path[mha_idx]
+        t1 = self.T1_path[mha_idx]
+        t2 = self.T2_path[mha_idx]
+        t1c = self.T1c_path[mha_idx]
+        flair = self.Flair_path[mha_idx]
 
-#
-# label_to_frequency =  [  1.67481864e+09,   1.05296600e+06,   1.39822550e+07,   2.25209600e+06,   4.21404400e+06]
-# class_weights = []
-#
-# total_frequency = np.sum(label_to_frequency)
-# for frequency in label_to_frequency:
-#     class_weight = 1 / np.log(1.02 + (frequency / total_frequency))
-#     class_weights.append(class_weight)
-# print(class_weights)
+        # Get the data.
+        img_array_ot = self.__readimg__(ot, isot=True)
+        img_array_t1 = self.__readimg__(t1)
+        img_array_t2 = self.__readimg__(t2)
+        img_array_t1c = self.__readimg__(t1c)
+        img_array_flair = self.__readimg__(flair)
 
-# [1.4496326123173364, 47.438213320786453, 27.297160306177677, 44.379722047746604, 40.152262287301141]
+        img_arr = np.stack([img_array_flair, img_array_t1, img_array_t1c, img_array_t2], axis=3)
+        ot_arr = np.asarray(img_array_ot)
+
+        image = img_arr[inst_idx]
+        label = ot_arr[inst_idx]
+
+        # # 只训练有肿瘤的部分
+        # has = np.max(self.arr_train_ot, axis=(1, 2)) > 0
+        # self.arr_train_ot = self.arr_train_ot[has]
+        # self.arr_train_imgs = self.arr_train_imgs[has]
+
+        # One-hot like
+        label = to_categorical(label, num_classes=5)
+
+        return image, label
+

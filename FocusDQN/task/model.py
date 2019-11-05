@@ -297,7 +297,7 @@ class DqnAgent:
         # Get detailed configuration.
         conf_base = self._config['Base']
         conf_train = self._config['Training']
-        conf_dqn = self._config['DQN']
+        conf_cus = self._config['Custom']
         # Input shape.
         input_shape = conf_base.get('input_shape')
         # Feature normalization method and activation function.
@@ -306,8 +306,6 @@ class DqnAgent:
         # Dropout (keep probability) for convolution and fully-connect operation.
         conv_kprob = conf_base.get('convolution_dropout', 1.0)
         fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
-        # Check whether enable "Dueling Network" or not.
-        dueling_network = conf_dqn.get('dueling_network', True)
         # Regularization Related.
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
@@ -316,6 +314,27 @@ class DqnAgent:
         # Score maps holder.
         score_maps = None
 
+        # The input tensor holder.
+        input_name = name_space+'/input'
+        input_tensor = tf.placeholder(tf.float32, input_shape, name=input_name)  # [?, 224, 224, ?]
+
+        # Crop or resize the input image into suitable size.
+
+
+        # Determine the introduction method of "Position Information".
+        pos_method = conf_cus.get('position_info')
+        # Define the "Position Information" placeholder.
+        pos_name = name_space+'/position_info'
+        if pos_method == 'map':
+            pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)   # [?, w, h]
+        elif pos_method == 'coord':
+            pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
+        elif pos_method == 'sight':
+            pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
+        elif pos_method == 'none':
+            pass
+        else:
+            raise TypeError('Unknown position information fusion method !!!')
 
         # --------------------------------- "Feature Extraction" backbone. ------------------------------------
         # Get configuration for ResNet
@@ -327,9 +346,6 @@ class DqnAgent:
         # Start definition.
         FE_name = name_space + '/FeatExt'
         with tf.variable_scope(FE_name):
-            # The input tensor holder.
-            input_tensor = tf.placeholder(tf.float32, input_shape, name='input')    # [?, 224, 224, ?]
-
             # Base conv to reduce the feature map size.
             base_conv = cus_layers.base_conv2d(input_tensor, kernel_numbers[0], 7, 2,
                                                feature_normalization=fe_norm,
@@ -363,19 +379,123 @@ class DqnAgent:
                                                       regularizer=regularizer,
                                                       name_space='ResNet_Block0'+str(idx+1))
 
-                # For conveniently usage.
-                fe_tensor = block_tensor    # [?, 7, 7, ?]  default: 2048
+            # For conveniently usage.
+            FE_tensor = block_tensor    # [?, 7, 7, ?]  default: 2048
+
+            # Print some information.
+            print('### Finish "Feature Extract Network" (name scope: {}). The output shape: {}'.format(
+                name_space, FE_tensor.shape))
 
         # --------------------------------- "Region Selection" (DQN) branch. ------------------------------------
+        # Get configuration for DQN.
+        conf_dqn = self._config['DQN']
+        # Get the dimension reduction method.
+        reduce_dim = conf_dqn['reduce_dim']
+        # Check whether enable "Dueling Network" or not.
+        dueling_network = conf_dqn.get('dueling_network', True)
+
         # Start definition.
         DQN_name = name_space + '/DQN'
-        with tf.variable_scope(FE_name) and tf.name_scope(FE_name):
-        # with tf.variable_scope(FE_name) and tf.op_scope(FE_name):
-        #     drqn_conv_flat = tf.reshape(fe_tensor, shape=[-1, 7*7*2048],
-        #                                 name='_DRQN_conv_flat')  # [-1, h_size]
-        #     cus_layers.base_fc(drqn_conv_flat, 1000,
-        #                        name_space='testsetest')
-            pass
+        with tf.variable_scope(DQN_name):
+            # Scale down the feature maps according to the specific method.
+            if reduce_dim == 'conv':
+                # Use "Convolution" to reduce dimension.
+                redc_tensor = cus_layers.base_conv2d(FE_tensor, 1024, 3, 2,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='reduce_dim01')     # [?, 4, 4, 1024]
+                redc_tensor = cus_layers.base_conv2d(redc_tensor, 512, 3, 2,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='reduce_dim02')     # [?, 2, 2, 512]
+            elif reduce_dim == 'residual':
+                # Use "residual" structure to reduce dimension.
+                redc_tensor = cus_res.transition_layer(FE_tensor, 1024,
+                                                       feature_normalization=fe_norm,
+                                                       activation=activation,
+                                                       keep_prob=conv_kprob,
+                                                       regularizer=regularizer,
+                                                       name_space='reduce_dim01')  # [?, 4, 4, 1024]
+                redc_tensor = cus_res.transition_layer(redc_tensor, 512,
+                                                       feature_normalization=fe_norm,
+                                                       activation=activation,
+                                                       keep_prob=conv_kprob,
+                                                       regularizer=regularizer,
+                                                       name_space='reduce_dim02')  # [?, 2, 2, 512]
+            else:
+                raise TypeError('Unknown reduce dimension method for DQN !!!')
+
+            # Flatten the tensor to 1-D vector.
+            fdim = 1
+            for d in redc_tensor.shape[1:]:
+                fdim *= int(d)
+            flat_tensor = tf.reshape(redc_tensor, [-1, fdim], name='flatten')     # [?, OC]   default: 2048
+
+            # Pass through two fully connected layers.
+            fc01_tensor = cus_layers.base_fc(flat_tensor, 1024,
+                                             feature_normalization=fe_norm,
+                                             activation=activation,
+                                             keep_prob=fc_kprob,
+                                             regularizer=regularizer,
+                                             name_space='FC01')     # [?, 1024]
+            fc02_tensor = cus_layers.base_fc(fc01_tensor, 1024,
+                                             feature_normalization=fe_norm,
+                                             activation=activation,
+                                             keep_prob=fc_kprob,
+                                             regularizer=regularizer,
+                                             name_space='FC02')     # [?, 1024]
+
+            # Build the DRQN header according to the "Dueling Network" mode or not.
+            if dueling_network:
+                # Separate the feature map produced by "FC-layer" into the "State" and "Action" branches.
+                fc02vec_shape = int(fc02_tensor.shape[-1])
+                bch_shape = fc02vec_shape // 2
+                state_bch, action_bch = tf.split(fc02_tensor,
+                                                 [bch_shape, fc02vec_shape - bch_shape],
+                                                 axis=-1,
+                                                 name='branch_split')  # [-1, h_size/2]
+                # Build the "State" branch.
+                state_tensor = cus_layers.base_fc(state_bch, 1,
+                                                  feature_normalization=fe_norm,
+                                                  activation=activation,
+                                                  keep_prob=fc_kprob,
+                                                  regularizer=regularizer,
+                                                  name_space='state_value')     # [?, 1]
+                # Build the "Action" branch.
+                action_tensor = cus_layers.base_fc(action_bch, action_dim,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=fc_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='action_value')  # [?, act_dim]
+                # Mean the "Action" (Advance) branch.
+                norl_Adval = tf.subtract(action_tensor,
+                                         tf.reduce_mean(action_tensor, axis=-1, keep_dims=True),
+                                         name='advanced_value')   # [?, act_dim]
+                # Add the "State" value and "Action" value to obtain the final output.
+                dqn_output = tf.add(state_tensor, norl_Adval, name='DQN_output')    # [?, act_dim]
+            # Not enable "Dueling" structure. Directly pass through a FC-layer.
+            else:
+                # The normal mode, do not need to split into two branches.
+                dqn_output = cus_layers.base_fc(fc02_tensor, action_dim,
+                                                feature_normalization=fe_norm,
+                                                activation=activation,
+                                                keep_prob=fc_kprob,
+                                                regularizer=regularizer,
+                                                name_space='DQN_output')    # [?, act_dim]
+
+            # Print some information.
+            print('### Finish "DQN Head" (name scope: {}). The output shape: {}'.format(
+                name_space, dqn_output.shape))
+
+
+
+
+
 
 
 
