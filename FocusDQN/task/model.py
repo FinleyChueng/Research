@@ -314,34 +314,190 @@ class DqnAgent:
         # Score maps holder.
         score_maps = None
 
+
+        # Generate the input for model.
+        input_tensor = self.__input_justify(name_space)
+        # Extract feature maps.
+        FE_tensor, DS_feats = self.__feature_extract(input_tensor, name_space)
+        # Select next region to deal with. (Generate the DQN output)
+        dqn_output = self.__region_selection(FE_tensor, action_dim, name_space)
+
+
+
+        # --------------------------------- "Segmentation" branch. ------------------------------------
+        # Get configuration for ResNet
+        conf_res = self._config['ResNet']
+        conf_up = self._config['UpSample']
+        # Layer number and kernel number of blocks for ResNet.
+        kernel_numbers = conf_res.get('kernel_numbers')
+        layer_units = conf_res.get('layer_units')
+        # Get structure and fusion score flag.
+        up_structure = conf_up.get('upsample_structure', 'raw-U')
+        up_method = conf_up.get('scale_up', 'ResV2')
+        up_fuse = conf_up.get('upsample_fusion', 'concat')
+        upres_layers = conf_up.get('upres_layers', 3)
+        fuse_scores = conf_up.get('fuse_scores', False)
+
+        # Start definition.
+        SEG_name = name_space + '/Segmentation'
+        with tf.variable_scope(SEG_name):
+            # if up_structure == 'raw' or up_structure == 'raw-U' or up_structure == 'conv-U':
+            if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
+                # Just the traditional structure. Gradually build the block is okay.
+                US_tensor = FE_tensor
+                for idx in range(len(layer_units)):
+                    # Scale up the feature maps. Whether use the pure de-conv
+                    #   or the "residual" de-conv.
+                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[-idx-2],
+                                                         scale_down=False,
+                                                         structure=up_method,
+                                                         feature_normalization=fe_norm,
+                                                         activation=activation,
+                                                         keep_prob=conv_kprob,
+                                                         regularizer=regularizer,
+                                                         name_space='Scale_Up0'+str(idx+1))     # [?, 2x, 2x, 0.5c]
+
+                    # Add "Skip Connection" if specified.
+                    if up_structure == 'raw-U':
+                        # Use the raw down-sampled feature maps.
+                        skip_conn = DS_feats[-idx-2]
+                    elif up_structure == 'conv-U':
+                        # Pass through a 1x1 conv to get the skip connection features.
+                        raw_ds = DS_feats[-idx-2]
+                        skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='skip_conv0'+str(idx+1))
+                    elif up_structure == 'res-U':
+                        # Pass through a residual layer to get the skip connection features.
+                        raw_ds = DS_feats[-idx-2]
+                        skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
+                                                           kernel_size=1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='skip_conv0'+str(idx+1))
+                    elif up_structure == 'raw':
+                        # Do not use "Skip Connection".
+                        skip_conn = None
+                    else:
+                        raise ValueError('Unknown "Skip Connection" method !!!')
+
+                    # Now determine the features fusion method.
+                    if skip_conn is not None:
+                        if up_fuse == 'add':
+                            US_tensor = tf.add(US_tensor, skip_conn, name='skip_add0'+str(idx+1))   # [2x, 2x, 0.5c]
+                        elif up_fuse == 'concat':
+                            US_tensor = tf.concat([US_tensor, skip_conn], axis=-1,
+                                                  name='skip_concat0'+str(idx+1))   # [2x, 2x, c]
+                        else:
+                            raise ValueError('Unknown "Skip Feature" fusion method !!!')
+
+                    # After up-sample, pass through the residual blocks to convolution.
+                    if isinstance(upres_layers, int):
+                        layer_num = upres_layers
+                    elif upres_layers == 'same':
+                        if idx != len(layer_units)-1:
+                            layer_num = layer_units[-idx-2] - 1
+                        else:
+                            # The last layer is special. Coz the corresponding layer
+                            #   is max pooling, and it don't use any convolution.
+                            layer_num = conf_up.get('last_match', 3)
+                    else:
+                        raise ValueError('Unknown up-sample block layers !!!')
+                    # Specify the layer for residual block. Note that, we may use 1x1 conv
+                    #   if @{layer_num} is a string.
+                    if isinstance(layer_num, int) and layer_num > 0:
+                        US_tensor = cus_res.residual_block(US_tensor, US_tensor.shape[-1], layer_num,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='UpResidual_conv0'+str(idx+1))
+                    elif layer_num == '1x1conv':
+                        US_tensor = cus_layers.base_conv2d(US_tensor, US_tensor.shape[-1], 1, 1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='Up1x1_conv0'+str(idx+1))
+                    elif layer_num == 'w/o':
+                        pass
+                    else:
+                        raise ValueError('Unknown last layer match method !!!')
+
+                # For conveniently usage.
+                half_UST = US_tensor    # [?, half, half, OC]
+
+
+
+
+
+            elif up_structure == 'MLIF':
+
+                pass
+
+
+
+            else:
+                raise ValueError('Unknown up-sample structure !!!')
+
+
+
+
+
+
+
+
+
+        return
+
+
+    def __input_justify(self, name_space):
+        r'''
+            Define and justify the input tensor. Mainly to justify the
+                input size and fuse some information.
+        '''
+
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        # Input shape.
+        input_shape = conf_base.get('input_shape')
+
         # --------------------------------- "Input Justification" part. ------------------------------------
+        # Get configuration for justification.
+        conf_cus = self._config['Custom']
+        # Determine the introduction method of "Position Information".
+        pos_method = conf_cus.get('position_info', 'map')
+
         # Start definition.
         IJ_name = name_space + '/InputJustify'
         with tf.variable_scope(IJ_name):
             # The input image holder.
-            raw_image = tf.placeholder(tf.float32, input_shape, name='image')     # [?, 240, 240, ?]
+            raw_image = tf.placeholder(tf.float32, input_shape, name='image')  # [?, 240, 240, ?]
 
             # The input previous segmentation holder.
             prev_result = tf.placeholder(tf.float32, input_shape[:-1], name='prev_result')  # [?, 240, 240]
             # Expand additional dimension for conveniently processing.
-            prev_result = tf.expand_dims(prev_result, axis=-1, name='expa_Pres')    # [?, 240, 240, 1]
+            prev_result = tf.expand_dims(prev_result, axis=-1, name='expa_Pres')  # [?, 240, 240, 1]
 
-            # Determine the introduction method of "Position Information".
-            pos_method = conf_cus.get('position_info', 'map')
             # Define the "Position Information" placeholder.
             pos_name = 'position_info'
             if pos_method == 'map':
-                pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)   # [?, w, h]
+                pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)  # [?, w, h]
                 # Expand additional dimension for conveniently processing.
-                pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')     # [?, w, h, 1]
+                pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')  # [?, w, h, 1]
             elif pos_method == 'coord':
-                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
+                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)  # [?, 4]
             elif pos_method == 'sight':
-                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)     # [?, 4]
-            elif pos_method == 'none':
+                pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)  # [?, 4]
+            elif pos_method == 'w/o':
                 pos_info = None
             else:
-                raise TypeError('Unknown position information fusion method !!!')
+                raise ValueError('Unknown position information fusion method !!!')
 
             # Crop or resize the input image into suitable size if size not matched.
             suit_w = conf_base.get('suit_width')
@@ -363,7 +519,7 @@ class DqnAgent:
                     if pos_method == 'map':
                         pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_w, suit_h], name='nn_pos')
                 else:
-                    raise TypeError('Unknown size match method !!!')
+                    raise ValueError('Unknown size match method !!!')
 
             # Concat the tensors to generate input for whole model.
             input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
@@ -374,7 +530,29 @@ class DqnAgent:
             print('### Finish "Input Justification" (name scope: {}). The output shape: {}'.format(
                 name_space, input_tensor.shape))
 
+            # Return the justified input tensor.
+            return input_tensor
 
+
+    def __feature_extract(self, input_tensor, name_space):
+        r'''
+            Feature extraction backbone. Which is used to generate the deep
+                feature maps for successive processing.
+
+            The input is the raw input tensor generated by "Input Justification" module.
+        '''
+
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        # Feature normalization method and activation function.
+        fe_norm = conf_base.get('feature_normalization', 'batch')
+        activation = conf_base.get('activation', 'relu')
+        # Dropout (keep probability) for convolution and fully-connect operation.
+        conv_kprob = conf_base.get('convolution_dropout', 1.0)
+        # Regularization Related.
+        regularize_coef = conf_train.get('regularize_coef', 0.0)
+        regularizer = tf_layers.l2_regularizer(regularize_coef)
 
         # --------------------------------- "Feature Extraction" backbone. ------------------------------------
         # Get configuration for ResNet
@@ -386,13 +564,19 @@ class DqnAgent:
         # Start definition.
         FE_name = name_space + '/FeatExt'
         with tf.variable_scope(FE_name):
+            # The feature maps dictionary, which is lately used in up-sample part.
+            DS_feats = []
+
             # Base conv to reduce the feature map size.
             base_conv = cus_layers.base_conv2d(input_tensor, kernel_numbers[0], 7, 2,
                                                feature_normalization=fe_norm,
                                                activation='lrelu',
                                                keep_prob=conv_kprob,
                                                regularizer=regularizer,
-                                               name_space='ResNet_bconv')     # [?, 112, 112, ?]
+                                               name_space='ResNet_bconv')  # [?, 112, 112, ?]
+
+            # Record the 2x - feature maps.
+            DS_feats.append(base_conv)
 
             # Recursively build the block part.
             block_tensor = base_conv
@@ -405,26 +589,56 @@ class DqnAgent:
                                                            name='ResNet_mp')
                 else:
                     # A transition layer to down-sample the feature maps to 28, 28.
-                    block_tensor = cus_res.transition_layer(block_tensor, kernel_numbers[idx+1],
+                    block_tensor = cus_res.transition_layer(block_tensor, kernel_numbers[idx + 1],
                                                             feature_normalization=fe_norm,
                                                             activation=activation,
                                                             keep_prob=conv_kprob,
                                                             regularizer=regularizer,
-                                                            name_space='ResNet_Trans0'+str(idx+1))
+                                                            name_space='ResNet_Trans0' + str(idx + 1))
                 # Pass through the residual block.
-                block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx+1], layer_units[idx]-1,
+                block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx + 1], layer_units[idx] - 1,
                                                       feature_normalization=fe_norm,
                                                       activation=activation,
                                                       keep_prob=conv_kprob,
                                                       regularizer=regularizer,
-                                                      name_space='ResNet_Block0'+str(idx+1))
+                                                      name_space='ResNet_Block0' + str(idx + 1))
+
+                # Record each scale feature maps of block.
+                DS_feats.append(block_tensor)
 
             # For conveniently usage.
-            FE_tensor = block_tensor    # [?, 7, 7, ?]  default: 2048
+            FE_tensor = block_tensor  # [?, 7, 7, ?]  default: 2048
 
             # Print some information.
             print('### Finish "Feature Extract Network" (name scope: {}). The output shape: {}'.format(
                 name_space, FE_tensor.shape))
+
+            # Return the feature maps extracted by the backbone. What's more,
+            #   return the feature maps dictionary.
+            return FE_tensor, DS_feats
+
+
+    def __region_selection(self, FE_tensor, action_dim, name_space):
+        r'''
+            Region selection branch. Which is actually a DQN head.
+                It's used to select the next region for precisely processing.
+
+            The input is the deep feature maps extracted by
+                "Feature Extraction" backbone.
+        '''
+
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        # Feature normalization method and activation function.
+        fe_norm = conf_base.get('feature_normalization', 'batch')
+        activation = conf_base.get('activation', 'relu')
+        # Dropout (keep probability) for convolution and fully-connect operation.
+        conv_kprob = conf_base.get('convolution_dropout', 1.0)
+        fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
+        # Regularization Related.
+        regularize_coef = conf_train.get('regularize_coef', 0.0)
+        regularizer = tf_layers.l2_regularizer(regularize_coef)
 
         # --------------------------------- "Region Selection" (DQN) branch. ------------------------------------
         # Get configuration for DQN.
@@ -445,13 +659,13 @@ class DqnAgent:
                                                      activation=activation,
                                                      keep_prob=conv_kprob,
                                                      regularizer=regularizer,
-                                                     name_space='reduce_dim01')     # [?, 4, 4, 1024]
+                                                     name_space='reduce_dim01')  # [?, 4, 4, 1024]
                 redc_tensor = cus_layers.base_conv2d(redc_tensor, 512, 3, 2,
                                                      feature_normalization=fe_norm,
                                                      activation=activation,
                                                      keep_prob=conv_kprob,
                                                      regularizer=regularizer,
-                                                     name_space='reduce_dim02')     # [?, 2, 2, 512]
+                                                     name_space='reduce_dim02')  # [?, 2, 2, 512]
             elif reduce_dim == 'residual':
                 # Use "residual" structure to reduce dimension.
                 redc_tensor = cus_res.transition_layer(FE_tensor, 1024,
@@ -467,13 +681,13 @@ class DqnAgent:
                                                        regularizer=regularizer,
                                                        name_space='reduce_dim02')  # [?, 2, 2, 512]
             else:
-                raise TypeError('Unknown reduce dimension method for DQN !!!')
+                raise ValueError('Unknown reduce dimension method for DQN !!!')
 
             # Flatten the tensor to 1-D vector.
             fdim = 1
             for d in redc_tensor.shape[1:]:
                 fdim *= int(d)
-            flat_tensor = tf.reshape(redc_tensor, [-1, fdim], name='flatten')     # [?, OC]   default: 2048
+            flat_tensor = tf.reshape(redc_tensor, [-1, fdim], name='flatten')  # [?, OC]   default: 2048
 
             # Pass through two fully connected layers.
             fc01_tensor = cus_layers.base_fc(flat_tensor, 1024,
@@ -481,13 +695,13 @@ class DqnAgent:
                                              activation=activation,
                                              keep_prob=fc_kprob,
                                              regularizer=regularizer,
-                                             name_space='FC01')     # [?, 1024]
+                                             name_space='FC01')  # [?, 1024]
             fc02_tensor = cus_layers.base_fc(fc01_tensor, 1024,
                                              feature_normalization=fe_norm,
                                              activation=activation,
                                              keep_prob=fc_kprob,
                                              regularizer=regularizer,
-                                             name_space='FC02')     # [?, 1024]
+                                             name_space='FC02')  # [?, 1024]
 
             # Build the DRQN header according to the "Dueling Network" mode or not.
             if dueling_network:
@@ -504,7 +718,7 @@ class DqnAgent:
                                                   activation=activation,
                                                   keep_prob=fc_kprob,
                                                   regularizer=regularizer,
-                                                  name_space='state_value')     # [?, 1]
+                                                  name_space='state_value')  # [?, 1]
                 # Build the "Action" branch.
                 action_tensor = cus_layers.base_fc(action_bch, action_dim,
                                                    feature_normalization=fe_norm,
@@ -515,9 +729,9 @@ class DqnAgent:
                 # Mean the "Action" (Advance) branch.
                 norl_Adval = tf.subtract(action_tensor,
                                          tf.reduce_mean(action_tensor, axis=-1, keepdims=True),
-                                         name='advanced_value')   # [?, act_dim]
+                                         name='advanced_value')  # [?, act_dim]
                 # Add the "State" value and "Action" value to obtain the final output.
-                dqn_output = tf.add(state_tensor, norl_Adval, name='DQN_output')    # [?, act_dim]
+                dqn_output = tf.add(state_tensor, norl_Adval, name='DQN_output')  # [?, act_dim]
             # Not enable "Dueling" structure. Directly pass through a FC-layer.
             else:
                 # The normal mode, do not need to split into two branches.
@@ -526,32 +740,14 @@ class DqnAgent:
                                                 activation=activation,
                                                 keep_prob=fc_kprob,
                                                 regularizer=regularizer,
-                                                name_space='DQN_output')    # [?, act_dim]
+                                                name_space='DQN_output')  # [?, act_dim]
 
             # Print some information.
             print('### Finish "DQN Head" (name scope: {}). The output shape: {}'.format(
                 name_space, dqn_output.shape))
 
-
-
-
-
-
-
-
-
-
-        # --------------------------------- "Segmentation" branch. ------------------------------------
-
-
-
-
-
-
-        return
-
-
-    
+            # Return the outputs of DQN, which is the result for region value.
+            return dqn_output
 
 
     def __loss_summary(self, prioritized_replay):

@@ -15,7 +15,6 @@ def __residual_v2(input_tensor,
                   layer_type='unit',
                   kernel_size=3,
                   scale_factor=2,
-                  dilation_rate=1,
                   regularizer=None):
     r'''
         Residual V2. It use the "Pre-activate" structure.
@@ -36,7 +35,6 @@ def __residual_v2(input_tensor,
         kernel_size: The kernel size for convolution.
         scale_factor: Determine the feature scale. It works only when
             layer type is "Down-sample" or "Up-sample".
-        dilation_rate: Whether to enable the "Dilate Convolution" or not.
         regularizer: The regularizer for weights variables.
 
     ------------------------------------------------------------------------
@@ -46,6 +44,10 @@ def __residual_v2(input_tensor,
 
     # Add suffix for name space.
     name_space += '/residualV2_layer'
+
+    # Cast type into invalid parameter.
+    if not isinstance(output_channels, int):
+        output_channels = int(output_channels)
 
     # Determine the computation function we will use
     #   in corresponding phrase.
@@ -65,7 +67,7 @@ def __residual_v2(input_tensor,
         stride = scale_factor
         name_space += '/up'
     else:
-        raise TypeError('Unknown layer type !!!')
+        raise ValueError('Unknown layer type !!!')
 
     # Pre-activate input tensors.
     preact = tf_layer.base_activate_block(input_tensor, name_space + '/preact',
@@ -79,7 +81,6 @@ def __residual_v2(input_tensor,
     if input_tensor.get_shape()[-1] != output_channels or stride != 1:
         # Map method.
         short_cut = tf_conv_func(preact, output_channels, 1, stride, 'same',
-                                 dilation_rate=dilation_rate,
                                  use_bias=False,
                                  kernel_regularizer=regularizer,
                                  name=name_space + '/mapdim')   # The parameters keep same as base conv.
@@ -92,12 +93,11 @@ def __residual_v2(input_tensor,
         # Pass the input through the "Bottle" structure.
         #   The kernel size and its procedure likes below:
         #   (0.25*OC, 1, 1) -> (0.25*OC, 3, 1) -> (out_chan, 1, 1)
-        conv2d = tf.layers.conv2d(preact, 0.25 * output_channels, 1, 1, 'same',
-                                  dilation_rate=dilation_rate,
+        conv2d = tf.layers.conv2d(preact, int(0.25 * output_channels), 1, 1, 'same',
                                   use_bias=False,
                                   kernel_regularizer=regularizer,
                                   name=name_space + '/conv_1')
-        conv2d = cus_conv_func(conv2d, 0.25 * output_channels, kernel_size, stride,
+        conv2d = cus_conv_func(conv2d, int(0.25 * output_channels), kernel_size, stride,
                                name_space=name_space + '/conv_2',
                                activation=activation,
                                keep_prob=keep_prob,
@@ -137,7 +137,6 @@ def __residual_v1(input_tensor,
                   layer_type='unit',
                   kernel_size=3,
                   scale_factor=2,
-                  dilation_rate=1,
                   regularizer=None):
     r'''
         Residual V1. It use the common activation structure.
@@ -153,7 +152,6 @@ def __residual_v1(input_tensor,
         keep_prob: Whether to enable the "Dropout" or not.
         name_space: The name space.
         kernel_size: The kernel size for convolution.
-        dilation_rate: Whether to enable the "Dilate Convolution" or not.
         regularizer: The regularizer for weights variables.
 
     ------------------------------------------------------------------------
@@ -163,6 +161,10 @@ def __residual_v1(input_tensor,
 
     # Add suffix for name space.
     name_space += '/residualV1_layer'
+
+    # Cast type into invalid parameter.
+    if not isinstance(output_channels, int):
+        output_channels = int(output_channels)
 
     # Determine the computation function we will use
     #   in corresponding phrase.
@@ -182,7 +184,7 @@ def __residual_v1(input_tensor,
         stride = scale_factor
         name_space += '/up'
     else:
-        raise TypeError('Unknown layer type !!!')
+        raise ValueError('Unknown layer type !!!')
 
     # Translate to the same channel if needed.
     if input_tensor.get_shape()[-1] != output_channels or stride != 1:
@@ -203,14 +205,14 @@ def __residual_v1(input_tensor,
         # Pass the input through the "Bottle" structure.
         #   The kernel size and its procedure likes below:
         #   (0.25*OC, 1, 1) -> (0.25*OC, 3, 1) -> (out_chan, 1, 1)
-        conv2d = tf_layer.base_conv2d(input_tensor, 0.25 * output_channels, 1, 1,
+        conv2d = tf_layer.base_conv2d(input_tensor, int(0.25 * output_channels), 1, 1,
                                       name_space=name_space + '/conv_1',
                                       pre_activate=False,
                                       activation=activation,
                                       keep_prob=keep_prob,
                                       feature_normalization=feature_normalization,
                                       regularizer=regularizer)
-        conv2d = cus_conv_func(conv2d, 0.25 * output_channels, kernel_size, stride,
+        conv2d = cus_conv_func(conv2d, int(0.25 * output_channels), kernel_size, stride,
                                name_space=name_space + '/conv_2',
                                pre_activate=False,
                                activation=activation,
@@ -220,7 +222,6 @@ def __residual_v1(input_tensor,
         # Coz ResNetV1. The procedure likes below:
         #   conv -> feature normalize -> addition -> ReLU
         conv2d = tf.layers.conv2d(conv2d, output_channels, 1, 1, 'same',
-                                  dilation_rate=dilation_rate,
                                   use_bias=False,
                                   kernel_regularizer=regularizer,
                                   name=name_space + '/conv_3_conv')   # The parameters keep same as base conv.
@@ -266,7 +267,6 @@ def residual_block(input_tensor,
                    name_space,
                    bottleneck=True,
                    kernel_size=3,
-                   dilation_rate=1,
                    regularizer=None,
                    structure='V2'):
     r'''
@@ -286,7 +286,6 @@ def residual_block(input_tensor,
         name_space: The name space.
         bottleneck: Whether use the "Bottle" or "Plain" structure.
         kernel_size: The kernel size for convolution.
-        dilation_rate: Whether to enable the "Dilate Convolution" or not.
         regularizer: The regularizer for weights variables.
         structure: Indicating the version of residual structure.
 
@@ -317,7 +316,6 @@ def residual_block(input_tensor,
                           keep_prob=keep_prob,
                           name_space=name_space + '_' + str(l+1),
                           kernel_size=kernel_size,
-                          dilation_rate=dilation_rate,
                           regularizer=regularizer)
 
     # Finish the construction of residual block, and return the output of residual block.
@@ -384,7 +382,7 @@ def transition_layer(input_tensor,
             res_func = __residual_v1
             bottle_neck = False
         else:
-            raise TypeError('Unknown residual structure !!!')
+            raise ValueError('Unknown residual structure !!!')
         # Execute the residual function.
         trans_tensor = res_func(input_tensor, output_channels,
                                 layer_type=layer_type,
@@ -418,16 +416,4 @@ def transition_layer(input_tensor,
             raise ValueError('Unknown transition up method !!!')
 
     return trans_tensor
-
-
-
-
-
-
-
-
-
-
-
-
 
