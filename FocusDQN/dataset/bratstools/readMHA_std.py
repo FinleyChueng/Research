@@ -3,7 +3,7 @@ import SimpleITK as sitk
 import numpy as np
 import re
 import shutil
-from keras.utils import to_categorical
+# from keras.utils import to_categorical
 
 train_path_HGG = 'E:/data/BRATS2015_Training/HGG'
 train_path_LGG = 'E:/data/BRATS2015_Training/LGG'
@@ -272,9 +272,9 @@ class BRATS2015:
         #     self.arr_test_ot = self.arr_test_ot[has]
         #     self.arr_test_imgs = self.arr_test_imgs[has]
 
-        # One-hot like label.
-        if not self.test:
-            self.arr_test_ot = to_categorical(self.arr_test_ot, num_classes=5)
+        # # One-hot like label.
+        # if not self.test:
+        #     self.arr_test_ot = to_categorical(self.arr_test_ot, num_classes=5)
 
         self.test_batch_count += 1
 
@@ -332,8 +332,8 @@ class BRATS2015:
         # self.arr_train_ot = self.arr_train_ot[has]
         # self.arr_train_imgs = self.arr_train_imgs[has]
 
-        # One-hot like
-        self.arr_train_ot = to_categorical(self.arr_train_ot, num_classes=5)
+        # # One-hot like
+        # self.arr_train_ot = to_categorical(self.arr_train_ot, num_classes=5)
 
         # index = np.asarray(range(len(self.arr_train_imgs)))
         # np.random.shuffle(index)
@@ -449,8 +449,8 @@ class BRATS2015:
         # self.arr_train_ot = self.arr_train_ot[has]
         # self.arr_train_imgs = self.arr_train_imgs[has]
 
-        # One-hot like
-        label = to_categorical(label, num_classes=5)
+        # # One-hot like
+        # label = to_categorical(label, num_classes=5)
 
         return image, label
 

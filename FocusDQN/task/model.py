@@ -113,13 +113,15 @@ class DqnAgent:
 
         # Start build the model.
         if double_dqn is None:
-            DQN_output, CEloss_tensors = self._architecture(self._action_dim, self._name_space)
+            DQN_output, SEG_logits, CEloss_tensors = self._architecture(self._action_dim, self._name_space)
         else:
             ORG_name, TAR_name = double_dqn
-            DQN_output, CEloss_tensors = self._architecture(self._action_dim, ORG_name)
+            DQN_output, SEG_logits, CEloss_tensors = self._architecture(self._action_dim, ORG_name)
             self._architecture(self._action_dim, TAR_name, with_segmentation=False)
 
         # Construct the loss function after building model.
+
+        self.__upsample_loss(SEG_logits, CEloss_tensors, 1.0, self._name_space)
 
 
 
@@ -187,9 +189,9 @@ class DqnAgent:
         DQN_output = self.__region_selection(FE_tensor, action_dim, name_space)
         # Segment current image (patch). (Generate the segmentation branch)
         if with_segmentation:
-            SEG_output, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
+            SEG_output, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
         else:
-            CEloss_tensors = None
+            SEG_logits = CEloss_tensors = None
 
         # Show the input holders.
         print('| ---> Inputs holder (name scope: {}): {}'.format(name_space, self._inputs.keys()))
@@ -200,7 +202,7 @@ class DqnAgent:
             self._outputs['SEG_output'] = SEG_output
 
         # Only return the tensors that will be used in "Loss Construction".
-        return DQN_output, CEloss_tensors
+        return DQN_output, SEG_logits, CEloss_tensors
 
 
     def __input_justify(self, name_space):
@@ -706,10 +708,10 @@ class DqnAgent:
                                                    keep_prob=conv_kprob,
                                                    regularizer=regularizer,
                                                    name_space='WS_tensor')
+                # Independently return the segmentation logits, so that we can flexibly deal with it.
+                SEG_logits = org_UST
                 # Then translate the value into probability.
                 SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, h, w, cls]
-                # Add the output tensor to the CE loss tensors for train.
-                CEloss_tensors.append(org_UST)
 
             # Refer the paper's structure.
             elif up_structure == 'MLIF':
@@ -740,7 +742,8 @@ class DqnAgent:
                                                   keep_prob=conv_kprob,
                                                   regularizer=regularizer,
                                                   name_space='MLIF_Map')
-                CEloss_tensors.append(MLIF_map)
+                # Independently return the segmentation logits, so that we can flexibly deal with it.
+                SEG_logits = MLIF_map
                 # Fuse (mean) all score maps to get the final segmentation.
                 SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
                 SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
@@ -753,8 +756,8 @@ class DqnAgent:
             print('### Finish "Segmentation Head" (name scope: {}). The output shape: {}'.format(
                 name_space, SEG_output.shape))
 
-            # Return the segmentation results, and the loss tensors for "Cross-Entropy" calculation.
-            return SEG_output, CEloss_tensors
+            # Return the segmentation results, logits, and the loss tensors for "Cross-Entropy" calculation.
+            return SEG_output, SEG_logits, CEloss_tensors
 
 
     def _loss_summary(self, DQN_output, CEloss_tensors, prioritized_replay):
@@ -1032,68 +1035,55 @@ class DqnAgent:
         return model_loss_dict, model_summaries_dict
 
 
-    def __upsample_loss(self, CEloss_tensors, epsilon):
+    def __upsample_loss(self, SEG_logits, CEloss_tensors, epsilon, name_space):
         r'''
             Generate the loss for "Segmentation" branch.
         '''
 
         # Get configuration.
         conf_base = self._config['Base']
+        conf_train = self._config['Training']
 
         # Get detailed parameters.
         input_shape = conf_base.get('input_shape')
         classification_dim = conf_base.get('classification_dimension')
+        score_factor = conf_train.get('score_loss_factor', 1.0)
 
         # ---------------------- Definition of UN cross-entropy loss ------------------------
-        LOSS_name = self._name_space + '/SegLoss'
+        LOSS_name = name_space + '/SegLoss'
         with tf.variable_scope(LOSS_name):
             # Placeholder of ground truth segmentation.
-            if not isinstance(input_shape, list):
-                raise TypeError('The input shape parameter must be list !!!')
-            label_shape = [s for s in input_shape[:-1]]
-            label_shape.append(classification_dim)
-            GT_label = net_util.placeholder_wrapper(self._inputs, tf.float32, label_shape,
-                                                    name='GT_label')  # [?, h, w, cls]
+            GT_label = net_util.placeholder_wrapper(self._inputs, tf.int32, input_shape[:-1],
+                                                    name='GT_label')  # [?, h, w]
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, classification_dim],
                                                          name='clazz_weights')  # [?, cls]
+            cw_mask = tf.one_hot(tf.cast(GT_label, 'int32'), classification_dim,
+                                 name='one_hot_label')     # [?, h, w, cls]
+            clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+                                           name='expa_CW')      # [?, 1, 1, cls]
+            clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
+            clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')   # [?, h, w]
 
-            ################################################################################
+            # The single classification loss.
+            fix_loss = tf.losses.sparse_softmax_cross_entropy(
+                labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
 
-            # Iteratively expend the loss.
-            self._un_loss = 0.
-            for prob in self._un_score_maps:
-                # Translate the raw value to real probability.
-                probability = tf.nn.softmax(prob)
-                # Reshape the flatten output tensor to the time-related shape tensor.
-                probability = tf.cond(
-                    self._train_phrase,
-                    lambda: tf.reshape(probability, shape=[self._train_batch_size, self._train_track_len,
-                                                           self._input_size[0], self._input_size[1], self._cls_dim]),
-                    lambda: tf.reshape(probability, shape=[self._infer_batch_size, self._infer_track_len,
-                                                           self._input_size[0], self._input_size[1], self._cls_dim]),
-                )  # [b, t, w, h, cls_dim]
-                # The cross-entropy loss for "Up-sample Network", which is actually the "Classification" network.
-                UN_cross_entropy_loss = - self._GT_segmentation * tf.log(
-                    tf.clip_by_value(probability, clip_value_min=epsilon, clip_value_max=1.0),
-                    name=self._base_name_scope + 'UN_cross_entropy_loss'
-                )  # [b, t, w, h, cls_dim]
-                UN_image_CEloss = tf.reduce_mean(UN_cross_entropy_loss, axis=(2, 3),
-                                                 name=self._base_name_scope + 'UN_image_CEloss')  # [b, t, cls]
-                # Multiply the visit flag.
-                UN_visit_filt = tf.divide(UN_image_CEloss,
-                                          tf.expand_dims(self._visit, axis=-1),
-                                          name=self._base_name_scope + 'UN_visit_filt')  # [b, t, cls]
-                # Add the clazz-related weights.
-                UN_Wcls_CEloss = tf.multiply(UN_visit_filt, self._clazz_weights,
-                                             name=self._base_name_scope + 'UN_Wcls_CEloss')  # [b, t, cls_dim]
-                self._un_loss += tf.reduce_sum(UN_Wcls_CEloss, name=self._base_name_scope + 'UN_loss')  # scalar
+            # Recursively calculate the loss.
+            additional_loss = 0.
+            for idx, logits in enumerate(CEloss_tensors):
+                additional_loss = tf.losses.sparse_softmax_cross_entropy(
+                    labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0'+str(idx+1))
 
-            print('### Finish the definition of UN loss, Shape: {}'.format(self._un_loss.shape))
+            # Add the two parts as the final classification loss.
+            segmentation_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
 
+            # Print some information.
+            print('### Finish the definition of UN loss, Shape: {}'.format(segmentation_loss.shape))
 
-            return
+            # Return the segmentation loss.
+            return segmentation_loss
 
 
     def __reinforcement_loss(self):
