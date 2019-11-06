@@ -1,5 +1,6 @@
 import tensorflow as tf
 import tensorflow.contrib.layers as tf_layers
+import numpy as np
 import tfmodule.layer as cus_layers
 import tfmodule.residual as cus_res
 import tfmodule.util as net_util
@@ -352,6 +353,12 @@ class DqnAgent:
         up_fuse = conf_up.get('upsample_fusion', 'concat')
         upres_layers = conf_up.get('upres_layers', 3)
 
+        # Get the scale parameters.
+        scale_exp = conf_up.get('scale_exp', 1)
+        if not isinstance(scale_exp, int) or scale_exp not in range(1, 3):
+            raise ValueError('Invalid up-sample scale up exponent value !!!')
+        scale_factor = int(np.exp2(scale_exp))
+
         # Score channels.
         score_chan = conf_up.get('score_chans', 16)
         # Generate score maps if specified.
@@ -369,11 +376,16 @@ class DqnAgent:
             if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
                 # Just the traditional structure. Gradually build the block is okay.
                 US_tensor = FE_tensor
-                for idx in range(len(layer_units)):
+                for idx in range(len(layer_units)//scale_exp):
+                    # Compute the index for corresponding down-sample tensor
+                    #   and layer units.
+                    cor_idx = - (idx + 1) * scale_exp - 1     # -1 for reverse. idx+1 for skip last one.
+
                     # Scale up the feature maps. Whether use the pure de-conv
                     #   or the "residual" de-conv.
-                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[-idx-2],
+                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[cor_idx],
                                                          scale_down=False,
+                                                         scale_factor=scale_factor,
                                                          structure=up_method,
                                                          feature_normalization=fe_norm,
                                                          activation=activation,
@@ -384,10 +396,10 @@ class DqnAgent:
                     # Add "Skip Connection" if specified.
                     if up_structure == 'raw-U':
                         # Use the raw down-sampled feature maps.
-                        skip_conn = DS_feats[-idx-2]
+                        skip_conn = DS_feats[cor_idx]
                     elif up_structure == 'conv-U':
                         # Pass through a 1x1 conv to get the skip connection features.
-                        raw_ds = DS_feats[-idx-2]
+                        raw_ds = DS_feats[cor_idx]
                         skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
                                                            feature_normalization=fe_norm,
                                                            activation=activation,
@@ -396,7 +408,7 @@ class DqnAgent:
                                                            name_space='skip_conv0'+str(idx+1))
                     elif up_structure == 'res-U':
                         # Pass through a residual layer to get the skip connection features.
-                        raw_ds = DS_feats[-idx-2]
+                        raw_ds = DS_feats[cor_idx]
                         skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
                                                            kernel_size=1,
                                                            feature_normalization=fe_norm,
@@ -424,8 +436,9 @@ class DqnAgent:
                     if isinstance(upres_layers, int):
                         layer_num = upres_layers
                     elif upres_layers == 'same':
-                        if idx != len(layer_units)-1:
-                            layer_num = layer_units[-idx-2] - 1
+                        # if idx != len(layer_units)-1:
+                        if idx != len(layer_units)//scale_exp-1:
+                            layer_num = layer_units[cor_idx] - 1
                         else:
                             # The last layer is special. Coz the corresponding layer
                             #   is max pooling, and it don't use any convolution.
