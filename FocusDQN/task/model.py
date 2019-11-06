@@ -276,8 +276,7 @@ class DqnAgent:
                        action_dim,
                        training_phrase,
                        name_space,
-                       with_segmentation=False,
-                       classification_dim=-1):
+                       with_segmentation=False):
         r'''
             Construct the whole architecture. Specify by the parameters.
 
@@ -300,6 +299,9 @@ class DqnAgent:
         conf_cus = self._config['Custom']
         # Input shape.
         input_shape = conf_base.get('input_shape')
+        # Suitable width and height.
+        suit_w = conf_base.get('suit_width')
+        suit_h = conf_base.get('suit_height')
         # Feature normalization method and activation function.
         fe_norm = conf_base.get('feature_normalization', 'batch')
         activation = conf_base.get('activation', 'relu')
@@ -310,9 +312,21 @@ class DqnAgent:
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
 
+        # Declare the scores fusion block. Pass through a 1x1 conv and bilinear.
+        def gen_scores(x, out_chans, name_idx):
+            y = cus_layers.base_conv2d(x, out_chans, 1, 1,
+                                       feature_normalization=fe_norm,
+                                       activation=activation,
+                                       keep_prob=conv_kprob,
+                                       regularizer=regularizer,
+                                       name_space='gen_score_conv1x1_0' + str(name_idx))
+            y = tf.image.resize_bilinear(y, size=[suit_w, suit_h],
+                                         name='gen_score_bi_0' + str(name_idx))
+            return y
+        # --------------------------------
 
-        # Score maps holder.
-        score_maps = None
+
+
 
 
         # Generate the input for model.
@@ -331,17 +345,27 @@ class DqnAgent:
         # Layer number and kernel number of blocks for ResNet.
         kernel_numbers = conf_res.get('kernel_numbers')
         layer_units = conf_res.get('layer_units')
-        # Get structure and fusion score flag.
+        # Get parameters.
+        classification_dim = conf_up.get('classification_dimension')
         up_structure = conf_up.get('upsample_structure', 'raw-U')
         up_method = conf_up.get('scale_up', 'ResV2')
         up_fuse = conf_up.get('upsample_fusion', 'concat')
         upres_layers = conf_up.get('upres_layers', 3)
-        fuse_scores = conf_up.get('fuse_scores', False)
+
+        # Score channels.
+        score_chan = conf_up.get('score_chans', 16)
+        # Generate score maps if specified.
+        es_cond1 = up_structure == 'MLIF'
+        es_cond2 = up_structure in ['raw', 'raw-U', 'conv-U', 'res-U'] and conf_up.get('fuse_scores', False)
+        enable_scores = es_cond1 or es_cond2
+        if enable_scores:
+            score_maps = []
+        else:
+            score_maps = None
 
         # Start definition.
         SEG_name = name_space + '/Segmentation'
         with tf.variable_scope(SEG_name):
-            # if up_structure == 'raw' or up_structure == 'raw-U' or up_structure == 'conv-U':
             if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
                 # Just the traditional structure. Gradually build the block is okay.
                 US_tensor = FE_tensor
@@ -429,8 +453,33 @@ class DqnAgent:
                     else:
                         raise ValueError('Unknown last layer match method !!!')
 
+                    # Pass through the scores block if enable "Fuse Score".
+                    if score_maps is not None:
+                        score_tensor = gen_scores(US_tensor, score_chan, idx+1)
+                        score_tensor = cus_layers.base_conv2d(score_tensor, classification_dim, 1, 1,
+                                                              feature_normalization=fe_norm,
+                                                              activation=activation,
+                                                              keep_prob=conv_kprob,
+                                                              regularizer=regularizer,
+                                                              name_space='Score_tensor0' + str(idx + 1))
+                        score_maps.append(score_tensor)
+
                 # For conveniently usage.
                 half_UST = US_tensor    # [?, half, half, OC]
+
+                # Scale up to the original size.
+                org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='WS_tensor')
+                # Then translate the value into probability.
+                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, w, h, cls]
+
+
+
+
 
 
 
@@ -731,11 +780,11 @@ class DqnAgent:
                                          tf.reduce_mean(action_tensor, axis=-1, keepdims=True),
                                          name='advanced_value')  # [?, act_dim]
                 # Add the "State" value and "Action" value to obtain the final output.
-                dqn_output = tf.add(state_tensor, norl_Adval, name='DQN_output')  # [?, act_dim]
+                DQN_output = tf.add(state_tensor, norl_Adval, name='DQN_output')  # [?, act_dim]
             # Not enable "Dueling" structure. Directly pass through a FC-layer.
             else:
                 # The normal mode, do not need to split into two branches.
-                dqn_output = cus_layers.base_fc(fc02_tensor, action_dim,
+                DQN_output = cus_layers.base_fc(fc02_tensor, action_dim,
                                                 feature_normalization=fe_norm,
                                                 activation=activation,
                                                 keep_prob=fc_kprob,
@@ -744,10 +793,10 @@ class DqnAgent:
 
             # Print some information.
             print('### Finish "DQN Head" (name scope: {}). The output shape: {}'.format(
-                name_space, dqn_output.shape))
+                name_space, DQN_output.shape))
 
             # Return the outputs of DQN, which is the result for region value.
-            return dqn_output
+            return DQN_output
 
 
     def __loss_summary(self, prioritized_replay):
