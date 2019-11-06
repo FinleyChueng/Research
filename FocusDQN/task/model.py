@@ -294,38 +294,6 @@ class DqnAgent:
             The holders for each inputs and outputs.
         '''
 
-        # Get detailed configuration.
-        conf_base = self._config['Base']
-        conf_train = self._config['Training']
-        conf_cus = self._config['Custom']
-        # Input shape.
-        input_shape = conf_base.get('input_shape')
-        # Suitable width and height.
-        suit_w = conf_base.get('suit_width')
-        suit_h = conf_base.get('suit_height')
-        # Feature normalization method and activation function.
-        fe_norm = conf_base.get('feature_normalization', 'batch')
-        activation = conf_base.get('activation', 'relu')
-        # Dropout (keep probability) for convolution and fully-connect operation.
-        conv_kprob = conf_base.get('convolution_dropout', 1.0)
-        fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
-        # Regularization Related.
-        regularize_coef = conf_train.get('regularize_coef', 0.0)
-        regularizer = tf_layers.l2_regularizer(regularize_coef)
-
-        # Declare the scores fusion block. Pass through a 1x1 conv and bilinear.
-        def gen_scores(x, out_chans, name_idx):
-            y = cus_layers.base_conv2d(x, out_chans, 1, 1,
-                                       feature_normalization=fe_norm,
-                                       activation=activation,
-                                       keep_prob=conv_kprob,
-                                       regularizer=regularizer,
-                                       name_space='gen_score_conv1x1_0' + str(name_idx))
-            y = tf.image.resize_bilinear(y, size=[suit_w, suit_h],
-                                         name='gen_score_bi_0' + str(name_idx))
-            return y
-        # --------------------------------
-
 
 
 
@@ -335,180 +303,9 @@ class DqnAgent:
         # Extract feature maps.
         FE_tensor, DS_feats = self.__feature_extract(input_tensor, name_space)
         # Select next region to deal with. (Generate the DQN output)
-        dqn_output = self.__region_selection(FE_tensor, action_dim, name_space)
-
-
-
-        # --------------------------------- "Segmentation" branch. ------------------------------------
-        # Get configuration for ResNet
-        conf_res = self._config['ResNet']
-        conf_up = self._config['UpSample']
-        # Layer number and kernel number of blocks for ResNet.
-        kernel_numbers = conf_res.get('kernel_numbers')
-        layer_units = conf_res.get('layer_units')
-        # Get parameters.
-        classification_dim = conf_up.get('classification_dimension')
-        up_structure = conf_up.get('upsample_structure', 'raw-U')
-        up_method = conf_up.get('scale_up', 'ResV2')
-        up_fuse = conf_up.get('upsample_fusion', 'concat')
-        upres_layers = conf_up.get('upres_layers', 3)
-
-        # Get the scale parameters.
-        scale_exp = conf_up.get('scale_exp', 1)
-        if not isinstance(scale_exp, int) or scale_exp not in range(1, 3):
-            raise ValueError('Invalid up-sample scale up exponent value !!!')
-        scale_factor = int(np.exp2(scale_exp))
-
-        # Score channels.
-        score_chan = conf_up.get('score_chans', 16)
-        # Generate score maps if specified.
-        es_cond1 = up_structure == 'MLIF'
-        es_cond2 = up_structure in ['raw', 'raw-U', 'conv-U', 'res-U'] and conf_up.get('fuse_scores', False)
-        enable_scores = es_cond1 or es_cond2
-        if enable_scores:
-            score_maps = []
-        else:
-            score_maps = None
-
-        # Start definition.
-        SEG_name = name_space + '/Segmentation'
-        with tf.variable_scope(SEG_name):
-            if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
-                # Just the traditional structure. Gradually build the block is okay.
-                US_tensor = FE_tensor
-                for idx in range(len(layer_units)//scale_exp):
-                    # Compute the index for corresponding down-sample tensor
-                    #   and layer units.
-                    cor_idx = - (idx + 1) * scale_exp - 1     # -1 for reverse. idx+1 for skip last one.
-
-                    # Scale up the feature maps. Whether use the pure de-conv
-                    #   or the "residual" de-conv.
-                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[cor_idx],
-                                                         scale_down=False,
-                                                         scale_factor=scale_factor,
-                                                         structure=up_method,
-                                                         feature_normalization=fe_norm,
-                                                         activation=activation,
-                                                         keep_prob=conv_kprob,
-                                                         regularizer=regularizer,
-                                                         name_space='Scale_Up0'+str(idx+1))     # [?, 2x, 2x, 0.5c]
-
-                    # Add "Skip Connection" if specified.
-                    if up_structure == 'raw-U':
-                        # Use the raw down-sampled feature maps.
-                        skip_conn = DS_feats[cor_idx]
-                    elif up_structure == 'conv-U':
-                        # Pass through a 1x1 conv to get the skip connection features.
-                        raw_ds = DS_feats[cor_idx]
-                        skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='skip_conv0'+str(idx+1))
-                    elif up_structure == 'res-U':
-                        # Pass through a residual layer to get the skip connection features.
-                        raw_ds = DS_feats[cor_idx]
-                        skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
-                                                           kernel_size=1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='skip_conv0'+str(idx+1))
-                    elif up_structure == 'raw':
-                        # Do not use "Skip Connection".
-                        skip_conn = None
-                    else:
-                        raise ValueError('Unknown "Skip Connection" method !!!')
-
-                    # Now determine the features fusion method.
-                    if skip_conn is not None:
-                        if up_fuse == 'add':
-                            US_tensor = tf.add(US_tensor, skip_conn, name='skip_add0'+str(idx+1))   # [2x, 2x, 0.5c]
-                        elif up_fuse == 'concat':
-                            US_tensor = tf.concat([US_tensor, skip_conn], axis=-1,
-                                                  name='skip_concat0'+str(idx+1))   # [2x, 2x, c]
-                        else:
-                            raise ValueError('Unknown "Skip Feature" fusion method !!!')
-
-                    # After up-sample, pass through the residual blocks to convolution.
-                    if isinstance(upres_layers, int):
-                        layer_num = upres_layers
-                    elif upres_layers == 'same':
-                        # if idx != len(layer_units)-1:
-                        if idx != len(layer_units)//scale_exp-1:
-                            layer_num = layer_units[cor_idx] - 1
-                        else:
-                            # The last layer is special. Coz the corresponding layer
-                            #   is max pooling, and it don't use any convolution.
-                            layer_num = conf_up.get('last_match', 3)
-                    else:
-                        raise ValueError('Unknown up-sample block layers !!!')
-                    # Specify the layer for residual block. Note that, we may use 1x1 conv
-                    #   if @{layer_num} is a string.
-                    if isinstance(layer_num, int) and layer_num > 0:
-                        US_tensor = cus_res.residual_block(US_tensor, US_tensor.shape[-1], layer_num,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='UpResidual_conv0'+str(idx+1))
-                    elif layer_num == '1x1conv':
-                        US_tensor = cus_layers.base_conv2d(US_tensor, US_tensor.shape[-1], 1, 1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='Up1x1_conv0'+str(idx+1))
-                    elif layer_num == 'w/o':
-                        pass
-                    else:
-                        raise ValueError('Unknown last layer match method !!!')
-
-                    # Pass through the scores block if enable "Fuse Score".
-                    if score_maps is not None:
-                        score_tensor = gen_scores(US_tensor, score_chan, idx+1)
-                        score_tensor = cus_layers.base_conv2d(score_tensor, classification_dim, 1, 1,
-                                                              feature_normalization=fe_norm,
-                                                              activation=activation,
-                                                              keep_prob=conv_kprob,
-                                                              regularizer=regularizer,
-                                                              name_space='Score_tensor0' + str(idx + 1))
-                        score_maps.append(score_tensor)
-
-                # For conveniently usage.
-                half_UST = US_tensor    # [?, half, half, OC]
-
-                # Scale up to the original size.
-                org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
-                                                   feature_normalization=fe_norm,
-                                                   activation=activation,
-                                                   keep_prob=conv_kprob,
-                                                   regularizer=regularizer,
-                                                   name_space='WS_tensor')
-                # Then translate the value into probability.
-                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, w, h, cls]
-
-
-
-
-
-
-
-
-
-            elif up_structure == 'MLIF':
-
-                pass
-
-
-
-            else:
-                raise ValueError('Unknown up-sample structure !!!')
-
-
-
+        DQN_output = self.__region_selection(FE_tensor, action_dim, name_space)
+        # Segment current image (patch). (Generate the segmentation branch)
+        SEG_output, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, name_space)
 
 
 
@@ -810,6 +607,233 @@ class DqnAgent:
 
             # Return the outputs of DQN, which is the result for region value.
             return DQN_output
+
+
+    def __segmentation(self, FE_tensor, DS_feats, name_space):
+        r'''
+            Segmentation branch. Which is actually a up-sample head.
+                It's used to segment the current input image (patch).
+
+            The input is the deep feature maps (each level) extracted by
+                "Feature Extraction" backbone.
+        '''
+
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        # Suitable width and height.
+        suit_w = conf_base.get('suit_width')
+        suit_h = conf_base.get('suit_height')
+        # Feature normalization method and activation function.
+        fe_norm = conf_base.get('feature_normalization', 'batch')
+        activation = conf_base.get('activation', 'relu')
+        # Dropout (keep probability) for convolution and fully-connect operation.
+        conv_kprob = conf_base.get('convolution_dropout', 1.0)
+        # Regularization Related.
+        regularize_coef = conf_train.get('regularize_coef', 0.0)
+        regularizer = tf_layers.l2_regularizer(regularize_coef)
+
+        # Declare the scores fusion block. Pass through a 1x1 conv and bilinear.
+        def gen_scores(x, out_chans, name_idx):
+            y = cus_layers.base_conv2d(x, out_chans, 1, 1,
+                                       feature_normalization=fe_norm,
+                                       activation=activation,
+                                       keep_prob=conv_kprob,
+                                       regularizer=regularizer,
+                                       name_space='gen_score_conv1x1_0' + str(name_idx))
+            y = tf.image.resize_bilinear(y, size=[suit_w, suit_h],
+                                         name='gen_score_bi_0' + str(name_idx))
+            return y
+
+        # --------------------------------- "Segmentation" branch. ------------------------------------
+        # Get configuration for ResNet
+        conf_res = self._config['ResNet']
+        conf_up = self._config['UpSample']
+        # Layer number and kernel number of blocks for ResNet.
+        kernel_numbers = conf_res.get('kernel_numbers')
+        layer_units = conf_res.get('layer_units')
+        # Get parameters.
+        classification_dim = conf_up.get('classification_dimension')
+        up_structure = conf_up.get('upsample_structure', 'raw-U')
+        up_method = conf_up.get('scale_up', 'ResV2')
+        up_fuse = conf_up.get('upsample_fusion', 'concat')
+        upres_layers = conf_up.get('upres_layers', 3)
+
+        # Get the scale parameters.
+        scale_exp = conf_up.get('scale_exp', 1)
+        if not isinstance(scale_exp, int) or scale_exp not in range(1, 3):
+            raise ValueError('Invalid up-sample scale up exponent value !!!')
+        scale_factor = int(np.exp2(scale_exp))
+
+        # Get Score flag and score channels.
+        score_chan = conf_up.get('score_chans', 16)
+        fuse_score = conf_up.get('fuse_scores', False)
+
+        # Declare the loss holder (list).
+        CEloss_tensors = []
+
+        # Start definition.
+        SEG_name = name_space + '/Segmentation'
+        with tf.variable_scope(SEG_name):
+            # Just the traditional structure. Gradually build the block is okay.
+            if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
+                US_tensor = FE_tensor
+                for idx in range(len(layer_units) // scale_exp):
+                    # Compute the index for corresponding down-sample tensor
+                    #   and layer units.
+                    cor_idx = - (idx + 1) * scale_exp - 1  # -1 for reverse. idx+1 for skip last one.
+
+                    # Scale up the feature maps. Whether use the pure de-conv
+                    #   or the "residual" de-conv.
+                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[cor_idx],
+                                                         scale_down=False,
+                                                         scale_factor=scale_factor,
+                                                         structure=up_method,
+                                                         feature_normalization=fe_norm,
+                                                         activation=activation,
+                                                         keep_prob=conv_kprob,
+                                                         regularizer=regularizer,
+                                                         name_space='Scale_Up0' + str(idx + 1))  # [?, 2x, 2x, 0.5c]
+
+                    # Add "Skip Connection" if specified.
+                    if up_structure == 'raw-U':
+                        # Use the raw down-sampled feature maps.
+                        skip_conn = DS_feats[cor_idx]
+                    elif up_structure == 'conv-U':
+                        # Pass through a 1x1 conv to get the skip connection features.
+                        raw_ds = DS_feats[cor_idx]
+                        skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='skip_conv0' + str(idx + 1))
+                    elif up_structure == 'res-U':
+                        # Pass through a residual layer to get the skip connection features.
+                        raw_ds = DS_feats[cor_idx]
+                        skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
+                                                           kernel_size=1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='skip_conv0' + str(idx + 1))
+                    elif up_structure == 'raw':
+                        # Do not use "Skip Connection".
+                        skip_conn = None
+                    else:
+                        raise ValueError('Unknown "Skip Connection" method !!!')
+
+                    # Now determine the features fusion method.
+                    if skip_conn is not None:
+                        if up_fuse == 'add':
+                            US_tensor = tf.add(US_tensor, skip_conn, name='skip_add0' + str(idx + 1))  # [2x, 2x, 0.5c]
+                        elif up_fuse == 'concat':
+                            US_tensor = tf.concat([US_tensor, skip_conn], axis=-1,
+                                                  name='skip_concat0' + str(idx + 1))  # [2x, 2x, c]
+                        else:
+                            raise ValueError('Unknown "Skip Feature" fusion method !!!')
+
+                    # After up-sample, pass through the residual blocks to convolution.
+                    if isinstance(upres_layers, int):
+                        layer_num = upres_layers
+                    elif upres_layers == 'same':
+                        # if idx != len(layer_units)-1:
+                        if idx != len(layer_units) // scale_exp - 1:
+                            layer_num = layer_units[cor_idx] - 1
+                        else:
+                            # The last layer is special. Coz the corresponding layer
+                            #   is max pooling, and it don't use any convolution.
+                            layer_num = conf_up.get('last_match', 3)
+                    else:
+                        raise ValueError('Unknown up-sample block layers !!!')
+                    # Specify the layer for residual block. Note that, we may use 1x1 conv
+                    #   if @{layer_num} is a string.
+                    if isinstance(layer_num, int) and layer_num > 0:
+                        US_tensor = cus_res.residual_block(US_tensor, US_tensor.shape[-1], layer_num,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='UpResidual_conv0' + str(idx + 1))
+                    elif layer_num == '1x1conv':
+                        US_tensor = cus_layers.base_conv2d(US_tensor, US_tensor.shape[-1], 1, 1,
+                                                           feature_normalization=fe_norm,
+                                                           activation=activation,
+                                                           keep_prob=conv_kprob,
+                                                           regularizer=regularizer,
+                                                           name_space='Up1x1_conv0' + str(idx + 1))
+                    elif layer_num == 'w/o':
+                        pass
+                    else:
+                        raise ValueError('Unknown last layer match method !!!')
+
+                    # Pass through the scores block if enable "Fuse Score".
+                    if fuse_score:
+                        score_tensor = gen_scores(US_tensor, score_chan, idx + 1)
+                        score_tensor = cus_layers.base_conv2d(score_tensor, classification_dim, 1, 1,
+                                                              feature_normalization=fe_norm,
+                                                              activation=activation,
+                                                              keep_prob=conv_kprob,
+                                                              regularizer=regularizer,
+                                                              name_space='Score_tensor0' + str(idx + 1))
+                        CEloss_tensors.append(score_tensor)
+
+                # For conveniently usage.
+                half_UST = US_tensor  # [?, half, half, OC]
+
+                # Scale up to the original size.
+                org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='WS_tensor')
+                # Then translate the value into probability.
+                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, w, h, cls]
+                # Add the output tensor to the CE loss tensors for train.
+                CEloss_tensors.append(org_UST)
+
+            # Refer the paper's structure.
+            elif up_structure == 'MLIF':
+                score_maps = []
+                for idx in range(len(DS_feats) // scale_exp):
+                    cor_idx = scale_exp * idx
+                    score_tensor = gen_scores(DS_feats[cor_idx], score_chan, idx + 1)
+                    score_maps.append(score_tensor)
+                    # Pass through 1x1 conv to generate score map
+                    seg_map = cus_layers.base_conv2d(score_tensor, classification_dim, 1, 1,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='Score_Maps0' + str(idx + 1))
+                    CEloss_tensors.append(seg_map)
+                # Generate MLIF tensor.
+                MLIF_tensor = tf.concat(score_maps, axis=-1, name='MLIF_concat')
+                MLIF_tensor = cus_layers.base_conv2d(MLIF_tensor, MLIF_tensor.shape[-1], 1, 1,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='MLIF_tensor')
+                MLIF_map = cus_layers.base_conv2d(MLIF_tensor, classification_dim, 1, 1,
+                                                  feature_normalization=fe_norm,
+                                                  activation=activation,
+                                                  keep_prob=conv_kprob,
+                                                  regularizer=regularizer,
+                                                  name_space='MLIF_Map')
+                CEloss_tensors.append(MLIF_map)
+                # Fuse (mean) all score maps to get the final segmentation.
+                SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
+                SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
+                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_output')  # [?, w, h, cls]
+
+            else:
+                raise ValueError('Unknown up-sample structure !!!')
+
+            # Return the segmentation results, and the loss tensors for "Cross-Entropy" calculation.
+            return SEG_output, CEloss_tensors
 
 
     def __loss_summary(self, prioritized_replay):
