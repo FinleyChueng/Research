@@ -2,6 +2,25 @@ import tensorflow as tf
 import numpy as np
 
 
+def placeholder_wrapper(dic, dtype, shape, name):
+    r'''
+        The wrapper of tensorflow.placeholder, for conveniently
+            package the inputs holder.
+    '''
+    if not isinstance(dic, dict):
+        raise TypeError('The dic must be a dictionary !!!')
+    y = tf.placeholder(dtype, shape, name)
+    # key = y.name.split(':')[0]
+    full_name = y.name.split(':')[0]
+    fns = full_name.split('/')
+    if len(fns) >= 2:
+        key = fns[0] + '/' + fns[-1]
+    else:
+        key = fns[0]
+    dic[key] = y
+    return y
+
+
 def copy_model_parameters(from_scope, to_scope):
     """
     Copies the model's parameters of `from_model` to `to_model`.

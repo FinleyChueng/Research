@@ -20,7 +20,7 @@ config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
 config = conf_util.parse_config(config_file)
 dqn = DqnAgent(name_space='TEST', config=config)
 dqn.definition()
-netutil.show_all_variables()
+# netutil.show_all_variables()
 # netutil.count_flops()
 print('End')
 
