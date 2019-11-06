@@ -28,17 +28,22 @@ class DqnAgent:
         self._config = config
         self._name_space = name_space
 
+        # The inputs holder.
+        self._inputs = {}
+        # The outputs holder.
+        self._outputs = {}
+
         # Get detailed configuration.
-        conf_base = self._config['Base']
-        conf_train = self._config['Training']
+        # conf_base = self._config['Base']
+        # conf_train = self._config['Training']
         conf_dqn = self._config['DQN']
 
-        # Normal Initialization.
-        self._input_shape = conf_base.get('input_shape')
-        self._clz_dim = conf_base.get('classification_dimension')
+        # # Normal Initialization.
+        # self._input_shape = conf_base.get('input_shape')
+        # self._clz_dim = conf_base.get('classification_dimension')
 
-        # Score maps holder.
-        self._score_maps = None
+        # # Score maps holder.
+        # self._score_maps = None
 
         # Determine the action dimension according to the config.
         if conf_dqn.get('restriction_action'):
@@ -46,12 +51,12 @@ class DqnAgent:
         else:
             self._action_dim = 17
 
-        # The name scope pair specified to support the "Double DQN".
-        self._DoubleDQN_scope = conf_dqn.get('double_dqn', ['ORG', 'TAR'])
-        # Check whether enable "Prioritized Replay" or not.
-        self._prioritized_replay = conf_dqn.get('prioritized_replay', True)
-        # Check whether enable "Dueling Network" or not.
-        self._dueling_network = conf_dqn.get('dueling_network', True)
+        # # The name scope pair specified to support the "Double DQN".
+        # self._DoubleDQN_scope = conf_dqn.get('double_dqn', ['ORG', 'TAR'])
+        # # Check whether enable "Prioritized Replay" or not.
+        # self._prioritized_replay = conf_dqn.get('prioritized_replay', True)
+        # # Check whether enable "Dueling Network" or not.
+        # self._dueling_network = conf_dqn.get('dueling_network', True)
 
 
 
@@ -72,9 +77,9 @@ class DqnAgent:
         # The DRQN related holders.
         self._target_drqn_output = None
 
-        # Regularization Related.
-        regularize_coef = conf_train.get('regularize_coef', 0.0)
-        self._regularizer = tf_layers.l2_regularizer(regularize_coef)
+        # # Regularization Related.
+        # regularize_coef = conf_train.get('regularize_coef', 0.0)
+        # self._regularizer = tf_layers.l2_regularizer(regularize_coef)
 
         # The final holder, loss and summary dictionary.
         self._ios_dict = None
@@ -346,9 +351,9 @@ class DqnAgent:
             # Define the "Position Information" placeholder.
             pos_name = 'position_info'
             if pos_method == 'map':
-                pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)  # [?, w, h]
+                pos_info = tf.placeholder(tf.float32, input_shape[:-1], name=pos_name)  # [?, h, w]
                 # Expand additional dimension for conveniently processing.
-                pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')  # [?, w, h, 1]
+                pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')  # [?, h, w, 1]
             elif pos_method == 'coord':
                 pos_info = tf.placeholder(tf.float32, [None, 4], name=pos_name)  # [?, 4]
             elif pos_method == 'sight':
@@ -365,12 +370,10 @@ class DqnAgent:
                 crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
                     # Crop to target size.
-                    crop_oy = (input_shape[2] - suit_h) // 2
-                    crop_ox = (input_shape[1] - suit_w) // 2
-                    raw_image = tf.image.crop_to_bounding_box(raw_image, crop_oy, crop_ox, suit_h, suit_w)
-                    prev_result = tf.image.crop_to_bounding_box(prev_result, crop_oy, crop_ox, suit_h, suit_w)
+                    raw_image = tf.image.resize_image_with_crop_or_pad(raw_image, suit_h, suit_w)
+                    prev_result = tf.image.resize_image_with_crop_or_pad(prev_result, suit_h, suit_w)
                     if pos_method == 'map':
-                        pos_info = tf.image.crop_to_bounding_box(pos_info, crop_oy, crop_ox, suit_h, suit_w)
+                        pos_info = tf.image.resize_image_with_crop_or_pad(pos_info, suit_h, suit_w)
                 elif crop_method == 'bilinear':
                     # Bilinear resize to target size.
                     raw_image = tf.image.resize_bilinear(raw_image, [suit_w, suit_h], name='bi_image')
@@ -384,6 +387,22 @@ class DqnAgent:
             input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
             if pos_method == 'map':
                 input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
+
+            # After declare the public input part, deal with the input tensor according to
+            #   the different stage (branch). That is:
+            # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
+            # 2. Introduce the position info if it's "Region Selection" stage with the
+            #       "sight" position info.
+            segment_stage = tf.placeholder(tf.bool, name='Segment_Stage')
+            focus_bbox = tf.placeholder(tf.float32, [None, 4], name='Focus_Bbox')
+            def region_crop(x, bbox, size):
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:,0]))
+                y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name='focus_crop')
+                return y
+            input_tensor = tf.where(segment_stage,
+                                    region_crop(input_tensor, focus_bbox, [suit_h, suit_w]),
+                                    input_tensor if pos_method != 'sight'
+                                    else region_crop(input_tensor, pos_info, [suit_h, suit_w]))
 
             # Print some information.
             print('### Finish "Input Justification" (name scope: {}). The output shape: {}'.format(
@@ -790,7 +809,7 @@ class DqnAgent:
                                                    regularizer=regularizer,
                                                    name_space='WS_tensor')
                 # Then translate the value into probability.
-                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, w, h, cls]
+                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, h, w, cls]
                 # Add the output tensor to the CE loss tensors for train.
                 CEloss_tensors.append(org_UST)
 
@@ -827,7 +846,7 @@ class DqnAgent:
                 # Fuse (mean) all score maps to get the final segmentation.
                 SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
                 SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
-                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_output')  # [?, w, h, cls]
+                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_output')  # [?, h, w, cls]
 
             else:
                 raise ValueError('Unknown up-sample structure !!!')
