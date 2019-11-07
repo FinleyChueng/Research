@@ -532,7 +532,7 @@ class DqnAgent:
         CEloss_tensors = []
 
         # Start definition.
-        SEG_name = name_space + '/Segmentation'
+        SEG_name = name_space + '/SEG'
         with tf.variable_scope(SEG_name):
             # Just the traditional structure. Gradually build the block is okay.
             if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
@@ -747,11 +747,41 @@ class DqnAgent:
         dqn_loss_factor = conf_train.get('dqn_loss_factor', 1.0)
         WHOLE_loss = tf.add(SEG_loss, dqn_loss_factor * DQN_loss, name=self._name_space+'/WHOLE_loss')
 
-        # Add regularization.
-        REG_loss = 0.
-        for idx, reg_loss in enumerate(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)):
-            REG_loss = tf.add(REG_loss, reg_loss, name=self._name_space+'/reg_loss'+str(idx+1))
+        # Start to calculate regularization loss. -------------------------------------------------------
+        conf_dqn = self._config['DQN']
+        double_dqn = conf_dqn.get('double_dqn', None)
+        # Different process depends on whether enable the "Double DQN" or not.
+        if double_dqn is None:
+            REG_loss = 0.
+            for idx, reg_loss in enumerate(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)):
+                REG_loss = tf.add(REG_loss, reg_loss, name=self._name_space+'/reg_loss'+str(idx+1))
+        else:
+            org_name, tar_name = double_dqn
+            # Recursively add regularization depends on different situations.
+            REG_loss = 0.
+            for idx, reg_loss in enumerate(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)):
+                if reg_loss.name.startswith(tar_name):
+                    continue
+                else:
+                    if reg_loss.name.startswith(self._name_space+'/SEG'):
+                        # 'CUS/SEG', segmentation branch.
+                        REG_loss = tf.where(tf.not_equal(SEG_loss, 0.),
+                                            tf.add(REG_loss, reg_loss),
+                                            REG_loss,
+                                            name=self._name_space+'/seg_REG'+str(idx+1))
+                    elif reg_loss.name.startswith(org_name+'/DQN'):
+                        # 'ORG/DQN', DQN branch.
+                        REG_loss = tf.where(tf.not_equal(DQN_loss, 0.),
+                                            tf.add(REG_loss, reg_loss),
+                                            REG_loss,
+                                            name=self._name_space+'/dqn_REG'+str(idx+1))
+                    else:
+                        # 'ORG/FeatExt', public part.
+                        REG_loss = tf.add(REG_loss, reg_loss, name=self._name_space+'/feats_REG'+str(idx+1))
+
+        # Add regularization to raw loss.
         NET_loss = tf.add(WHOLE_loss, REG_loss, name=self._name_space + '/NET_loss')
+
         # Print some information.
         print('### Finish the definition of NET loss, Shape: {}'.format(NET_loss.shape))
 
@@ -848,7 +878,7 @@ class DqnAgent:
             SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
 
             # Print some information.
-            print('### Finish the definition of UN loss, Shape: {}'.format(SEG_loss.shape))
+            print('### Finish the definition of SEG loss, Shape: {}'.format(SEG_loss.shape))
 
             # Return the segmentation loss.
             return SEG_loss
