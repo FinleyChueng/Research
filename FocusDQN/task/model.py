@@ -66,6 +66,33 @@ class DqnAgent:
         # Construct the loss function after building model.
         self._loss_summary(DQN_output, SEG_logits, CEloss_tensors)
 
+        # Transfer some holders if enable "Double DQN".
+        if double_dqn is not None:
+            # Indicating.
+            print('/-' * 50 + '/')
+            print('* ---> Transfer some holders ... ')
+            tar_name = double_dqn[1]
+            # Inputs -> Losses.
+            inputs_keys = list(self._inputs.keys())
+            for k in inputs_keys:
+                if k.startswith(tar_name):
+                    v = self._inputs.pop(k)
+                    self._losses[k] = v
+            # Outputs -> Losses.
+            outputs_keys = list(self._outputs.keys())
+            for k in outputs_keys:
+                if k.startswith(tar_name):
+                    v = self._outputs.pop(k)
+                    self._losses[k] = v
+            # Show the all holders.
+            print('| ---> Finish holders transferring !')
+            print('|   ===> Inputs holder: {}'.format(self._inputs.keys()))
+            print('|   ===> Outputs holder: {}'.format(self._outputs.keys()))
+            print('|   ===> Losses holder: {}'.format(self._losses.keys()))
+            print('|   ===> Summary holder: {}'.format(self._summary.keys()))
+            print('|   ===> Visual holder: {}'.format(self._visual.keys()))
+            print('\-' * 50 + '\\')
+
         # Return the inputs, outputs, losses, summary and visual holder.
         return self._inputs, self._outputs, self._losses, self._summary, self._visual
 
@@ -134,7 +161,7 @@ class DqnAgent:
         if with_segmentation:
             net_util.package_tensor(self._outputs, SEG_output)
 
-        # Show the input holders.
+        # Show the input and output holders.
         print('| ---> Finish model architecture (name scope: {}) !'.format(name_space))
         print('|   ===> Inputs holder (name scope: {}): {}'.format(name_space, self._inputs.keys()))
         print('|   ===> Outputs holder (name scope: {}): {}'.format(name_space, self._outputs.keys()))
@@ -761,6 +788,7 @@ class DqnAgent:
             REG_loss = 0.
             for idx, reg_loss in enumerate(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)):
                 if reg_loss.name.startswith(tar_name):
+                    # Filter the target (backup) model.
                     continue
                 else:
                     if reg_loss.name.startswith(self._name_space+'/SEG'):
@@ -793,7 +821,7 @@ class DqnAgent:
         # Generate the summaries for visualization.
         self.__gen_summary(name_space=self._name_space)
 
-        # Indicating.
+        # Show the losses and summary holders.
         print('| ---> Finish the loss function construction !')
         print('|   ===> The loss holders: {}'.format(self._losses.keys()))
         print('|   ===> The summary holders: {}'.format(self._summary.keys()))
