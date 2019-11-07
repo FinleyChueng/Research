@@ -11,20 +11,20 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 
 # Just Test -------
-print('Begin')
-from task.model import *
-import util.config as conf_util
-import tfmodule.util as netutil
-import os
-config_file = '/FocusDQN/config.ini'
-config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
-config = conf_util.parse_config(config_file)
-dqn = DqnAgent(name_space='TEST', config=config)
-dqn.definition()
-# netutil.show_all_variables()
-# netutil.count_flops()
-print('End')
 
+# print('Begin')
+# from task.model import *
+# import util.config as conf_util
+# import tfmodule.util as netutil
+# import os
+# config_file = '/FocusDQN/config.ini'
+# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+# config = conf_util.parse_config(config_file)
+# dqn = DqnAgent(name_space='TEST', config=config)
+# dqn.definition()
+# # netutil.show_all_variables()
+# # netutil.count_flops()
+# print('End')
 
 # ----------------------------------------------------------
 
@@ -54,38 +54,103 @@ print('End')
 
 # DqnAgent Model Test. -------------------------------------------------------
 
-# from net.vggnet import *
-# from net.resnet import *
-# from net.densenet import *
-#
-#
-# agent = DqnAgent(
-#     input_image_size=(240, 240),
-#     action_dim=8,
-#     clazz_dim=5,
-#     train_batch_size=32,
-#     train_track_len=8,
-#     use_all_masks=False,
-#     # feature_extraction_network=Vgg16()
-#     feature_extraction_network=ResNet()
-# )
-#
-# # infer_dict, loss_dict, summary_dict = agent.definition(dqn_name_scope_pair=None,
-# infer_dict, loss_dict, summary_dict = agent.definition(dqn_name_scope_pair=('ORG', 'TAR'),
-#                                                        prioritized_replay=True,
-#                                                        dueling_network=True,
-#                                                        fuse_RF_feats=False
-#                                                        )
-#
-# vnum = 0
-# train_list = tf.trainable_variables()
-# for var in train_list:
-#     print(var)
-#     dim = 1
-#     for d in var.shape:
-#         dim *= int(d)
-#     vnum += dim
-# print('The total number of variables: {}'.format(vnum))
+# | ---> Finish holders transferring !
+# |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/position_info', 'ORG/Segment_Stage', 'ORG/Focus_Bbox'])
+# |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output'])
+# |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/Focus_Bbox', 'TAR/DQN_output'])
+# |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
+# |   ===> Visual holder: dict_keys([])
+
+# print('Begin')
+from task.model import *
+import util.config as conf_util
+import tfmodule.util as netutil
+import os
+config_file = '/FocusDQN/config.ini'
+config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+config = conf_util.parse_config(config_file)
+dqn = DqnAgent(name_space='TEST', config=config)
+inputs, outputs, losses, summary, visual = dqn.definition()
+# netutil.show_all_variables()
+# netutil.count_flops()
+# print('End')
+
+# init.
+sess = tf.Session()
+# infer. ---
+# fake input.
+img = np.ones([4, 240, 240, 3])
+pr = np.ones([4, 240, 240])
+pi = np.ones([4, 240, 240])
+ss = [True, True, False, False]
+fb = [[0.5, 0.7, 0.4, 0.6],
+      [0.5, 0.7, 0.4, 0.6],
+      [0.5, 0.7, 0.4, 0.6],
+      [0.5, 0.7, 0.4, 0.6]]
+# input holders.
+x1 = inputs['ORG/image']
+x2 = inputs['ORG/prev_result']
+x3 = inputs['ORG/position_info']
+x4 = inputs['ORG/Segment_Stage']
+x5 = inputs['ORG/Focus_Bbox']
+# output holders.
+y1 = outputs['ORG/DQN_output']
+y2 = outputs['TEST/SEG_output']
+# feed.
+sess.run(tf.global_variables_initializer())
+v1, v2 = sess.run([y1, y2], feed_dict={
+    x1: img,
+    x2: pr,
+    x3: pi,
+    x4: ss,
+    x5: fb
+})
+print('--- infer ---')
+print('DQN_output: ', v1)
+print('SEG_output: ', v2)
+# train. ---
+# fake input.
+lab = np.ones([4, 240, 240])
+cw = [[1, 5, 3, 4, 10],
+      [1, 5, 3, 4, 10],
+      [1, 5, 3, 4, 10],
+      [1, 5, 3, 4, 10]]
+pa = [2, 3, 1, 5]
+tqa = [0.5, 0.6, 0.9, 0.15]
+isw = [0.1, 0.4, 0.5, 0.2]
+# input holders.
+l1 = losses['TEST/GT_label']
+l2 = losses['TEST/clazz_weights']
+l3 = losses['TEST/prediction_actions']
+l4 = losses['TEST/target_Q_values']
+l5 = losses['TEST/IS_weights']
+# output holders.
+y1 = losses['TEST/EXP_priority']
+y2 = losses['TEST/SEG_loss']
+y3 = losses['TEST/DQN_loss']
+y4 = losses['TEST/NET_loss']
+# feed.
+opt = tf.train.AdamOptimizer()
+train = opt.minimize(y4)
+sess.run(tf.global_variables_initializer())
+_, v1, v2, v3, v4 = sess.run([train, y1, y2, y3, y4], feed_dict={
+    x1: img,
+    x2: pr,
+    x3: pi,
+    x4: ss,
+    x5: fb,
+    #------
+    l1: lab,
+    l2: cw,
+    l3: pa,
+    l4: tqa,
+    l5: isw
+})
+print('--- train ---')
+print('EXP_priority: ', v1)
+print('SEG_loss: ', v2)
+print('DQN_loss: ', v3)
+print('NET_loss: ', v4)
 
 # ----------------------------------------------------------------------
 

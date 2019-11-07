@@ -856,6 +856,9 @@ class DqnAgent:
                                                     name='GT_label')  # [?, h, w]
             # Also need to crop if size do not match.
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
+                # Temporarily expand a dimension for conveniently processing.
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa_label')
+                # Match the size.
                 conf_cus = self._config['Custom']
                 crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
@@ -866,12 +869,14 @@ class DqnAgent:
                     GT_label = tf.image.resize_bilinear(GT_label, [suit_h, suit_w], name='bi_labels')
                 else:
                     raise ValueError('Unknown size match method !!!')
+                # Recover to the original dimension.
+                GT_label = tf.reduce_mean(GT_label, axis=-1, name='rec_label')
+                GT_label = tf.cast(GT_label, 'int32', name='suit_label')
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
                                                          name='clazz_weights')  # [?, cls]
-            cw_mask = tf.one_hot(tf.cast(GT_label, 'int32'), classification_dim,
-                                 name='one_hot_label')     # [?, h, w, cls]
+            cw_mask = tf.one_hot(GT_label, classification_dim, name='one_hot_label')    # [?, h, w, cls]
             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
                                            name='expa_CW')      # [?, 1, 1, cls]
             clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
@@ -888,8 +893,9 @@ class DqnAgent:
                     stage_prefix = dqn_names[0]
                 else:
                     stage_prefix = self._name_space
-                sample_4SEG = tf.to_float(self._inputs[stage_prefix + 'Segment_Stage'], name='sample_4SEG')     # [?]
+                sample_4SEG = tf.to_float(self._inputs[stage_prefix+'/Segment_Stage'], name='sample_4SEG')  # [?]
                 # Filter.
+                sample_4SEG = tf.expand_dims(tf.expand_dims(sample_4SEG, axis=-1), axis=-1)     # [?, 1, 1]
                 clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')
 
             # The single classification loss.
@@ -950,7 +956,7 @@ class DqnAgent:
                     stage_prefix = dqn_names[0]
                 else:
                     stage_prefix = self._name_space
-                sample_4DQN = tf.to_float(tf.logical_not(self._inputs[stage_prefix + 'Segment_Stage']),
+                sample_4DQN = tf.to_float(tf.logical_not(self._inputs[stage_prefix+'/Segment_Stage']),
                                           name='sample_4DQN')   # [?]
                 # Filter.
                 q_diff = tf.multiply(q_diff, sample_4DQN, name='Filtered_Q_diff')   # [?]
