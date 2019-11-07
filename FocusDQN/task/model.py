@@ -49,16 +49,6 @@ class DqnAgent:
     def definition(self):
         r'''
             Definition of the whole model. Including build architecture and define loss function.
-
-        :param dqn_name_scope_pair:
-        :param prioritized_replay:
-        :param dueling_network:
-        :param info_interact:
-        :param fuse_RF_feats:
-        :param weight_PN_loss:
-        :param weight_FTN_loss:
-        :param stepwise_training_name_scope
-        :return:
         '''
 
         # Specify the name space if enable the "Double DQN".
@@ -145,7 +135,7 @@ class DqnAgent:
             net_util.package_tensor(self._outputs, SEG_output)
 
         # Show the input holders.
-        print('| ---> Finish model architecture (name scope: {}) !')
+        print('| ---> Finish model architecture (name scope: {}) !'.format(name_space))
         print('|   ===> Inputs holder (name scope: {}): {}'.format(name_space, self._inputs.keys()))
         print('|   ===> Outputs holder (name scope: {}): {}'.format(name_space, self._outputs.keys()))
         print('\-' * 50 + '\\')
@@ -205,7 +195,7 @@ class DqnAgent:
             # Crop or resize the input image into suitable size if size not matched.
             suit_w = conf_base.get('suit_width')
             suit_h = conf_base.get('suit_height')
-            if suit_w != input_shape[1] or suit_h != input_shape[2]:
+            if suit_h != input_shape[1] or suit_w != input_shape[2]:
                 crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
                     # Crop to target size.
@@ -215,10 +205,10 @@ class DqnAgent:
                         pos_info = tf.image.resize_image_with_crop_or_pad(pos_info, suit_h, suit_w)
                 elif crop_method == 'bilinear':
                     # Bilinear resize to target size.
-                    raw_image = tf.image.resize_bilinear(raw_image, [suit_w, suit_h], name='bi_image')
-                    prev_result = tf.image.resize_nearest_neighbor(prev_result, [suit_w, suit_h], name='nn_prev')
+                    raw_image = tf.image.resize_bilinear(raw_image, [suit_h, suit_w], name='bi_image')
+                    prev_result = tf.image.resize_nearest_neighbor(prev_result, [suit_h, suit_w], name='nn_prev')
                     if pos_method == 'map':
-                        pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_w, suit_h], name='nn_pos')
+                        pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_h, suit_w], name='nn_pos')
                 else:
                     raise ValueError('Unknown size match method !!!')
 
@@ -244,8 +234,9 @@ class DqnAgent:
                                     else region_crop(input_tensor, pos_info, [suit_h, suit_w]))
 
             # Print some information.
-            print('### Finish "Input Justification" (name scope: {}). The output shape: {}'.format(
-                name_space, input_tensor.shape))
+            print('### Finish "Input Justification" (name scope: {}). '
+                  'The raw input shape: {}, the justified shape: {}'.format(
+                name_space, tuple(input_shape[1:3]), input_tensor.shape))
 
             # Return the justified input tensor.
             return input_tensor
@@ -660,7 +651,7 @@ class DqnAgent:
                 # Independently return the segmentation logits, so that we can flexibly deal with it.
                 SEG_logits = org_UST
                 # Then translate the value into probability.
-                SEG_output = tf.nn.softmax(org_UST, name='SEG_output')  # [?, h, w, cls]
+                SEG_output = tf.nn.softmax(org_UST, name='SEG_suit_output')  # [?, h, w, cls]
 
             # Refer the paper's structure.
             elif up_structure == 'MLIF':
@@ -696,14 +687,37 @@ class DqnAgent:
                 # Fuse (mean) all score maps to get the final segmentation.
                 SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
                 SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
-                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_output')  # [?, h, w, cls]
+                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_suit_output')  # [?, h, w, cls]
 
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
+            # Record the raw output size. For information.
+            rawout_size = SEG_output.shape
+            rawup_h = rawout_size[1]
+            rawup_w = rawout_size[2]
+            # Recover the segmentation output (suit) size to the original size if don't matched.
+            input_shape = conf_base.get('input_shape')
+            origin_h = input_shape[1]
+            origin_w = input_shape[2]
+            if rawup_h != origin_h or rawup_w != origin_w:
+                conf_cus = self._config['Custom']
+                crop_method = conf_cus.get('size_matcher', 'crop')
+                if crop_method == 'crop':
+                    # Crop to target size.
+                    SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
+                elif crop_method == 'bilinear':
+                    # Bilinear resize to target size.
+                    SEG_output = tf.image.resize_bilinear(SEG_output, [origin_h, origin_w])
+                else:
+                    raise ValueError('Unknown size match method !!!')
+            # Rename the tensor.
+            SEG_output = tf.identity(SEG_output, name='SEG_output')
+
             # Print some information.
-            print('### Finish "Segmentation Head" (name scope: {}). The output shape: {}'.format(
-                name_space, SEG_output.shape))
+            print('### Finish "Segmentation Head" (name scope: {}). '
+                  'The output shape: {}, the justified shape: {}'.format(
+                name_space, rawout_size, SEG_output.shape))
 
             # Return the segmentation results, logits, and the loss tensors for "Cross-Entropy" calculation.
             return SEG_output, SEG_logits, CEloss_tensors
@@ -752,6 +766,7 @@ class DqnAgent:
         # Indicating.
         print('| ---> Finish the loss function construction !')
         print('|   ===> The loss holders: {}'.format(self._losses.keys()))
+        print('|   ===> The summary holders: {}'.format(self._summary.keys()))
         print('\-' * 50 + '\\')
 
         # Plain return.
@@ -769,6 +784,8 @@ class DqnAgent:
 
         # Get detailed parameters.
         input_shape = conf_base.get('input_shape')
+        suit_h = conf_base.get('suit_height')
+        suit_w = conf_base.get('suit_width')
         classification_dim = conf_base.get('classification_dimension')
         score_factor = conf_train.get('score_loss_factor', 1.0)
 
@@ -778,6 +795,18 @@ class DqnAgent:
             # Placeholder of ground truth segmentation.
             GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
                                                     name='GT_label')  # [?, h, w]
+            # Also need to crop if size do not match.
+            if suit_h != input_shape[1] or suit_w != input_shape[2]:
+                conf_cus = self._config['Custom']
+                crop_method = conf_cus.get('size_matcher', 'crop')
+                if crop_method == 'crop':
+                    # Crop to target size.
+                    GT_label = tf.image.resize_image_with_crop_or_pad(GT_label, suit_h, suit_w)
+                elif crop_method == 'bilinear':
+                    # Bilinear resize to target size.
+                    GT_label = tf.image.resize_bilinear(GT_label, [suit_h, suit_w], name='bi_labels')
+                else:
+                    raise ValueError('Unknown size match method !!!')
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
