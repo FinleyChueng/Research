@@ -222,7 +222,7 @@ class DqnAgent:
             # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
             # 2. Introduce the position info if it's "Region Selection" stage with the
             #       "sight" position info.
-            segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, None, name='Segment_Stage')
+            segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None,], name='Segment_Stage')
             focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
             def region_crop(x, bbox, size):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:,0]))
@@ -788,6 +788,7 @@ class DqnAgent:
         suit_w = conf_base.get('suit_width')
         classification_dim = conf_base.get('classification_dimension')
         score_factor = conf_train.get('score_loss_factor', 1.0)
+        sample_share = conf_train.get('sample_share', False)
 
         # ---------------------- Definition of UN cross-entropy loss ------------------------
         LOSS_name = name_space + '/SegLoss'
@@ -818,6 +819,21 @@ class DqnAgent:
             clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
             clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')   # [?, h, w]
 
+            # Multiply the mask (stage flag) to filter the losses (samples) that don't
+            #   belongs to "Segmentation" branch if not enable "Sample Share".
+            # Here we can multiply it with class weights instead of the final loss.
+            if not sample_share:
+                # Generate filter mask.
+                conf_dqn = self._config['DQN']
+                dqn_names = conf_dqn.get('double_dqn', None)
+                if dqn_names is not None:
+                    stage_prefix = dqn_names[0]
+                else:
+                    stage_prefix = self._name_space
+                sample_4SEG = tf.to_float(self._inputs[stage_prefix + 'Segment_Stage'], name='sample_4SEG')     # [?]
+                # Filter.
+                clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')
+
             # The single classification loss.
             fix_loss = tf.losses.sparse_softmax_cross_entropy(
                 labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
@@ -829,13 +845,13 @@ class DqnAgent:
                     labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0'+str(idx+1))
 
             # Add the two parts as the final classification loss.
-            segmentation_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
+            SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
 
             # Print some information.
-            print('### Finish the definition of UN loss, Shape: {}'.format(segmentation_loss.shape))
+            print('### Finish the definition of UN loss, Shape: {}'.format(SEG_loss.shape))
 
             # Return the segmentation loss.
-            return segmentation_loss
+            return SEG_loss
 
 
     def __reinforcement_loss(self, DQN_output, name_space):
@@ -845,18 +861,20 @@ class DqnAgent:
 
         # Get configuration.
         conf_dqn = self._config['DQN']
+        conf_train = self._config['Training']
         # Get detailed parameters.
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
+        sample_share = conf_train.get('sample_share', False)
 
         # ---------------------- Definition of UN cross-entropy loss ------------------------
         LOSS_name = name_space + '/DQNLoss'
         with tf.variable_scope(LOSS_name):
             # Placeholder of input actions. Indicates which Q value (output of DQN) used to calculate cost.
-            pred_action = net_util.placeholder_wrapper(self._losses, tf.int32, [None], name='prediction_actions')
+            pred_action = net_util.placeholder_wrapper(self._losses, tf.int32, [None,], name='prediction_actions')
             pred_action = tf.one_hot(pred_action, self._action_dim, name='one_hot_Predacts')    # [?, acts]
 
             # Placeholder of target q values. That is, the "Reward + Future Q values".
-            target_q_vals = net_util.placeholder_wrapper(self._losses, tf.float32, [None], name='target_Q_values')
+            target_q_vals = net_util.placeholder_wrapper(self._losses, tf.float32, [None,], name='target_Q_values')
 
             # Only use selected Q values for DRQN. Coz in the "Future Q values" we use the max value.
             pred_q_vals = tf.reduce_sum(tf.multiply(DQN_output, pred_action), axis=-1,
@@ -865,13 +883,27 @@ class DqnAgent:
             # The difference between prediction and target Q values.
             q_diff = tf.subtract(target_q_vals, pred_q_vals, name='Q_diff')  # [?]
 
+            # Multiply the mask (stage flag) to filter the losses (samples) that don't
+            #   belongs to "Segmentation" branch if not enable "Sample Share".
+            if not sample_share:
+                # Generate filter mask.
+                dqn_names = conf_dqn.get('double_dqn', None)
+                if dqn_names is not None:
+                    stage_prefix = dqn_names[0]
+                else:
+                    stage_prefix = self._name_space
+                sample_4DQN = tf.to_float(tf.logical_not(self._inputs[stage_prefix + 'Segment_Stage']),
+                                          name='sample_4DQN')   # [?]
+                # Filter.
+                q_diff = tf.multiply(q_diff, sample_4DQN, name='Filtered_Q_diff')   # [?]
+
             # Define placeholder for IS weights if use "Prioritized Replay".
             if prioritized_replay:
                 # Updated priority for input experience.
                 EXP_priority = tf.abs(q_diff, name='EXP_priority')  # used to update Sumtree
                 net_util.package_tensor(self._losses, EXP_priority)
                 # Placeholder of the weights for experience.
-                IS_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None],
+                IS_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None,],
                                                           name='IS_weights')
                 # Construct the prioritized loss.
                 DQN_loss = tf.reduce_mean(
