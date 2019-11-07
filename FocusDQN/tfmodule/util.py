@@ -21,6 +21,22 @@ def placeholder_wrapper(dic, dtype, shape, name):
     return y
 
 
+def package_tensor(dic, tensor):
+    r'''
+        Package tensors into dictionary. No need to specify the key.
+    '''
+    if not isinstance(dic, dict):
+        raise TypeError('The dic must be a dictionary !!!')
+    full_name = tensor.name.split(':')[0]
+    fns = full_name.split('/')
+    if len(fns) >= 2:
+        key = fns[0] + '/' + fns[-1]
+    else:
+        key = fns[0]
+    dic[key] = tensor
+    return
+
+
 def copy_model_parameters(from_scope, to_scope):
     """
     Copies the model's parameters of `from_model` to `to_model`.

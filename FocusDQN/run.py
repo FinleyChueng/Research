@@ -13,6 +13,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 # Just Test -------
 print('Begin')
 from task.model import *
+import util.config as conf_util
 import tfmodule.util as netutil
 import os
 config_file = '/FocusDQN/config.ini'

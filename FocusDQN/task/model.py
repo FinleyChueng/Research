@@ -4,12 +4,7 @@ import numpy as np
 import tfmodule.layer as cus_layers
 import tfmodule.residual as cus_res
 import tfmodule.util as net_util
-import util.config as conf_util
 
-
-# import os
-# config_file = '/FocusDQN/config.ini'
-# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
 
 
 class DqnAgent:
@@ -32,63 +27,22 @@ class DqnAgent:
         self._inputs = {}
         # The outputs holder.
         self._outputs = {}
-
-        # Get detailed configuration.
-        # conf_base = self._config['Base']
-        # conf_train = self._config['Training']
-        conf_dqn = self._config['DQN']
-
-        # # Normal Initialization.
-        # self._input_shape = conf_base.get('input_shape')
-        # self._clz_dim = conf_base.get('classification_dimension')
-
-        # # Score maps holder.
-        # self._score_maps = None
+        # The losses holder.
+        self._losses = {}
+        # The summary holder.
+        self._summary = {}
+        # The visualization holder. (Option)
+        self._visual = {}
 
         # Determine the action dimension according to the config.
+        conf_dqn = self._config['DQN']
         if conf_dqn.get('restriction_action'):
             self._action_dim = 9
         else:
             self._action_dim = 17
 
-        # # The name scope pair specified to support the "Double DQN".
-        # self._DoubleDQN_scope = conf_dqn.get('double_dqn', ['ORG', 'TAR'])
-        # # Check whether enable "Prioritized Replay" or not.
-        # self._prioritized_replay = conf_dqn.get('prioritized_replay', True)
-        # # Check whether enable "Dueling Network" or not.
-        # self._dueling_network = conf_dqn.get('dueling_network', True)
-
-
-
-
-
-
-
-        # -------------- The holders for inference. --------------
-        # The public holders.
-        self._train_phrase = None
-        self._input = None
-        # The DRQN holders.
-        self._drqn_output = None
-        # UN holders.
-        self._un_output = None
-
-        # -------------- The holders for loss-related operations. --------------
-        # The DRQN related holders.
-        self._target_drqn_output = None
-
-        # # Regularization Related.
-        # regularize_coef = conf_train.get('regularize_coef', 0.0)
-        # self._regularizer = tf_layers.l2_regularizer(regularize_coef)
-
-        # The final holder, loss and summary dictionary.
-        self._ios_dict = None
-        self._loss_dict = None
-        self._summary_dict = None
-
         # Finish initialization
         return
-
 
 
 
@@ -120,44 +74,35 @@ class DqnAgent:
             self._architecture(self._action_dim, TAR_name, with_segmentation=False)
 
         # Construct the loss function after building model.
+        self._loss_summary(DQN_output, SEG_logits, CEloss_tensors)
 
-        self.__upsample_loss(SEG_logits, CEloss_tensors, 1.0, self._name_space)
-
-
-
-
+        # Return the inputs, outputs, losses, summary and visual holder.
+        return self._inputs, self._outputs, self._losses, self._summary, self._visual
 
 
-
-        ##################
-
-        return self._ios_dict, self._loss_dict, self._summary_dict
-
-
-    def notify_copy2_DDQN(self, tf_sess, only_head):
+    def notify_copy2_DDQN(self, tf_sess, only_head=False):
         r'''
             Copy the parameters from Origin DQN to the Target DQN. To support the "Double DQN".
 
         :param tf_sess: The tensorflow session supplied by caller method.
         :return:
         '''
-
+        # Get the name space if enable the "Double DQN".
+        conf_dqn = self._config['DQN']
+        double_dqn = conf_dqn.get('double_dqn', None)
         # Only execute when specify the name scope pair.
-        if self._DDQN_namescpoe_pair is not None:
+        if double_dqn is not None:
             # Get name scope pair.
-            from_namespace, to_namespace = self._DDQN_namescpoe_pair
-            # Concat the base name scope.
-            from_namespace = self._base_name_scope + from_namespace
-            to_namespace = self._base_name_scope + to_namespace
+            from_namespace, to_namespace = double_dqn
             # Only copy the parameters of head if specified.
             if only_head:
-                from_namespace += '/Agent'
-                to_namespace += '/Agent'
+                from_namespace += '/DQN'
+                to_namespace += '/DQN'
             # Operation to copy parameters.
             ops_base = net_util.copy_model_parameters(from_namespace, to_namespace)
             # Execute the operation.
             tf_sess.run(ops_base)
-
+        # Plain return.
         return
 
 
@@ -179,6 +124,7 @@ class DqnAgent:
         '''
 
         # Indicating.
+        print('/-' * 50 + '/')
         print('* ---> Start build the model ... (name scope: {})'.format(name_space))
 
         # Generate the input for model.
@@ -193,13 +139,16 @@ class DqnAgent:
         else:
             SEG_logits = CEloss_tensors = None
 
-        # Show the input holders.
-        print('| ---> Inputs holder (name scope: {}): {}'.format(name_space, self._inputs.keys()))
-
         # Package some outputs.
-        self._outputs[name_space+'/DQN_output'] = DQN_output
+        net_util.package_tensor(self._outputs, DQN_output)
         if with_segmentation:
-            self._outputs['SEG_output'] = SEG_output
+            net_util.package_tensor(self._outputs, SEG_output)
+
+        # Show the input holders.
+        print('| ---> Finish model architecture (name scope: {}) !')
+        print('|   ===> Inputs holder (name scope: {}): {}'.format(name_space, self._inputs.keys()))
+        print('|   ===> Outputs holder (name scope: {}): {}'.format(name_space, self._outputs.keys()))
+        print('\-' * 50 + '\\')
 
         # Only return the tensors that will be used in "Loss Construction".
         return DQN_output, SEG_logits, CEloss_tensors
@@ -760,7 +709,7 @@ class DqnAgent:
             return SEG_output, SEG_logits, CEloss_tensors
 
 
-    def _loss_summary(self, DQN_output, CEloss_tensors, prioritized_replay):
+    def _loss_summary(self, DQN_output, SEG_logits, CEloss_tensors):
         r'''
             The definition of the Loss Function of the whole model.
 
@@ -771,273 +720,47 @@ class DqnAgent:
         '''
 
         # Indicating.
+        print('/-' * 50 + '/')
         print('* ---> Start construct the loss function ...')
 
+        # Calculate the segmentation loss.
+        SEG_loss = self.__upsample_loss(SEG_logits, CEloss_tensors, name_space=self._name_space)
+        # Calculate the DQN loss.
+        DQN_loss = self.__reinforcement_loss(DQN_output, name_space=self._name_space)
 
-        print('------ The begin of definition of the loss function of whole model. ------')
+        # Add the two parts as the whole loss for model.
+        conf_train = self._config['Training']
+        dqn_loss_factor = conf_train.get('dqn_loss_factor', 1.0)
+        WHOLE_loss = tf.add(SEG_loss, dqn_loss_factor * DQN_loss, name=self._name_space+'/WHOLE_loss')
 
-        # The Loss-related holder dictionary of whole model.
-        model_loss_dict = {}
+        # Add regularization.
+        REG_loss = 0.
+        for idx, reg_loss in enumerate(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)):
+            REG_loss = tf.add(REG_loss, reg_loss, name=self._name_space+'/reg_loss'+str(idx+1))
+        NET_loss = tf.add(WHOLE_loss, REG_loss, name=self._name_space + '/NET_loss')
+        # Print some information.
+        print('### Finish the definition of NET loss, Shape: {}'.format(NET_loss.shape))
 
-        # A minimal value to avoid "NAN".
-        epsilon = 1e-10
+        # Package the losses tensors into dictionary.
+        net_util.package_tensor(self._losses, SEG_loss)
+        net_util.package_tensor(self._losses, DQN_loss)
+        net_util.package_tensor(self._losses, NET_loss)
 
-        ############################ Definition of UN cross-entropy loss ############################
-        # Placeholder of "Visited Flag".
-        self._visit = tf.placeholder(tf.float32, [None, None],
-                                     name=self._base_name_scope + 'UN_visit_flag')  # [b, t]
+        # Generate the summaries for visualization.
+        self.__gen_summary(name_space=self._name_space)
 
-        # Placeholder of ground truth segmentation.
-        self._GT_segmentation = tf.placeholder(tf.float32,
-                                               [None, None, self._input_size[0], self._input_size[1], self._cls_dim],
-                                               name=self._base_name_scope + 'UN_GT_segmentation')   # [b, t, w, h, cls]
+        # Indicating.
+        print('| ---> Finish the loss function construction !')
+        print('|   ===> The loss holders: {}'.format(self._losses.keys()))
+        print('\-' * 50 + '\\')
 
-        # Use the ground truth (label) to calculate weights for each clazz.
-        self._clazz_weights = tf.placeholder(tf.float32, [None, None, self._cls_dim],
-                                             name=self._base_name_scope + 'UN_clazz_weights')  # [cls]
-        # clazz_weights = tf.constant([1, 5, 3, 4, 10], dtype=tf.float32,
-        #                             name=self._base_name_scope + 'UN_clazz_weights')    # [cls]
-        # clazz_weights = tf.constant([1, 1, 1, 1, 1], dtype=tf.float32,
-        #                             name=self._base_name_scope + 'UN_clazz_weights')  # [cls]
-        # clazz_statistic = tf.reduce_sum(self._GT_segmentation, axis=(0, 1, 2, 3),
-        #                                 name=self._base_name_scope + 'UN_clazz_statistic')  # [cls]
-        # total_pixels = tf.reduce_sum(clazz_statistic,
-        #                              name=self._base_name_scope + 'UN_total_pixels')     # scalar
-        # clazz_prop = tf.divide(clazz_statistic, total_pixels,
-        #                        name=self._base_name_scope + 'UN_clazz_proportion')  # [cls]
-        # clazz_weights = tf.divide(1., tf.log(1. + clazz_prop),
-        #                           name=self._base_name_scope + 'UN_raw_weights')  # [cls]
-        # clazz_weights = tf.where(
-        #     tf.not_equal(clazz_prop, 0.),
-        #     clazz_weights,
-        #     tf.zeros_like(clazz_weights),
-        #     name=self._base_name_scope + 'UN_clazz_weights'
-        # )   # [cls]
-
-        # # The cross-entropy loss for "Up-sample Network", which is actually the "Classification" network.
-        # UN_cross_entropy_loss = - self._GT_segmentation * tf.log(
-        #     tf.clip_by_value(self._un_output, clip_value_min=epsilon, clip_value_max=1.0),
-        #     name=self._base_name_scope + 'UN_cross_entropy_loss'
-        # )  # [b, t, w, h, cls_dim]
-        # UN_image_CEloss = tf.reduce_mean(UN_cross_entropy_loss, axis=(2, 3),
-        #                                  name=self._base_name_scope + 'UN_image_CEloss')  # [b, t, cls]
-        # # Multiply the visit flag.
-        # UN_visit_filt = tf.divide(UN_image_CEloss,
-        #                           tf.expand_dims(self._visit, axis=-1),
-        #                           name=self._base_name_scope + 'UN_visit_filt')  # [b, t, cls]
-        # # Add the clazz-related weights.
-        # UN_cls_CEloss = tf.reduce_mean(UN_visit_filt, axis=(0, 1),
-        #                                name=self._base_name_scope + 'UN_cls_CEloss')  # [cls_dim]
-        # UN_Wcls_CEloss = tf.multiply(UN_cls_CEloss, clazz_weights,
-        #                              name=self._base_name_scope + 'UN_Wcls_CEloss')     # [cls_dim]
-        # self._un_loss = tf.reduce_sum(UN_Wcls_CEloss, name=self._base_name_scope + 'UN_loss')   # scalar
-
-        # Iteratively expend the loss.
-        self._un_loss = 0.
-        for prob in self._un_score_maps:
-            # Translate the raw value to real probability.
-            probability = tf.nn.softmax(prob)
-            # Reshape the flatten output tensor to the time-related shape tensor.
-            probability = tf.cond(
-                self._train_phrase,
-                lambda: tf.reshape(probability, shape=[self._train_batch_size, self._train_track_len,
-                                                     self._input_size[0], self._input_size[1], self._cls_dim]),
-                lambda: tf.reshape(probability, shape=[self._infer_batch_size, self._infer_track_len,
-                                                     self._input_size[0], self._input_size[1], self._cls_dim]),
-            )  # [b, t, w, h, cls_dim]
-            # The cross-entropy loss for "Up-sample Network", which is actually the "Classification" network.
-            UN_cross_entropy_loss = - self._GT_segmentation * tf.log(
-                tf.clip_by_value(probability, clip_value_min=epsilon, clip_value_max=1.0),
-                name=self._base_name_scope + 'UN_cross_entropy_loss'
-            )  # [b, t, w, h, cls_dim]
-            UN_image_CEloss = tf.reduce_mean(UN_cross_entropy_loss, axis=(2, 3),
-                                             name=self._base_name_scope + 'UN_image_CEloss')  # [b, t, cls]
-            # Multiply the visit flag.
-            UN_visit_filt = tf.divide(UN_image_CEloss,
-                                      tf.expand_dims(self._visit, axis=-1),
-                                      name=self._base_name_scope + 'UN_visit_filt')  # [b, t, cls]
-            # Add the clazz-related weights.
-            UN_Wcls_CEloss = tf.multiply(UN_visit_filt, self._clazz_weights,
-                                         name=self._base_name_scope + 'UN_Wcls_CEloss')  # [b, t, cls_dim]
-            self._un_loss += tf.reduce_sum(UN_Wcls_CEloss, name=self._base_name_scope + 'UN_loss')  # scalar
-
-        print('### Finish the definition of UN loss, Shape: {}'.format(self._un_loss.shape))
-
-        ################################## Definition of DRQN L2 loss ##################################
-        # Placeholder of input actions. Indicates which Q value (output of DRQN) used to calculate cost.
-        self._drqn_input_act = tf.placeholder(
-            tf.float32, [self._train_batch_size, self._train_track_len, self._mask_dim, self._act_dim],
-            name=self._base_name_scope + 'DRQN_input_actions'
-        )
-        # Placeholder of target q values. That is, the "Reward + Future Q values".
-        self._drqn_target_q_val = tf.placeholder(
-            tf.float32, [self._train_batch_size, self._train_track_len, self._mask_dim],
-            name=self._base_name_scope + 'DRQN_target_q_values'
-        )
-
-        # Only use selected Q values for DRQN. Coz in the "Future Q values" we use the max value.
-        drqn_act_q_val = tf.reduce_sum(
-            tf.multiply(self._drqn_output, self._drqn_input_act),
-            axis=-1)    # [batch_size, track_len, mask_dim]
-
-        # According to the "Doom" paper. We only train the latter half track length sample.
-        #   Coz the front half will introduce inaccuracy due to the "Zero Initial State".
-        front_half_len = self._train_track_len // 2
-        track_notr_M = tf.zeros((self._train_batch_size, front_half_len, self._mask_dim), dtype=tf.float32)
-        track_2tr_M = tf.ones((self._train_batch_size, self._train_track_len - front_half_len, self._mask_dim),
-                              dtype=tf.float32)
-        track_mask = tf.concat((track_notr_M, track_2tr_M), axis=1,
-                               name=self._base_name_scope + 'DRQN_track_mask')  # [batch_size, track_len, mask_dim]
-        # The time-relared Q diff.
-        drqn_time_q_diff = tf.subtract(self._drqn_target_q_val, drqn_act_q_val)     # [batch_size, track_len, mask_dim]
-        # Multiply the raw time-related Q diff with track mask to filter the train sample.
-        drqn_mask_T_Qdiff = tf.multiply(drqn_time_q_diff, track_mask,
-                                        name=self._base_name_scope + 'DRQN_masked_time_Q_diff')  # [b, t, mask]
-
-        # Calculate the difference between "Origin" Q values and "Target" Q values for DRQN.
-        drqn_q_diff = tf.reduce_mean(drqn_mask_T_Qdiff, axis=(1, 2),
-                                     name=self._base_name_scope + 'DRQN_Q_diff')    # [batch_size]
-
-        # Define placeholder for IS weights if use "Prioritized Replay".
-        if prioritized_replay:
-            # Notification in the console.
-            print('Enable the #" Prioritized Replay "# training mode !!!')
-            # Define the weights for experience.
-            self._exp_priority = tf.abs(drqn_q_diff,
-                                        name=self._base_name_scope + 'DRQN_priority')   # used to update Sumtree
-            self._ISWeights = tf.placeholder(tf.float32, [None, 1], self._base_name_scope + 'DRQN_IS_weights')
-            # Package the abs_error and the ISWeights.
-            model_loss_dict['DRQN/exp_priority'] = self._exp_priority
-            model_loss_dict['DRQN/ISWeights'] = self._ISWeights
-            # Construct the prioritized PN loss.
-            self._drqn_loss = tf.reduce_mean(
-                tf.multiply(self._ISWeights, tf.square(drqn_q_diff)),   # [batch_size, 1]
-                name=self._base_name_scope + 'DRQN_priority_loss'
-            )
-        else:
-            # Only define the simple DRQN loss.
-            self._drqn_loss = tf.reduce_mean(
-                tf.square(drqn_q_diff),     # [batch_size]
-                name=self._base_name_scope + 'DRQN_simple_loss'
-            )
-
-        print('### Finish the definition of DRQN loss, Shape: {}'.format(self._drqn_loss.shape))
-
-        ####################### Definition of Whole Loss and Target holders #######################
-        # Define the whole loss for model. This consists of three parts:
-        #   1) The "Up-sample Network" cross-entropy loss.
-        #   2) The "Deep Recurrent Q Network" L2 loss.
-        self._whole_loss = tf.add(self._un_loss, self._drqn_loss,
-                                  name=self._base_name_scope + 'NET_Whole_loss')
-        # self._whole_loss = tf.add(self._un_loss, 0.5 * self._drqn_loss,
-        #                           name=self._base_name_scope + 'NET_Whole_loss')
-
-        # Add the regularization loss if enabled.
-        if self._l2_regularizer is not None:
-            print('Enable Regularization !!!')
-            org_namespace, _2 = self._DDQN_namescpoe_pair
-            for var in tf.trainable_variables('kernel'):
-                vname = var.name
-                org_FEN_kernel = vname.startswith(org_namespace + '/FEN') and ('kernel' in vname or 'bias' in vname)
-                org_Agent_kernel_var = vname.startswith(org_namespace + '/Agent') and \
-                                       ('kernel' in vname or 'var' in vname or 'bias' in vname)
-                org_UN_kernel = vname.startswith('UN') and ('kernel' in vname or 'bias' in vname)
-                if org_FEN_kernel or org_Agent_kernel_var or org_UN_kernel:
-                    self._whole_loss += 1e-7 * tf.nn.l2_loss(var)
-
-                # vname = var.name
-                # org_FEN_kernel = vname.startswith(org_namespace + '/FEN') and 'kernel' in vname
-                # org_Agent_kernel_var = vname.startswith(org_namespace + '/Agent') and \
-                #                        ('kernel' in vname or 'var' in vname)
-                # org_UN_kernel = vname.startswith('UN') and 'kernel' in vname
-                # if org_FEN_kernel or org_Agent_kernel_var or org_UN_kernel:
-                #     self._whole_loss += 1e-4 * tf.nn.l2_loss(var)
-                #     # self._whole_loss += 1e-3 * tf.nn.l2_loss(var)
-
-            # var_list = tf.trainable_variables('kernel')
-            # print(var_list)
-
-        print('### Finish the definition of Whole loss, Shape: {}'.format(self._whole_loss.shape))
-
-        # Package the Loss-related holders for Whole network.
-        model_loss_dict['UN/clazz_weights'] = self._clazz_weights
-        model_loss_dict['UN/visit_flag'] = self._visit
-        model_loss_dict['UN/GT_segmentation'] = self._GT_segmentation
-        model_loss_dict['DRQN/input_act'] = self._drqn_input_act
-        model_loss_dict['DRQN/target_q_val'] = self._drqn_target_q_val
-        model_loss_dict['UN/loss'] = self._un_loss
-        model_loss_dict['DRQN/loss'] = self._drqn_loss
-        model_loss_dict['NET/Whole_loss'] = self._whole_loss
-
-        # Only record target holders when specify the name scope pair.
-        if self._DDQN_namescpoe_pair is not None:
-            # Target DRQN holders.
-            model_loss_dict['DRQN/target_image'] = self._target_image
-            model_loss_dict['DRQN/target_input'] = self._target_drqn_in
-            model_loss_dict['DRQN/target_GRU_sin'] = self._target_drqn_gru_Sin
-            model_loss_dict['DRQN/target_output'] = self._target_drqn_output
-
-        print('------ The end of the definition of the loss function of whole model. ------')
-
-        ############################# Definition of some summaries of Whole model #############################
-        print('------ The begin of definition of the summaries of whole model. ------')
-
-        # Record some summaries information for whole network.
-        tf.summary.scalar('NET_Whole_Loss', self._whole_loss)
-        # tf.summary.scalar('UN_Loss',
-        #                   tf.reduce_sum(tf.multiply(tf.reduce_mean(UN_image_CEloss, axis=(0, 1)), clazz_weights)))
-        tf.summary.scalar('UN_Loss', self._un_loss)
-        tf.summary.scalar('DRQN_Loss', self._drqn_loss)
-        tf.summary.scalar('DRQN_Q_vals', tf.reduce_mean(drqn_act_q_val))
-        # Merge list.
-        merge_list = [tf.get_collection(tf.GraphKeys.SUMMARIES, 'NET_Whole_Loss'),
-                      tf.get_collection(tf.GraphKeys.SUMMARIES, 'UN_Loss'),
-                      tf.get_collection(tf.GraphKeys.SUMMARIES, 'DRQN_Loss'),
-                      tf.get_collection(tf.GraphKeys.SUMMARIES, 'DRQN_Q_vals')
-                      ]
-
-        # Define the reward placeholders for RecN.
-        rewards = tf.placeholder(tf.float32, [None, None, self._mask_dim],
-                                       name=self._base_name_scope + 'DRQN_reward')
-        DICE = tf.placeholder(tf.float32, [None, None, self._cls_dim],
-                                    name=self._base_name_scope + 'DRQN_dice')
-        BRATS = tf.placeholder(tf.float32, [None, None, 3],
-                                    name=self._base_name_scope + 'DRQN_dice')
-        # with tf.device('/cpu:0'):
-        statis_rewards = tf.reduce_mean(rewards, axis=(0, 1))   # [cls]
-        statis_dice = tf.reduce_mean(DICE, axis=(0, 1))     # [cls]
-        statis_brats = tf.reduce_mean(BRATS, axis=(0, 1))     # [3]
-        for m in range(self._mask_dim):
-            tf.summary.scalar('DRQN_rewards_M' + str(m+1), statis_rewards[m])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DRQN_rewards_M' + str(m+1)))
-        for c in range(self._cls_dim):
-            tf.summary.scalar('DRQN_dice_C' + str(c+1), statis_dice[c])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DRQN_dice_C' + str(c+1)))
-        for b in range(3):
-            tf.summary.scalar('DRQN_brats_' + str(b + 1), statis_brats[b])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DRQN_brats_' + str(b + 1)))
-
-        # Merge all the summaries.
-        self._summaries = tf.summary.merge(merge_list)
-
-        # Package the summaries into dictionary.
-        model_summaries_dict = {
-            'DRQN/statis_rewards': rewards,
-            'NET/DICE': DICE,
-            'NET/BRATS': BRATS,
-            'NET/summaries': self._summaries
-        }
-
-        print('### The summary dict is {}'.format(model_summaries_dict))
-
-        print('------ The end of the summaries of whole model. ------')
-
-        return model_loss_dict, model_summaries_dict
+        # Plain return.
+        return
 
 
-    def __upsample_loss(self, SEG_logits, CEloss_tensors, epsilon, name_space):
+    def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
         r'''
-            Generate the loss for "Segmentation" branch.
+            Generate (Cross-Entropy) loss for the "Segmentation" branch.
         '''
 
         # Get configuration.
@@ -1053,11 +776,11 @@ class DqnAgent:
         LOSS_name = name_space + '/SegLoss'
         with tf.variable_scope(LOSS_name):
             # Placeholder of ground truth segmentation.
-            GT_label = net_util.placeholder_wrapper(self._inputs, tf.int32, input_shape[:-1],
+            GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
                                                     name='GT_label')  # [?, h, w]
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
-            clazz_weights = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, classification_dim],
+            clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
                                                          name='clazz_weights')  # [?, cls]
             cw_mask = tf.one_hot(tf.cast(GT_label, 'int32'), classification_dim,
                                  name='one_hot_label')     # [?, h, w, cls]
@@ -1086,11 +809,101 @@ class DqnAgent:
             return segmentation_loss
 
 
-    def __reinforcement_loss(self):
+    def __reinforcement_loss(self, DQN_output, name_space):
+        r'''
+            Generate (L2-regression) loss for "DQN (Region Selection)" branch.
+        '''
+
+        # Get configuration.
+        conf_dqn = self._config['DQN']
+        # Get detailed parameters.
+        prioritized_replay = conf_dqn.get('prioritized_replay', True)
+
+        # ---------------------- Definition of UN cross-entropy loss ------------------------
+        LOSS_name = name_space + '/DQNLoss'
+        with tf.variable_scope(LOSS_name):
+            # Placeholder of input actions. Indicates which Q value (output of DQN) used to calculate cost.
+            pred_action = net_util.placeholder_wrapper(self._losses, tf.int32, [None], name='prediction_actions')
+            pred_action = tf.one_hot(pred_action, self._action_dim, name='one_hot_Predacts')    # [?, acts]
+
+            # Placeholder of target q values. That is, the "Reward + Future Q values".
+            target_q_vals = net_util.placeholder_wrapper(self._losses, tf.float32, [None], name='target_Q_values')
+
+            # Only use selected Q values for DRQN. Coz in the "Future Q values" we use the max value.
+            pred_q_vals = tf.reduce_sum(tf.multiply(DQN_output, pred_action), axis=-1,
+                                        name='prediction_Q_values')    # [?]
+
+            # The difference between prediction and target Q values.
+            q_diff = tf.subtract(target_q_vals, pred_q_vals, name='Q_diff')  # [?]
+
+            # Define placeholder for IS weights if use "Prioritized Replay".
+            if prioritized_replay:
+                # Updated priority for input experience.
+                EXP_priority = tf.abs(q_diff, name='EXP_priority')  # used to update Sumtree
+                net_util.package_tensor(self._losses, EXP_priority)
+                # Placeholder of the weights for experience.
+                IS_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None],
+                                                          name='IS_weights')
+                # Construct the prioritized loss.
+                DQN_loss = tf.reduce_mean(
+                    tf.multiply(IS_weights, tf.square(q_diff)),  # [?]
+                    name='DQN_loss'
+                )
+            else:
+                # Construct the simple loss.
+                DQN_loss = tf.reduce_mean(tf.square(q_diff), name='DQN_loss')
+
+            # Print some information.
+            print('### Finish the definition of DQN loss, Shape: {}'.format(DQN_loss.shape))
+
+            # Return the DQN loss.
+            return DQN_loss
 
 
-        return
+    def __gen_summary(self, name_space):
+        r'''
+            Generate the summaries.
+        '''
 
+        # Get the classification dimension.
+        conf_base = self._config['Base']
+        classification_dim = conf_base.get('classification_dimension')
 
+        # Start generate summaries.
+        SUMMARY_name = name_space + '/Summary'
+        with tf.variable_scope(SUMMARY_name):
+            # Summary merge list.
+            merge_list = []
 
+            # Add losses.
+            tf.summary.scalar('NET_Loss', self._losses[name_space+'/NET_loss'])
+            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'NET_Loss'))
+            tf.summary.scalar('SEG_Loss', self._losses[name_space+'/SEG_loss'])
+            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'SEG_Loss'))
+            tf.summary.scalar('DQN_Loss', self._losses[name_space+'/DQN_loss'])
+            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DQN_Loss'))
+
+            # Custom define some metric to show.
+            rewards = net_util.placeholder_wrapper(self._summary, tf.float32, None, name='Reward')
+            DICE = net_util.placeholder_wrapper(self._summary, tf.float32, [classification_dim], name='DICE')
+            BRATS = net_util.placeholder_wrapper(self._summary, tf.float32, [3], name='BRATS_metric')
+            # Recursively add the summary.
+            tf.summary.scalar('Rewards', rewards)
+            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Rewards'))
+            for c in range(classification_dim):
+                tf.summary.scalar('DICE_'+str(c+1), DICE[c])
+                merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DICE_'+str(c+1)))
+            for b in range(3):
+                tf.summary.scalar('BRATS_'+str(b+1), BRATS[b])
+                merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'BRATS_'+str(b+1)))
+
+            # Merge all the summaries.
+            summaries = tf.summary.merge(merge_list)
+            net_util.package_tensor(self._summary, summaries)
+
+            # Print some information.
+            print('### The summary dict is {}'.format(summaries))
+
+            # Plain return.
+            return
 

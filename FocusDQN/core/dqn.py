@@ -279,7 +279,7 @@ class PrioritizedPool(object):
         b_idx = np.empty((n,), dtype=np.int32)
         # b_memory = np.empty((n, self.tree.data[0].size))
         b_memory = []
-        ISWeights = np.empty((n, 1))
+        ISWeights = np.empty((n,))
 
         # Separate the total probability into n-segments. Compute the size of segment.
         pri_seg = self.tree.total_p / n
@@ -305,7 +305,7 @@ class PrioritizedPool(object):
             # his.append((idx, p))   # DEBUG
 
             # Compute the ISweight for each leaf (exp). Note that, ISWeight is a (n*1) matrix.
-            ISWeights[i, 0] = np.power(prob/min_prob, -self.beta)
+            ISWeights[i] = np.power(prob/min_prob, -self.beta)
             # Record the index (latter used to update probability) and real data of leaf (exp).
             b_idx[i] = idx
             b_memory.append(data)
