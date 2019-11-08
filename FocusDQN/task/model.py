@@ -678,7 +678,7 @@ class DqnAgent:
                 # Independently return the segmentation logits, so that we can flexibly deal with it.
                 SEG_logits = org_UST
                 # Then translate the value into probability.
-                SEG_output = tf.nn.softmax(org_UST, name='SEG_suit_output')  # [?, h, w, cls]
+                SEG_output = tf.nn.softmax(org_UST, name='SEG_probability')  # [?, h, w, cls]
 
             # Refer the paper's structure.
             elif up_structure == 'MLIF':
@@ -714,10 +714,13 @@ class DqnAgent:
                 # Fuse (mean) all score maps to get the final segmentation.
                 SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
                 SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
-                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_suit_output')  # [?, h, w, cls]
+                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_probability')  # [?, h, w, cls]
 
             else:
                 raise ValueError('Unknown up-sample structure !!!')
+
+            # Translate the final probability to segmentation result.
+            SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')     # [?, h, w]
 
             # Record the raw output size. For information.
             rawout_size = SEG_output.shape
@@ -728,18 +731,24 @@ class DqnAgent:
             origin_h = input_shape[1]
             origin_w = input_shape[2]
             if rawup_h != origin_h or rawup_w != origin_w:
+                # Temporarily expand the dimension for conveniently processing.
+                SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')   # [?, h, w, 1]
+                # Justify the size.
                 conf_cus = self._config['Custom']
                 crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
                     # Crop to target size.
                     SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
                 elif crop_method == 'bilinear':
-                    # Bilinear resize to target size.
-                    SEG_output = tf.image.resize_bilinear(SEG_output, [origin_h, origin_w])
+                    # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
+                    SEG_output = tf.image.resize_nearest_neighbor(SEG_output, [origin_h, origin_w])
                 else:
                     raise ValueError('Unknown size match method !!!')
+                # Recover to the original dimension.
+                SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')   # [?, h, w]
+
             # Rename the tensor.
-            SEG_output = tf.identity(SEG_output, name='SEG_output')
+            SEG_output = tf.identity(SEG_output, name='SEG_output')     # [?, h, w]
 
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
@@ -865,12 +874,12 @@ class DqnAgent:
                     # Crop to target size.
                     GT_label = tf.image.resize_image_with_crop_or_pad(GT_label, suit_h, suit_w)
                 elif crop_method == 'bilinear':
-                    # Bilinear resize to target size.
-                    GT_label = tf.image.resize_bilinear(GT_label, [suit_h, suit_w], name='bi_labels')
+                    # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
+                    GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
                 else:
                     raise ValueError('Unknown size match method !!!')
                 # Recover to the original dimension.
-                GT_label = tf.reduce_mean(GT_label, axis=-1, name='rec_label')
+                GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')
                 GT_label = tf.cast(GT_label, 'int32', name='suit_label')
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
