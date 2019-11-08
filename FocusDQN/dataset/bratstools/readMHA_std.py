@@ -5,15 +5,15 @@ import re
 import shutil
 # from keras.utils import to_categorical
 
-train_path_HGG = 'E:/data/BRATS2015_Training/HGG'
-train_path_LGG = 'E:/data/BRATS2015_Training/LGG'
-test_path = 'E:/data/BRATS2015_Testing/HGG_LGG'
+# train_path_HGG = 'E:/data/BRATS2015_Training/HGG'
+# train_path_LGG = 'E:/data/BRATS2015_Training/LGG'
+# test_path = 'E:/data/BRATS2015_Testing/HGG_LGG'
 # train_path_HGG = 'E:/Finley/Brats-Opt/BRATS2015_Training/HGG'
 # train_path_LGG = 'E:/Finley/Brats-Opt/BRATS2015_Training/LGG'
 # test_path = 'E:/Finley/Brats-Opt/BRATS2015_Testing/HGG_LGG'
-# train_path_HGG = 'G:/Finley/dataset/BRATS/data/BRATS2015_Training/HGG/'
-# train_path_LGG = 'G:/Finley/dataset/BRATS/data/BRATS2015_Training/LGG/'
-# test_path = 'G:/Finley/dataset/BRATS/data/BRATS2015_Testing/HGG_LGG/'
+train_path_HGG = 'G:/Finley/dataset/BRATS/data/BRATS2015_Training/HGG/'
+train_path_LGG = 'G:/Finley/dataset/BRATS/data/BRATS2015_Training/LGG/'
+test_path = 'G:/Finley/dataset/BRATS/data/BRATS2015_Testing/HGG_LGG/'
 
 def makelabel_tf(label):
     label = np.reshape(label,[np.shape(label)[0], -1])

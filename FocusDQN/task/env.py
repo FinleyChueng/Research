@@ -3,12 +3,209 @@ import gc
 import cv2
 import tensorflow as tf
 from keras.utils import to_categorical
-from skimage import morphology
+# from skimage import morphology
 from tensorflow.python import debug as tf_debug
 
 import util.evaluation as eval
 from core.env import *
 from dataset.adapter.base import *
+
+
+
+class FocusEnv:
+
+
+    def __init__(self, config, data_adapter, tfnet_holders):
+
+
+        # Configuration.
+        self._config = config
+
+        # Data adapter.
+        self._adapter = data_adapter
+
+        # Get tensorflow model inputs and outputs, respectively.
+        self._tfnet_inputs, self._tfnet_outputs = tfnet_holders
+
+        # The flag indicating whether is in "Train", "Validate" or "Test" phrase.
+        self._phrase = 'Train'  # Default in "Train"
+
+
+        # self._reset = False
+
+
+        # | ---> Finish holders transferring !
+        # |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/position_info', 'ORG/Segment_Stage', 'ORG/Focus_Bbox'])
+        # |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output'])
+        # |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/Focus_Bbox', 'TAR/DQN_output'])
+        # |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
+        # |   ===> Visual holder: dict_keys([])
+
+        # Get detailed parameters.
+        conf_base = self._config['Base']
+        input_shape = conf_base.get('input_shape')
+        image_height, image_width = input_shape[1:3]
+
+        conf_cus = self._config['Custom']
+        pos_method = conf_cus.get('position_info', 'map')
+
+        # Some input data placeholder.
+        self._image = None  # Current processing image.
+        self._label = None  # Label for current image.
+        self._SEG_stage = None  # Flag indicating whether is "Segmentation" stage or not.
+        self._focus_bbox = np.zeros([4])    # Focus bounding-box.
+        # The result of "Segmentation" stage, will used as part of input.
+        self._SEG_prev = np.zeros([image_height, image_width])
+        # The position information. Declaration according to config.
+        if pos_method == 'map':
+            self._position_info = np.zeros([image_height, image_width])
+        elif pos_method == 'coord':
+            self._position_info = np.zeros([4])
+        elif pos_method == 'sight':
+            self._position_info = np.zeros([4])
+        else:
+            raise ValueError('Unknown position information fusion method !!!')
+
+
+        return
+
+
+    def switch_phrase(self, p):
+        r'''
+            Switch to target phrase.
+        '''
+        if p not in ['Train', 'Validate', 'Test']:
+            raise ValueError('Unknown phrase value !!!')
+        self._phrase = p
+        return
+
+
+    def reset(self, arg):
+        r'''
+            Reset the environment. Mainly to reset the related parameters,
+                and switch to next image-label pair.
+        '''
+
+        # # Check the validity of calling.
+        # if self._reset:
+        #     raise Exception('Invalid process state: the processing of current image is not yet finished, '
+        #                     'can not reset the environment !!!')
+
+
+        # | ---> Finish holders transferring !
+        # |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/position_info', 'ORG/Segment_Stage', 'ORG/Focus_Bbox'])
+        # |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output'])
+        # |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/Focus_Bbox', 'TAR/DQN_output'])
+        # |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
+        # |   ===> Visual holder: dict_keys([])
+
+
+        # Reset the previous segmentation result. Generate it in first time.
+        self._prev_result[:] = 0.
+
+        # Reset the segmentation result.
+        self._segmentation[:] = 0.      # [w, h]
+
+
+        # Reset the previous metric.
+        self._prev_lab[:] = 0.
+
+        # Reset the terminal flag.
+        self._terminal = False
+
+        # Generate initial states.
+        initial_state = self._gen_state()
+
+        # Generate the fake state if it's None.
+        if self._fake_state is None:
+            self._fake_state = (np.zeros_like(self._feature_maps),)
+
+
+        import tensorflow as tf
+        tf.image.resize_nearest_neighbor
+
+
+
+
+        # Set the reset flag to True. Remember to set False when terminate
+        #   current processing image.
+        self._reset = True
+
+        # Reset the execution steps of current image.
+        self._step = 0
+
+        # Additional info.
+        additional_info = self._pack_additional_info('Reset ~!', arg=(None,))
+
+        # Record the process.
+        if self._anim_recorder is not None:
+            # Reload the animation recorder.
+            self._anim_recorder.reload((not self._train_mode,))
+            # self._anim_recorder.reload((False,))
+            # self._anim_recorder.reload((True,))
+
+        # print('Maze Environment ------ Reset the environment !!!')
+
+        # Finish the reset and get the initial state.
+        return initial_state, additional_info
+
+
+    def __switch2_next_imglabel(self, is_training, test_flag):
+        r'''
+            Switch to the next processing image.
+
+        :param is_training: Indicating whether it is training mode or not.
+        :param test_flag: Indicating whether it's real testing phrase.
+        '''
+
+        # Check the validity of parameters.
+        if not isinstance(is_training, bool):
+            raise TypeError('The is_training must be of @Type{bool} !!!')
+        if not isinstance(test_flag, bool):
+            raise TypeError('The test_flag must be of @Type{bool} !!!')
+
+        # Fake class weights.
+        clazz_weights = None
+
+        # Get the next image-label pair according to the mode.
+        if is_training and not test_flag:
+            # Get the next train sample pair.
+            img, label, finish_CMHA, self._cur_Cweights = self._adapter.next_image_pair(mode='Train', batch_size=1)
+        elif not is_training and not test_flag:
+            # Get the next validate image-label pair.
+            img, label, finish_CMHA = self._adapter.next_image_pair(mode='Validate', batch_size=1)
+        elif not is_training and test_flag:
+            # Get the next test image-label pair.
+            img, label, finish_CMHA = self._adapter.next_image_pair(mode='Test', batch_size=1)
+        else:
+            raise Exception('The training and test flag can not both be True !!!')
+
+        # Get the original size.
+        org_size = img.shape[:-1]     # (width, height)
+        # Reshape the original size to target size.
+        if org_size != self._proc_size:
+            img = cv2.resize(img, self._proc_size)
+            # Resize only when label is not None.
+            if label is not None:
+                label = cv2.resize(label, self._proc_size)
+        else:
+            pass
+        # Record the four modalities and ground truth. The four modalities is
+        #   lately used as the input to network.
+        self._4mod = img        # [width, height, modalities]
+        # Assign the label.
+        self._label = label     # [width, height, cls_dim]
+
+        # print('Maze Environment ------ Switch to next image-label pair !!!')
+
+        # Finish switching to next processing image. And return the
+        #   "Finish current MHA" flag.
+        return finish_CMHA
+
+
+
+
+
 
 
 # ------------------------------------------------------------------------------------------------------
@@ -798,10 +995,12 @@ class CalDQNEnv:
             proc_lab[pxs, pys] = 1
         elif act == 4:
             # Dilate-conv.
-            proc_lab = morphology.dilation(prev_lab, selem=morphology.disk(margin))
+            # proc_lab = morphology.dilation(prev_lab, selem=morphology.disk(margin))
+            pass
         elif act == 5:
             # Erode-conv.
-            proc_lab = morphology.erosion(prev_lab, selem=morphology.disk(margin))
+            # proc_lab = morphology.erosion(prev_lab, selem=morphology.disk(margin))
+            pass
         elif act == 6:
             # nope-conv.
             proc_lab[:] = prev_lab
@@ -983,117 +1182,3 @@ class CalDQNEnv:
         # Finish.
         return
 
-
-
-# -----------------------------------------------------------------------------
-# This class will supply the real conv-kernel that we pass to the network.
-# -----------------------------------------------------------------------------
-class OptKernel:
-    r'''
-        The Conv-kernel.
-    '''
-
-    def __init__(self):
-        r'''
-            Initialization. Declare the different types of conv-kernel.
-        '''
-
-        # The left-conv kernel.
-        self._left_conv = np.asarray([[0, 0, 0],
-                                      [0, 0.5, 0.5],
-                                      [0, 0, 0]], dtype=np.float32)
-
-        # The right-conv kernel.
-        self._right_conv = np.asarray([[0, 0, 0],
-                                       [0.5, 0.5, 0],
-                                       [0, 0, 0]], dtype=np.float32)
-
-        # The up-conv kernel.
-        self._up_conv = np.asarray([[0, 0, 0],
-                                    [0, 0.5, 0],
-                                    [0, 0.5, 0]], dtype=np.float32)
-
-        # The bottom-conv kernel.
-        self._bottom_conv = np.asarray([[0, 0.5, 0],
-                                        [0, 0.5, 0],
-                                        [0, 0, 0]], dtype=np.float32)
-
-        # The dilate-conv kernel.
-        self._dilate_conv = np.asarray([[0.125, 0.125, 0.125],
-                                        [0.125, 0, 0.125],
-                                        [0.125, 0.125, 0.125]], dtype=np.float32)
-
-        # The erode-conv kernel.
-        self._erode_conv = np.asarray([[0.002, 0.002, 0.002],
-                                       [0.002, 0.99, 0.002],
-                                       [0.002, 0.002, 0.002]], dtype=np.float32)
-
-        # The nope-conv kernel.
-        self._nope_conv = np.asarray([[0, 0, 0],
-                                      [0, 1, 0],
-                                      [0, 0, 0]], dtype=np.float32)
-
-        # The noatt-conv kernel.
-        self._noatt_conv = np.asarray([[0, 0, 0],
-                                       [0, 0, 0],
-                                       [0, 0, 0]], dtype=np.float32)
-
-        # Finish.
-        return
-
-
-    @property
-    def left_conv(self):
-        r'''
-            Get the left-conv kernel.
-        '''
-        return self._left_conv
-
-    @property
-    def right_conv(self):
-        r'''
-            Get the right-conv kernel.
-        '''
-        return self._right_conv
-
-    @property
-    def up_conv(self):
-        r'''
-            Get the up-conv kernel.
-        '''
-        return self._up_conv
-
-    @property
-    def bottom_conv(self):
-        r'''
-            Get the bottom-conv kernel.
-        '''
-        return self._bottom_conv
-
-    @property
-    def dilate_conv(self):
-        r'''
-            Get the dilate-conv kernel.
-        '''
-        return self._dilate_conv
-
-    @property
-    def erode_conv(self):
-        r'''
-            Get the erode-conv kernel.
-        '''
-        return self._erode_conv
-
-    @property
-    def nope_conv(self):
-        r'''
-            Get the nope-conv kernel.
-        '''
-        return self._nope_conv
-
-    @property
-    def noatt_conv(self):
-        r'''
-            Get the noatt-conv kernel.
-        '''
-        return self._noatt_conv

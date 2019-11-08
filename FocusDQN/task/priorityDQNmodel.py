@@ -1,15 +1,14 @@
-import tensorflow as tf
-import random
-import time
-import sys
 import collections
-import cv2
+import random
+import sys
+import time
+
+import tensorflow as tf
 from keras.utils import to_categorical
-import copy
+from task.segmodel import DqnAgent
 
 from core.dqn import *
-from task.calEnv import CalDQNEnv
-from task.segmodel import DqnAgent
+from task.env import CalDQNEnv
 
 
 # --------- Version Info  ---------

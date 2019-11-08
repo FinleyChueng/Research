@@ -12,19 +12,58 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Just Test -------
 
-# print('Begin')
-# from task.model import *
-# import util.config as conf_util
-# import tfmodule.util as netutil
-# import os
-# config_file = '/FocusDQN/config.ini'
-# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
-# config = conf_util.parse_config(config_file)
-# dqn = DqnAgent(name_space='TEST', config=config)
-# dqn.definition()
-# # netutil.show_all_variables()
-# # netutil.count_flops()
-# print('End')
+print('Test')
+
+import tensorflow as tf
+
+# def body(id, tensor, l):
+#     y = tensor[id]
+#     print(y)
+#     print(type(l))
+#     print(l.shape)
+#     if len(l.shape) == 0:
+#         l = tf.expand_dims(y, axis=-1)
+#     else:
+#         l = tf.concat([l, y], axis=-1)
+#     id += 1
+#     print(l)
+#     # return id, tensor,
+#     return id, tensor, l
+
+def body(id, tensor, l):
+    y = tf.expand_dims(tensor[id], axis=0) * tf.to_float(id)
+    print(y)
+    l = tf.concat([l[0: id], y, l[id+1:]], axis=0)
+    print(l)
+    id += 1
+    # return id, tensor,
+    return id, tensor, l
+a = tf.placeholder(tf.float32, [None, 2, 3])
+bs = tf.ones_like(a, dtype=tf.int32)
+bs = tf.reduce_sum(tf.reduce_mean(bs, axis=(1, 2)))     # scalar
+idx = 0
+# st = 0.
+st = tf.zeros_like(a)
+_1, _2, out = tf.while_loop(
+    cond=lambda id, _2, _3: tf.less(id, bs),
+    body=body,
+    loop_vars=[idx, a, st]
+)
+# out = tf.stack(st, axis=-1)
+
+# --------------------------------
+x1 = np.random.randint(0, 10, (4, 2, 3))
+sess = tf.Session()
+v1 = sess.run(out, feed_dict={
+    a: x1
+})
+
+print('Origin: ', x1.shape)
+print(x1)
+print('While-loop:, ', v1.shape)
+print(v1)
+
+print('-- end --')
 
 # ----------------------------------------------------------
 
@@ -75,14 +114,48 @@ inputs, outputs, losses, summary, visual = dqn.definition()
 # netutil.count_flops()
 # print('End')
 
+import matplotlib.pyplot as plt
+def show(label, img=None):
+    if img is not None:
+        plt.subplot(231)
+        plt.imshow(img[:, :, 0], cmap='gray')
+        plt.subplot(232)
+        plt.imshow(img[:, :, 1], cmap='gray')
+        plt.subplot(233)
+        plt.imshow(img[:, :, 2], cmap='gray')
+        plt.subplot(234)
+        plt.imshow(img[:, :, 3], cmap='gray')
+        plt.subplot(235)
+        plt.imshow(label, cmap='gray')
+    else:
+        plt.imshow(label, cmap='gray')
+    plt.show()
+    return
+
+# # get image and label.
+# adapter = BratsAdapter(enable_data_enhance=False)
+# for _ in range(15):
+# # for _ in range(35):
+#     adapter.next_image_pair('Train', batch_size=155)
+# adapter.next_image_pair('Train', batch_size=70)
+# img, lab, _1, _2, finish = adapter.next_image_pair('Train', batch_size=4)
+#
+# # show
+# show(lab[0], img[0])
+
 # init.
 sess = tf.Session()
 # infer. ---
 # fake input.
+# img = img[:, :, :, :-1]
 img = np.ones([4, 240, 240, 3])
+img[:, :, :, 1] = 2
+img[:, :, :, 2] = 3
 pr = np.ones([4, 240, 240])
 pi = np.ones([4, 240, 240])
 ss = [True, True, False, False]
+# ss = [False, False, False, False]
+# ss = [True, True, False, False]
 fb = [[0.5, 0.7, 0.4, 0.6],
       [0.5, 0.7, 0.4, 0.6],
       [0.5, 0.7, 0.4, 0.6],
@@ -108,13 +181,19 @@ v1, v2 = sess.run([y1, y2], feed_dict={
 print('--- infer ---')
 print('DQN_output: ', v1)
 print('SEG_output: ', v2)
+print('all 0: ', np.all(v2 == 0))
+print('any non-zero: ', np.any(v2 != 0))
+print('min cls: ', np.min(v2))
+print('max cls: ', np.max(v2))
+# show(v2[0])
+
 # train. ---
 # fake input.
 lab = np.ones([4, 240, 240])
 cw = [[1, 5, 3, 4, 10],
-      [1, 5, 3, 4, 10],
-      [1, 5, 3, 4, 10],
-      [1, 5, 3, 4, 10]]
+      [2, 6, 1, 3, 7],
+      [5, 2, 7, 1, 9],
+      [3, 5, 2, 7, 1]]
 pa = [2, 3, 1, 5]
 tqa = [0.5, 0.6, 0.9, 0.15]
 isw = [0.1, 0.4, 0.5, 0.2]
@@ -148,9 +227,9 @@ _, v1, v2, v3, v4 = sess.run([train, y1, y2, y3, y4], feed_dict={
 })
 print('--- train ---')
 print('EXP_priority: ', v1)
-print('SEG_loss: ', v2)
-print('DQN_loss: ', v3)
-print('NET_loss: ', v4)
+print('SEG_loss: %10f' % v2)
+print('DQN_loss: %10f' % v3)
+print('NET_loss: %10f' % v4)
 
 # ----------------------------------------------------------------------
 

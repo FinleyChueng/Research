@@ -121,7 +121,7 @@ class BratsAdapter(Adapter):
         # Indicates all angle are traversed. Switch to next image.
         if len(self._enhance_opt_list) == 0:
             # Get image, label and flag.
-            image, label, finish_CMHA, clazz_weights = self._train_brats.next_train_batch(batch_size)
+            image, label, MHA_idx, inst_idx, clazz_weights = self._train_brats.next_train_batch(batch_size)
 
             # Assign image. Note the data type.
             self._train_image = np.asarray(image, dtype=np.float32)
@@ -159,10 +159,10 @@ class BratsAdapter(Adapter):
         # Return the batch pair according to the batch size.
         if batch_size == 1:
             # Shape: [width, height, modalities], [width, height, cls]
-            return four_modality[0], ground_truth[0], finish_CMHA, clazz_weights
+            return four_modality[0], ground_truth[0], MHA_idx, inst_idx, clazz_weights
         else:
             # Shape: [batches, width, height, modalities], [batches, width, height, cls]
-            return four_modality, ground_truth, finish_CMHA, clazz_weights
+            return four_modality, ground_truth, MHA_idx, inst_idx, clazz_weights
 
 
     def __next_test_pair(self, batch_size, validation):

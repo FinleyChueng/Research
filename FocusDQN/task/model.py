@@ -152,7 +152,7 @@ class DqnAgent:
         DQN_output = self.__region_selection(FE_tensor, action_dim, name_space)
         # Segment current image (patch). (Generate the segmentation branch)
         if with_segmentation:
-            SEG_output, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
+            SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
         else:
             SEG_logits = CEloss_tensors = None
 
@@ -201,6 +201,9 @@ class DqnAgent:
             # Expand additional dimension for conveniently processing.
             prev_result = tf.expand_dims(prev_result, axis=-1, name='expa_Pres')  # [?, 240, 240, 1]
 
+            # The bounding-box indicating whether to focus on.
+            focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
+
             # Define the "Position Information" placeholder.
             pos_name = 'position_info'
             if pos_method == 'map':
@@ -215,11 +218,13 @@ class DqnAgent:
                 pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4],
                                                         name=pos_name)  # [?, 4]
             elif pos_method == 'w/o':
-                pos_info = None
+                pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None,],
+                                                        name=pos_name)  # [?]
             else:
                 raise ValueError('Unknown position information fusion method !!!')
 
             # Crop or resize the input image into suitable size if size not matched.
+            #   What's more, scale the "Focus Bounding-box" if needed.
             suit_w = conf_base.get('suit_width')
             suit_h = conf_base.get('suit_height')
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
@@ -238,19 +243,25 @@ class DqnAgent:
                         pos_info = tf.image.resize_nearest_neighbor(pos_info, [suit_h, suit_w], name='nn_pos')
                 else:
                     raise ValueError('Unknown size match method !!!')
+                # Scale the "Focus Bounding-box".
+                focus_bbox = net_util.scale_bbox(focus_bbox,
+                                                 src_height=input_shape[1],
+                                                 src_width=input_shape[2],
+                                                 dst_height=suit_h,
+                                                 dst_width=suit_w,
+                                                 name='SFB_4input')
 
             # Concat the tensors to generate input for whole model.
             input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
             if pos_method == 'map':
                 input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
 
-            # After declare the public input part, deal with the input tensor according to
-            #   the different stage (branch). That is:
+            # After declaring the public input part, it shall deal with the input tensor
+            #   according to the different stage (branch). That is:
             # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
             # 2. Introduce the position info if it's "Region Selection" stage with the
             #       "sight" position info.
             segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None,], name='Segment_Stage')
-            focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
             def region_crop(x, bbox, size):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:,0]))
                 y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name='focus_crop')
@@ -499,6 +510,12 @@ class DqnAgent:
             Segmentation branch. Which is actually a up-sample head.
                 It's used to segment the current input image (patch).
 
+            ** Note that, this function do not directly generate the
+                segmentation result, coz the output may not match the
+                origin size. The real segmentation result is generated
+                by the "Result Fusion" function. This function only
+                provide the tensors before "Softmax".
+
             The input is the deep feature maps (each level) extracted by
                 "Feature Extraction" backbone.
         '''
@@ -677,8 +694,8 @@ class DqnAgent:
                                                    name_space='WS_tensor')
                 # Independently return the segmentation logits, so that we can flexibly deal with it.
                 SEG_logits = org_UST
-                # Then translate the value into probability.
-                SEG_output = tf.nn.softmax(org_UST, name='SEG_probability')  # [?, h, w, cls]
+                # Rename to get the SEG tensor (before Softmax).
+                SEG_tensor = tf.identity(org_UST, name='SEG_tensor')    # [?, h, w, cls]
 
             # Refer the paper's structure.
             elif up_structure == 'MLIF':
@@ -714,25 +731,121 @@ class DqnAgent:
                 # Fuse (mean) all score maps to get the final segmentation.
                 SMs_tensor = tf.stack(CEloss_tensors, axis=-1, name='SMs_stack')
                 SMs_tensor = tf.reduce_mean(SMs_tensor, axis=-1, name='SMs_tensor')
-                SEG_output = tf.nn.softmax(SMs_tensor, name='SEG_probability')  # [?, h, w, cls]
+                # Rename to get the SEG tensor (before Softmax).
+                SEG_tensor = tf.identity(SMs_tensor, name='SEG_tensor')     # [?, h, w, cls]
 
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
+            # # Translate the final probability to segmentation result.
+            # SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')     # [?, h, w]
+            #
+            # # Record the raw output size. For information.
+            # rawout_size = SEG_output.shape
+            # rawup_h = rawout_size[1]
+            # rawup_w = rawout_size[2]
+            # # Recover the segmentation output (suit) size to the original size if don't matched.
+            # input_shape = conf_base.get('input_shape')
+            # origin_h = input_shape[1]
+            # origin_w = input_shape[2]
+            # if rawup_h != origin_h or rawup_w != origin_w:
+            #     # Temporarily expand the dimension for conveniently processing.
+            #     SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')   # [?, h, w, 1]
+            #     # Justify the size.
+            #     conf_cus = self._config['Custom']
+            #     crop_method = conf_cus.get('size_matcher', 'crop')
+            #     if crop_method == 'crop':
+            #         # Crop to target size.
+            #         SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
+            #     elif crop_method == 'bilinear':
+            #         # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
+            #         SEG_output = tf.image.resize_nearest_neighbor(SEG_output, [origin_h, origin_w])
+            #     else:
+            #         raise ValueError('Unknown size match method !!!')
+            #     # Recover to the original dimension.
+            #     SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')   # [?, h, w]
+            #
+            # # Rename the tensor.
+            # SEG_output = tf.identity(SEG_output, name='SEG_output')     # [?, h, w]
+
+            # Print some information.
+            print('### Finish "Segmentation Head" (name scope: {}). '
+                  'The output shape: {}'.format(name_space, SEG_tensor.shape))
+
+            # Return the segmentation results, logits, and the loss tensors for "Cross-Entropy" calculation.
+            return SEG_tensor, SEG_logits, CEloss_tensors
+
+
+    def __result_fusion(self, SEG_tensor, name_space):
+        r'''
+        '''
+
+        # Get basic configuration.
+        conf_base = self._config['Base']
+        input_shape = conf_base.get('input_shape')
+        classification_dim = conf_base.get('classification_dimension')
+
+        # --------------------------------- "Result Fusion" part. ------------------------------------
+        # Get fusion method.
+        conf_cus = self._config['Custom']
+        fusion_method = conf_cus.get('result_fusion', 'prob')
+
+        # Get the "Focus Bounding-box" holder.
+        conf_dqn = self._config['DQN']
+        dqn_names = conf_dqn.get('double_dqn', None)
+        if dqn_names is not None:
+            stage_prefix = dqn_names[0]
+        else:
+            stage_prefix = self._name_space
+        focus_bbox = self._inputs[stage_prefix+'/Focus_Bbox']
+
+        # Start definition.
+        RF_name = name_space + '/ResFuse'
+        with tf.variable_scope(RF_name):
+            # Fusion according to different method. (Including declare placeholder).
+            if fusion_method == 'tensor':
+                # The placeholder of "Complete Result".
+                complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
+                                                               [None, input_shape[1], input_shape[2], classification_dim],
+                                                               name='Complete_Result')  # [?, h, w, cls]
+
+                # # Resize SEG (segmentation) tensor into the shape of "Focus Bounding-box" region.
+                # FBR_height = tf.multiply(input_shape[1], focus_bbox[:, 2] - focus_bbox[:, 0]    )
+
+
+
+
+            elif fusion_method == 'prob':
+
+                pass
+
+
+            elif fusion_method == 'result':
+
+                pass
+
+
+            else:
+                raise ValueError('Unknown result fusion method !!!')
+
+
+
+
+
+
             # Translate the final probability to segmentation result.
-            SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')     # [?, h, w]
+            SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')  # [?, h, w]
 
             # Record the raw output size. For information.
             rawout_size = SEG_output.shape
             rawup_h = rawout_size[1]
             rawup_w = rawout_size[2]
             # Recover the segmentation output (suit) size to the original size if don't matched.
-            input_shape = conf_base.get('input_shape')
             origin_h = input_shape[1]
             origin_w = input_shape[2]
             if rawup_h != origin_h or rawup_w != origin_w:
                 # Temporarily expand the dimension for conveniently processing.
-                SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')   # [?, h, w, 1]
+                SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')  # [?, h, w, 1]
                 # Justify the size.
                 conf_cus = self._config['Custom']
                 crop_method = conf_cus.get('size_matcher', 'crop')
@@ -745,18 +858,54 @@ class DqnAgent:
                 else:
                     raise ValueError('Unknown size match method !!!')
                 # Recover to the original dimension.
-                SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')   # [?, h, w]
+                SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')  # [?, h, w]
 
             # Rename the tensor.
-            SEG_output = tf.identity(SEG_output, name='SEG_output')     # [?, h, w]
+            SEG_output = tf.identity(SEG_output, name='SEG_output')  # [?, h, w]
+
+
+
+
+            # # Translate the final probability to segmentation result.
+            # SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')  # [?, h, w]
+            #
+            # # Record the raw output size. For information.
+            # rawout_size = SEG_output.shape
+            # rawup_h = rawout_size[1]
+            # rawup_w = rawout_size[2]
+            # # Recover the segmentation output (suit) size to the original size if don't matched.
+            # input_shape = conf_base.get('input_shape')
+            # origin_h = input_shape[1]
+            # origin_w = input_shape[2]
+            # if rawup_h != origin_h or rawup_w != origin_w:
+            #     # Temporarily expand the dimension for conveniently processing.
+            #     SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')  # [?, h, w, 1]
+            #     # Justify the size.
+            #     conf_cus = self._config['Custom']
+            #     crop_method = conf_cus.get('size_matcher', 'crop')
+            #     if crop_method == 'crop':
+            #         # Crop to target size.
+            #         SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
+            #     elif crop_method == 'bilinear':
+            #         # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
+            #         SEG_output = tf.image.resize_nearest_neighbor(SEG_output, [origin_h, origin_w])
+            #     else:
+            #         raise ValueError('Unknown size match method !!!')
+            #     # Recover to the original dimension.
+            #     SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')  # [?, h, w]
+            #
+            # # Rename the tensor.
+            # SEG_output = tf.identity(SEG_output, name='SEG_output')  # [?, h, w]
 
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
                   'The output shape: {}, the justified shape: {}'.format(
                 name_space, rawout_size, SEG_output.shape))
 
-            # Return the segmentation results, logits, and the loss tensors for "Cross-Entropy" calculation.
-            return SEG_output, SEG_logits, CEloss_tensors
+
+
+
+            return
 
 
     def _loss_summary(self, DQN_output, SEG_logits, CEloss_tensors):
@@ -857,16 +1006,27 @@ class DqnAgent:
         score_factor = conf_train.get('score_loss_factor', 1.0)
         sample_share = conf_train.get('sample_share', False)
 
+        # Get the stage prefix for conveniently inferring inputs holders.
+        conf_dqn = self._config['DQN']
+        dqn_names = conf_dqn.get('double_dqn', None)
+        if dqn_names is not None:
+            stage_prefix = dqn_names[0]
+        else:
+            stage_prefix = self._name_space
+
         # ---------------------- Definition of UN cross-entropy loss ------------------------
         LOSS_name = name_space + '/SegLoss'
         with tf.variable_scope(LOSS_name):
             # Placeholder of ground truth segmentation.
             GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
                                                     name='GT_label')  # [?, h, w]
-            # Also need to crop if size do not match.
+            # Get the "Focus Bounding-box" used to crop "Focus" region in label.
+            focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']
+            # Also need to crop label if size do not match. Meanwhile re-assign
+            #   the coordinates of "Focus Bounding-box".
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
                 # Temporarily expand a dimension for conveniently processing.
-                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa_label')
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')
                 # Match the size.
                 conf_cus = self._config['Custom']
                 crop_method = conf_cus.get('size_matcher', 'crop')
@@ -878,9 +1038,24 @@ class DqnAgent:
                     GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
                 else:
                     raise ValueError('Unknown size match method !!!')
-                # Recover to the original dimension.
-                GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')
-                GT_label = tf.cast(GT_label, 'int32', name='suit_label')
+                # Scale the "Focus Bounding-box".
+                focus_bbox = net_util.scale_bbox(focus_bbox,
+                                                 src_height=input_shape[1],
+                                                 src_width=input_shape[2],
+                                                 dst_height=suit_h,
+                                                 dst_width=suit_w,
+                                                 name='SFB_4input')
+            # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
+            if len(GT_label.shape) != 4:
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')
+            # Crop the corresponding region in label with respects to image (patch).
+            bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+            GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
+                                                method='nearest',
+                                                name='focus_label')     # [?, h, w, 1]
+            # Recover to the original dimension.
+            GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')     # [?, h, w]
+            GT_label = tf.cast(GT_label, 'int32', name='Corr_label')    # [?, h, w]
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
@@ -896,12 +1071,6 @@ class DqnAgent:
             # Here we can multiply it with class weights instead of the final loss.
             if not sample_share:
                 # Generate filter mask.
-                conf_dqn = self._config['DQN']
-                dqn_names = conf_dqn.get('double_dqn', None)
-                if dqn_names is not None:
-                    stage_prefix = dqn_names[0]
-                else:
-                    stage_prefix = self._name_space
                 sample_4SEG = tf.to_float(self._inputs[stage_prefix+'/Segment_Stage'], name='sample_4SEG')  # [?]
                 # Filter.
                 sample_4SEG = tf.expand_dims(tf.expand_dims(sample_4SEG, axis=-1), axis=-1)     # [?, 1, 1]
