@@ -160,10 +160,11 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # DqnAgent Model Test. -------------------------------------------------------
 
+# * ---> Transfer some holders ...
 # | ---> Finish holders transferring !
-# |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/position_info', 'ORG/Segment_Stage', 'ORG/Focus_Bbox'])
-# |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output'])
-# |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/Focus_Bbox', 'TAR/DQN_output'])
+# |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/Focus_Bbox', 'ORG/position_info', 'ORG/Segment_Stage', 'TEST/Complete_Result'])
+# |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output', 'TEST/FUSE_result'])
+# |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/Focus_Bbox', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/DQN_output'])
 # |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
 # |   ===> Visual holder: dict_keys([])
 
@@ -235,12 +236,17 @@ fb = [[0.5, 0.4, 0.7, 0.6],
 #       [0.3, 0.5, 0.7, 0.6],
 #       [0.3, 0.5, 0.7, 0.6],
 #       [0.3, 0.5, 0.7, 0.6]]
+# cs = np.ones([4, 224, 224, 5])
+# cs = np.random.normal(0, 1, [4, 224, 224, 5])
+cs = np.random.uniform(0, 1, [4, 224, 224, 5])
+# cs = np.random.randint(0, 5, [4, 224, 224])
 # input holders.
 x1 = inputs['ORG/image']
 x2 = inputs['ORG/prev_result']
 x3 = inputs['ORG/position_info']
 x4 = inputs['ORG/Segment_Stage']
 x5 = inputs['ORG/Focus_Bbox']
+x6 = inputs['TEST/Complete_Result']
 # output holders.
 y1 = outputs['ORG/DQN_output']
 y2 = outputs['TEST/SEG_output']
@@ -251,7 +257,8 @@ v1, v2 = sess.run([y1, y2], feed_dict={
     x2: pr,
     x3: pi,
     x4: ss,
-    x5: fb
+    x5: fb,
+    x6: cs
 })
 print('--- infer ---')
 print('DQN_output: ', v1)

@@ -154,7 +154,7 @@ class DqnAgent:
         if with_segmentation:
             SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
             # Fuse the previous (complete) and current (region) segmentation result.
-            SEG_output = self.__result_fusion(SEG_tensor, self._name_space)
+            SEG_output, FUSE_result = self.__result_fusion(SEG_tensor, self._name_space)
         else:
             SEG_logits = CEloss_tensors = None
 
@@ -162,6 +162,7 @@ class DqnAgent:
         net_util.package_tensor(self._outputs, DQN_output)
         if with_segmentation:
             net_util.package_tensor(self._outputs, SEG_output)
+            net_util.package_tensor(self._outputs, FUSE_result)
 
         # Show the input and output holders.
         print('| ---> Finish model architecture (name scope: {}) !'.format(name_space))
@@ -739,47 +740,21 @@ class DqnAgent:
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
-            # # Translate the final probability to segmentation result.
-            # SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')     # [?, h, w]
-            #
-            # # Record the raw output size. For information.
-            # rawout_size = SEG_output.shape
-            # rawup_h = rawout_size[1]
-            # rawup_w = rawout_size[2]
-            # # Recover the segmentation output (suit) size to the original size if don't matched.
-            # input_shape = conf_base.get('input_shape')
-            # origin_h = input_shape[1]
-            # origin_w = input_shape[2]
-            # if rawup_h != origin_h or rawup_w != origin_w:
-            #     # Temporarily expand the dimension for conveniently processing.
-            #     SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')   # [?, h, w, 1]
-            #     # Justify the size.
-            #     conf_cus = self._config['Custom']
-            #     crop_method = conf_cus.get('size_matcher', 'crop')
-            #     if crop_method == 'crop':
-            #         # Crop to target size.
-            #         SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
-            #     elif crop_method == 'bilinear':
-            #         # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
-            #         SEG_output = tf.image.resize_nearest_neighbor(SEG_output, [origin_h, origin_w])
-            #     else:
-            #         raise ValueError('Unknown size match method !!!')
-            #     # Recover to the original dimension.
-            #     SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')   # [?, h, w]
-            #
-            # # Rename the tensor.
-            # SEG_output = tf.identity(SEG_output, name='SEG_output')     # [?, h, w]
-
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
                   'The output shape: {}'.format(name_space, SEG_tensor.shape))
 
-            # Return the segmentation results, logits, and the loss tensors for "Cross-Entropy" calculation.
+            # Return the segmentation tensor, logits, and the loss tensors for "Cross-Entropy" calculation.
             return SEG_tensor, SEG_logits, CEloss_tensors
 
 
     def __result_fusion(self, SEG_tensor, name_space):
         r'''
+            Fuse the "Region Result" with the previous "Complete Result".
+                The fusion method is abundant.
+
+            ** Note that, this function do recover the "Suit" size of segmentation
+                output to the original input image size (for convenient usage).
         '''
 
         # Get basic configuration.
@@ -809,80 +784,82 @@ class DqnAgent:
         # Start definition.
         RF_name = name_space + '/ResFuse'
         with tf.variable_scope(RF_name):
-            # The placeholder of "Complete Result".
-            complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
-                                                           [None, up_h, up_w, classification_dim],
-                                                           name='Complete_Result')  # [?, h, w, cls]
-
             # Get original size for image.
             origin_h = input_shape[1]
             origin_w = input_shape[2]
             # Scale the "Focus Bounding-box".
             focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, up_h, up_w, name='sca_FB')
 
-            # Fusion according to different method. (Including declare placeholder).
-            if fusion_method == 'tensor':
+            # Declare the padding function used to pad the region-tensor to the original up-sample size.
+            def pad_2up(x, bbox):
+                # Get data.
+                y = x[0]  # [1, h, w, c]
+                oy1 = bbox[0]
+                ox1 = bbox[1]
+                oy2 = bbox[2]
+                ox2 = bbox[3]
+                # Compute pad size.
+                py_bot = tf.minimum(oy1, oy2) - 0.0
+                py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')  # Bottom
+                py_up = 1.0 - tf.maximum(oy1, oy2)
+                py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')  # Up
+                px_left = tf.minimum(ox1, ox2) - 0.0
+                px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')  # Left
+                px_right = 1.0 - tf.maximum(ox1, ox2)
+                px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')  # Right
+                # Generate pad vector.
+                pads = [[0, 0],
+                        [py_bot, py_up],
+                        [px_left, px_right],
+                        [0, 0]]
+                # Pad the tensor.
+                y = tf.pad(y, pads)
+                y = tf.reshape(y, [1, up_h, up_w, y.shape[-1]])
+                return y
 
-                def pad_2up(x, bbox):
-                    # Get data.
-                    y = x[0]    # [1, h, w, c]
-                    oy1 = bbox[0]
-                    ox1 = bbox[1]
-                    oy2 = bbox[2]
-                    ox2 = bbox[3]
-                    # Compute pad size.
-                    py_bot = tf.minimum(oy1, oy2) - 0.0
-                    py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')   # Bottom
-                    py_up = 1.0 - tf.maximum(oy1, oy2)
-                    py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')     # Up
-                    px_left = tf.minimum(ox1, ox2) - 0.0
-                    px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')     # Left
-                    px_right = 1.0 - tf.maximum(ox1, ox2)
-                    px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')   # Right
-                    # Generate pad vector.
-                    pads = [[0, 0],
-                            [py_bot, py_up],
-                            [px_left, px_right],
-                            [0, 0]]
-                    # Pad the tensor.
-                    y = tf.pad(y, pads)
-                    y = tf.reshape(y, [1, up_h, up_w, y.shape[-1]])
-                    return y
+            # Bi-linear resize and pad zero to get the region tensor.
+            REGION_tensor = net_util.batch_resize_to_bbox_for_op(
+                [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
+                resize_method=['bilinear'], op_func=pad_2up,
+                output_shape=SEG_tensor.get_shape().as_list()[1:],
+                name='Region_tensor')   # [?, h, w, cls]
 
-                # Bi-linear resize and pad zero to get the region tensor.
-                region_tensor = net_util.batch_resize_to_bbox_for_op(
-                    [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
-                    resize_method=['bilinear'], op_func=pad_2up,
-                    output_shape=SEG_tensor.get_shape().as_list()[1:],
-                    name='Region_tensor')
-
-                #
-                FUSE_tensor = region_tensor
-
-
-
-
+            # Fusion according to different method. (Including declare the "Complete Result")
+            if fusion_method == 'logit':
+                # The placeholder of "Complete Result". --> Logit tensors.
+                complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
+                                                               [None, up_h, up_w, classification_dim],
+                                                               name='Complete_Result')  # [?, h, w, cls]
+                # Fuse the result in "Logit"-level, and generate the final segmentation result.
+                FUSE_result = tf.add(complete_result, REGION_tensor, name='FUSE_result')    # [?, h, w, cls]
+                SEG_prob = tf.nn.softmax(FUSE_result, name='SEG_prob')  # [?, h, w, cls]
+                SEG_output = tf.argmax(SEG_prob, axis=-1, name='SEG_suit_output')    # [?, h, w]
             elif fusion_method == 'prob':
-
-                pass
-
-
-            elif fusion_method == 'result':
-
-                pass
-
-
+                # The placeholder of "Complete Result". --> Probability.
+                complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
+                                                               [None, up_h, up_w, classification_dim],
+                                                               name='Complete_Result')  # [?, h, w, cls]
+                # Fuse the result in "Probability"-level, and generate the final segmentation result.
+                region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
+                FUSE_result = tf.where(tf.equal(region_prob, 0.0), complete_result,
+                                       tf.add(region_prob, complete_result) / 2.0,
+                                       name='FUSE_result')  # [?, h, w, cls]
+                SEG_output = tf.argmax(FUSE_result, axis=-1, name='SEG_suit_output')  # [?, h, w]
+            elif fusion_method == 'mask':
+                # The placeholder of "Complete Result". --> Mask.
+                complete_result = net_util.placeholder_wrapper(self._inputs, tf.int64,
+                                                               [None, up_h, up_w],
+                                                               name='Complete_Result')  # [?, h, w]
+                # Fuse the result in "Mask"-level, and generate the final segmentation result.
+                region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
+                region_mask = tf.argmax(region_prob, axis=-1, name='region_mask')   # [?, h, w]
+                # Simply strategy: Use the "Region Mask" as the ground truth expects for "Background" category.
+                FUSE_result = tf.where(tf.equal(region_mask, 0), complete_result, region_mask,
+                                       name='FUSE_result')  # [?, h, w]
+                # Fusion result is the final segmentation result.
+                SEG_output = tf.identity(FUSE_result, name='SEG_suit_output')  # [?, h, w]
             else:
                 raise ValueError('Unknown result fusion method !!!')
-
-
-
-            # Temp.
-            SEG_output = tf.nn.softmax(FUSE_tensor)
-            # SEG_output = tf.nn.softmax(SEG_tensor)
-
-            # Translate the final probability to segmentation result.
-            SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')  # [?, h, w]
 
             # Recover the segmentation output (suit) size to the original size if don't matched.
             if up_h != origin_h or up_w != origin_w:
@@ -905,59 +882,20 @@ class DqnAgent:
             # Rename the tensor.
             SEG_output = tf.identity(SEG_output, name='SEG_output')  # [?, h, w]
 
-
-
-
-            # # Translate the final probability to segmentation result.
-            # SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')  # [?, h, w]
-            #
-            # # Record the raw output size. For information.
-            # rawout_size = SEG_output.shape
-            # rawup_h = rawout_size[1]
-            # rawup_w = rawout_size[2]
-            # # Recover the segmentation output (suit) size to the original size if don't matched.
-            # input_shape = conf_base.get('input_shape')
-            # origin_h = input_shape[1]
-            # origin_w = input_shape[2]
-            # if rawup_h != origin_h or rawup_w != origin_w:
-            #     # Temporarily expand the dimension for conveniently processing.
-            #     SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')  # [?, h, w, 1]
-            #     # Justify the size.
-            #     conf_cus = self._config['Custom']
-            #     crop_method = conf_cus.get('size_matcher', 'crop')
-            #     if crop_method == 'crop':
-            #         # Crop to target size.
-            #         SEG_output = tf.image.resize_image_with_crop_or_pad(SEG_output, origin_h, origin_w)
-            #     elif crop_method == 'bilinear':
-            #         # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
-            #         SEG_output = tf.image.resize_nearest_neighbor(SEG_output, [origin_h, origin_w])
-            #     else:
-            #         raise ValueError('Unknown size match method !!!')
-            #     # Recover to the original dimension.
-            #     SEG_output = tf.reduce_mean(SEG_output, axis=-1, name='redc_SEG')  # [?, h, w]
-            #
-            # # Rename the tensor.
-            # SEG_output = tf.identity(SEG_output, name='SEG_output')  # [?, h, w]
-
             # Print some information.
-            print('### Finish "Segmentation Head" (name scope: {}). '
+            print('### Finish "Result Fusion" (name scope: {}). '
                   'The output shape: {}, the justified shape: {}'.format(
                 name_space, upsample_size, SEG_output.shape))
 
-
-
-
-            return SEG_output
+            # Return the segmentation result and the fusion value for next iteration.
+            return SEG_output, FUSE_result
 
 
     def _loss_summary(self, DQN_output, SEG_logits, CEloss_tensors):
         r'''
-            The definition of the Loss Function of the whole model.
-
-        :param prioritized_replay:
-        :param weight_PN_loss:
-        :param weight_FTN_loss:
-        :return:
+            Construct the loss function for each branch. Fuse each independent loss
+                to get the final loss for the whole model. What's more, generate
+                the summary for visualization.
         '''
 
         # Indicating.
@@ -1124,16 +1062,6 @@ class DqnAgent:
                 sample_4SEG = tf.expand_dims(tf.expand_dims(
                     tf.expand_dims(sample_4SEG, axis=-1), axis=-1), axis=-1)    # [?, 1, 1, 1]
                 clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')    # [?, h, w, cls]
-
-            # # The single classification loss.
-            # fix_loss = tf.losses.sparse_softmax_cross_entropy(
-            #     labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-            #
-            # # Recursively calculate the loss.
-            # additional_loss = 0.
-            # for idx, logits in enumerate(CEloss_tensors):
-            #     additional_loss = tf.losses.sparse_softmax_cross_entropy(
-            #         labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0'+str(idx+1))
 
             # Different loss operation procedure according to the "Supervision Method".
             # Dilate the label.
