@@ -82,7 +82,7 @@ def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name, restric
     return re_bbox
 
 
-def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, output_shape):
+def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, output_shape, name):
     r'''
         Batch process the input tensor. In detail, it will get the each sub-tensor from
             the batch, then resize the sub-tensor to the corresponding bbox size, and
@@ -99,6 +99,7 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
             after re-size).
         output_shape: The shape of output tensor, it must match the output
             of the op_func.
+        name: The operation (output tensor) name.
 
     Return:
         The tensor after bbox-resize and custom operation, whose shape is output_shape.
@@ -136,8 +137,11 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
         raise ValueError('The size of x and resize_method must matched !!!')
 
     # Get the height and width of the bounding-box.
-    box_height = tf.cast(tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0]), 'int32')   # [?]
-    box_width = tf.cast(tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1]), 'int32')    # [?]
+    box_height = tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0])
+    box_width = tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1])
+    # Avoid "y1(x1) > y2(x2)".
+    box_height = tf.cast(tf.abs(box_height), 'int32')   # [?]
+    box_width = tf.cast(tf.abs(box_width), 'int32')     # [?]
 
     # The loop body function.
     def body_func(idx, y):
@@ -151,8 +155,10 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
             elif m == 'nearest':
                 cand = tf.image.resize_nearest_neighbor(cand, [h, w])   # [1, h, w, c]
             elif m == 'crop':
-                off_y = tf.cast(bbox[idx, 0] * tf.to_float(h), 'int32')
-                off_x = tf.cast(bbox[idx, 1] * tf.to_float(w), 'int32')
+                oy = tf.minimum(bbox[idx, 0], bbox[idx, 2])
+                ox = tf.minimum(bbox[idx, 1], bbox[idx, 3])
+                off_y = tf.cast(oy * tf.to_float(h), 'int32')
+                off_x = tf.cast(ox * tf.to_float(w), 'int32')
                 cand = tf.image.crop_to_bounding_box(cand, off_y, off_x, h, w)  # [1, h, w, c]
             else:
                 raise ValueError('Unknown resize method !!!')
@@ -196,8 +202,8 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
     _1, y = tf.while_loop(
         cond=lambda idx, _2: tf.less(idx, batch_size),
         body=body_func,
-        loop_vars=[index, y]
-    )
+        loop_vars=[index, y],
+        name=name)
     # Get the final batch processed tensor.
     return y
 
