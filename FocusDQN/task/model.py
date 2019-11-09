@@ -1003,6 +1003,7 @@ class DqnAgent:
         suit_h = conf_base.get('suit_height')
         suit_w = conf_base.get('suit_width')
         classification_dim = conf_base.get('classification_dimension')
+        supv_method = conf_train.get('segmentation_supervision', 'dilate')
         score_factor = conf_train.get('score_loss_factor', 1.0)
         sample_share = conf_train.get('sample_share', False)
 
@@ -1048,14 +1049,22 @@ class DqnAgent:
             # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
             if len(GT_label.shape) != 4:
                 GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')
-            # Crop the corresponding region in label with respects to image (patch).
-            bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
-            GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
-                                                method='nearest',
-                                                name='focus_label')     # [?, h, w, 1]
-            # Recover to the original dimension.
-            GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')     # [?, h, w]
-            GT_label = tf.cast(GT_label, 'int32', name='Corr_label')    # [?, h, w]
+
+            # Different operation procedure according to the "Supervision Method".
+            if supv_method == 'dilate':
+                # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
+                                                    method='nearest',
+                                                    name='focus_label')     # [?, h, w, 1]
+                # Recover to the original dimension.
+                GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')     # [?, h, w]
+                GT_label = tf.cast(GT_label, 'int32', name='Corr_label')    # [?, h, w]
+            elif supv_method == 'erode':
+                # Don't need special process for label here.
+                pass
+            else:
+                raise ValueError('Unknown segmentation supervision method !!!')
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],

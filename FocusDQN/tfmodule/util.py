@@ -82,7 +82,7 @@ def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name, restric
     return re_bbox
 
 
-def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
+def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, output_shape):
     r'''
         Batch process the input tensor. In detail, it will get the each sub-tensor from
             the batch, then resize the sub-tensor to the corresponding bbox size, and
@@ -93,6 +93,8 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
         x: The tensor waits for batch process.
         bbox: The bounding-box tensor, indicates the bbox size.
         cor_size: The corresponding size of the bounding-box.
+        resize_method: The resize method. Default is "bilinear", optional is "nearest"
+            and "crop".
         op_func: The custom function used to apply to the bbox-tensor (the tensor
             after re-size).
         output_shape: The shape of output tensor, it must match the output
@@ -103,8 +105,16 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
     '''
 
     # Check validity of parameters.
-    if not isinstance(x, tf.Tensor) or len(x.shape) != 4:
-        raise TypeError('The x must be 4-D tensor !!!')
+    if not isinstance(x, list) or len(x) == 0:
+        raise TypeError('The x must be a list consists of at least one tensor !!!')
+    x_invar = None
+    for e_x in x:
+        if not isinstance(e_x, tf.Tensor) or len(e_x.shape) != 4:
+            raise TypeError('The elements of x must be 4-D tensor !!!')
+        if x_invar is None:
+            x_invar = e_x.shape[1:-1]
+        if x_invar != e_x.shape[1:-1]:
+            raise TypeError('The all input tensors must have same height and width !!!')
     if not isinstance(bbox, tf.Tensor) or len(bbox.shape) != 2 or bbox.shape[1] != 4:
         raise TypeError('The bbox must be [?, 4] Tensor !!!')
     if not isinstance(cor_size, list) or len(cor_size) != 2:
@@ -117,19 +127,38 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
     else:
         if not isinstance(output_shape, list) or len(output_shape) != 3:
             raise TypeError('The output_shape must be either None or 3-element list !!!')
+    if not isinstance(resize_method, list):
+        raise TypeError('The resize_method must be a list consists of method names !!!')
+    for m in resize_method:
+        if m not in ['bilinear', 'nearest', 'crop']:
+            raise ValueError('The method must be one of "bilinear", "nearest", "crop" !!!')
+    if len(x) != len(resize_method):
+        raise ValueError('The size of x and resize_method must matched !!!')
 
     # Get the height and width of the bounding-box.
     box_height = tf.cast(tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0]), 'int32')   # [?]
     box_width = tf.cast(tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1]), 'int32')    # [?]
 
-    # The loop body fucntion.
+    # The loop body function.
     def body_func(idx, y):
-        # Resize to bbox-shape.
+        # Resize all input tensors to bbox-shape.
         h, w = box_height[idx], box_width[idx]
-        sub_x = tf.slice(x, [idx, 0, 0, 0], [1, -1, -1, -1])     # sub_x = tf.expand_dims(x[idx], axis=0)
-        sub_y = tf.image.resize_bilinear(sub_x, [h, w])     # [1, h, w, c]
+        candidates = []
+        for sub_x, m in zip(x, resize_method):
+            cand = tf.slice(sub_x, [idx, 0, 0, 0], [1, -1, -1, -1])
+            if m == 'bilinear':
+                cand = tf.image.resize_bilinear(cand, [h, w])   # [1, h, w, c]
+            elif m == 'nearest':
+                cand = tf.image.resize_nearest_neighbor(cand, [h, w])   # [1, h, w, c]
+            elif m == 'crop':
+                off_y = tf.cast(bbox[idx, 0] * tf.to_float(h), 'int32')
+                off_x = tf.cast(bbox[idx, 1] * tf.to_float(w), 'int32')
+                cand = tf.image.crop_to_bounding_box(cand, off_y, off_x, h, w)  # [1, h, w, c]
+            else:
+                raise ValueError('Unknown resize method !!!')
+            candidates.append(cand)
         # Custom operation.
-        sub_y = op_func(sub_y)
+        sub_y = op_func(candidates)
         # Check validity.
         if len(y.shape) != len(sub_y.shape) or y.shape[1:] != sub_y.shape[1:]:
             raise ValueError('Invalid sub_y shape ({}), must be same as the y ({}) !!!'
@@ -147,7 +176,7 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
     if output_shape is None:
         y = 0.
     else:
-        bt_ind = tf.reduce_mean(tf.zeros_like(x), axis=(1, 2, 3), keepdims=True)    # [?, 1, 1, 1]
+        bt_ind = tf.reduce_mean(tf.zeros_like(x[0]), axis=(1, 2, 3), keepdims=True)    # [?, 1, 1, 1]
         os_ind = tf.expand_dims(tf.zeros(output_shape), axis=0)     # [1, h, w, c]
         dim_diff = len(output_shape) - (len(bt_ind.shape) - 1)
         if dim_diff > 0:  # match
@@ -161,7 +190,7 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
         y = os_ind * bt_ind
 
     # Calculate the batch size.
-    batch_size = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(1, 2, 3)))     # scalar
+    batch_size = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x[0], dtype=tf.int32), axis=(1, 2, 3)))     # scalar
     # Start to loop.
     index = 0
     _1, y = tf.while_loop(

@@ -16,23 +16,31 @@ print('Test')
 import tensorflow as tf
 import tfmodule.util as net_util
 
-x1 = tf.placeholder(tf.float32, [None, 10, 10, 2])
+x1 = [tf.placeholder(tf.float32, [None, 10, 10, 2]),
+      tf.placeholder(tf.float32, [None, 10, 10, 5])]
+# x1 = [tf.placeholder(tf.float32, [None, 10, 10, 2])]
 temp = [[0.2, 0.4, 0.4, 0.6],
         [0.6, 0.2, 0.8, 0.6],
         [0.4, 0.4, 0.6, 0.6]]
 x2 = tf.constant(temp)
 x3 = [10, 10]
-def x4(sub_y):
-    sub_y = tf.image.resize_nearest_neighbor(sub_y, x3)
+x4 = ['bilinear', 'crop']
+# x4 = ['bilinear']
+def x5(cands):
+    # sub_y = tf.image.resize_nearest_neighbor(sub_y, x3)
+    # sub_y = tf.reduce_sum(cands[0])
+    sub_y = tf.reduce_sum(tf.reduce_mean(cands[0], axis=-1) + 3 * tf.reduce_mean(cands[1], axis=-1))
     return sub_y
-x5 = [10, 10, 2]
+x6 = None
 
-y = net_util.batch_resize_to_bbox_for_op(x1, x2, x3, x4, x5)
+y = net_util.batch_resize_to_bbox_for_op(x1, x2, x3, x4, x5, x6)
 
 # a = np.ones([3, 10, 10, 2], dtype=np.float32)
+# a = np.random.randint(-2, 6, [3, 10, 10, 2])
 a = np.random.randint(-2, 6, [3, 10, 10, 2])
+b = np.random.randint(-2, 6, [3, 10, 10, 5])
 sess = tf.Session()
-v = sess.run(y, feed_dict={x1: a})
+v = sess.run(y, feed_dict={x1[0]: a, x1[1]: b})
 
 print('-- orgin --')
 print(a)
