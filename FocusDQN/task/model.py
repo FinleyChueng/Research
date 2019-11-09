@@ -792,6 +792,11 @@ class DqnAgent:
         conf_cus = self._config['Custom']
         fusion_method = conf_cus.get('result_fusion', 'prob')
 
+        # Get the shape of "Segmentation" branch.
+        upsample_size = SEG_tensor.get_shape().as_list()
+        up_h = upsample_size[1]
+        up_w = upsample_size[2]
+
         # Get the "Focus Bounding-box" holder.
         conf_dqn = self._config['DQN']
         dqn_names = conf_dqn.get('double_dqn', None)
@@ -804,15 +809,55 @@ class DqnAgent:
         # Start definition.
         RF_name = name_space + '/ResFuse'
         with tf.variable_scope(RF_name):
+            # The placeholder of "Complete Result".
+            complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
+                                                           [None, up_h, up_w, classification_dim],
+                                                           name='Complete_Result')  # [?, h, w, cls]
+
+            # Get original size for image.
+            origin_h = input_shape[1]
+            origin_w = input_shape[2]
+            # Scale the "Focus Bounding-box".
+            focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, up_h, up_w, name='sca_FB')
+
             # Fusion according to different method. (Including declare placeholder).
             if fusion_method == 'tensor':
-                # The placeholder of "Complete Result".
-                complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
-                                                               [None, input_shape[1], input_shape[2], classification_dim],
-                                                               name='Complete_Result')  # [?, h, w, cls]
 
-                # # Resize SEG (segmentation) tensor into the shape of "Focus Bounding-box" region.
-                # FBR_height = tf.multiply(input_shape[1], focus_bbox[:, 2] - focus_bbox[:, 0]    )
+                def pad_2up(x, bbox):
+                    # Get data.
+                    y = x[0]    # [1, h, w, c]
+                    oy1 = bbox[0]
+                    ox1 = bbox[1]
+                    oy2 = bbox[2]
+                    ox2 = bbox[3]
+                    # Compute pad size.
+                    py_bot = tf.minimum(oy1, oy2) - 0.0
+                    py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')   # Bottom
+                    py_up = 1.0 - tf.maximum(oy1, oy2)
+                    py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')     # Up
+                    px_left = tf.minimum(ox1, ox2) - 0.0
+                    px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')     # Left
+                    px_right = 1.0 - tf.maximum(ox1, ox2)
+                    px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')   # Right
+                    # Generate pad vector.
+                    pads = [[0, 0],
+                            [py_bot, py_up],
+                            [px_left, px_right],
+                            [0, 0]]
+                    # Pad the tensor.
+                    y = tf.pad(y, pads)
+                    y = tf.reshape(y, [1, up_h, up_w, y.shape[-1]])
+                    return y
+
+                # Bi-linear resize and pad zero to get the region tensor.
+                region_tensor = net_util.batch_resize_to_bbox_for_op(
+                    [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
+                    resize_method=['bilinear'], op_func=pad_2up,
+                    output_shape=SEG_tensor.get_shape().as_list()[1:],
+                    name='Region_tensor')
+
+                #
+                FUSE_tensor = region_tensor
 
 
 
@@ -833,19 +878,14 @@ class DqnAgent:
 
 
             # Temp.
-            SEG_output = tf.nn.softmax(SEG_tensor)
+            SEG_output = tf.nn.softmax(FUSE_tensor)
+            # SEG_output = tf.nn.softmax(SEG_tensor)
 
             # Translate the final probability to segmentation result.
             SEG_output = tf.argmax(SEG_output, axis=-1, name='SEG_suit_output')  # [?, h, w]
 
-            # Record the raw output size. For information.
-            rawout_size = SEG_output.shape
-            rawup_h = rawout_size[1]
-            rawup_w = rawout_size[2]
             # Recover the segmentation output (suit) size to the original size if don't matched.
-            origin_h = input_shape[1]
-            origin_w = input_shape[2]
-            if rawup_h != origin_h or rawup_w != origin_w:
+            if up_h != origin_h or up_w != origin_w:
                 # Temporarily expand the dimension for conveniently processing.
                 SEG_output = tf.expand_dims(SEG_output, axis=-1, name='expa_SEG')  # [?, h, w, 1]
                 # Justify the size.
@@ -902,7 +942,7 @@ class DqnAgent:
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
                   'The output shape: {}, the justified shape: {}'.format(
-                name_space, rawout_size, SEG_output.shape))
+                name_space, upsample_size, SEG_output.shape))
 
 
 
@@ -1116,7 +1156,7 @@ class DqnAgent:
             # "Erode" the segmentation tensor.
             elif supv_method == 'erode':
                 # Declare the region loss function.
-                def region_loss(x):
+                def region_loss(x, bbox):
                     # Get candidates.
                     lab, logit, w = x
                     # Recover label to the original dimension and dtype.

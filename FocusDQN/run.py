@@ -26,7 +26,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 # x3 = [10, 10]
 # x4 = ['bilinear', 'crop']
 # # x4 = ['bilinear']
-# def x5(cands):
+# def x5(cands, bbox):
 #     # sub_y = tf.image.resize_nearest_neighbor(sub_y, x3)
 #     # sub_y = tf.reduce_sum(cands[0])
 #     sub_y = tf.reduce_sum(tf.reduce_mean(cands[0], axis=-1) + 3 * tf.reduce_mean(cands[1], axis=-1))
@@ -231,6 +231,10 @@ fb = [[0.5, 0.4, 0.7, 0.6],
       [0.5, 0.4, 0.7, 0.6],
       [0.5, 0.4, 0.7, 0.6],
       [0.5, 0.4, 0.7, 0.6]]
+# fb = [[0.3, 0.5, 0.7, 0.6],
+#       [0.3, 0.5, 0.7, 0.6],
+#       [0.3, 0.5, 0.7, 0.6],
+#       [0.3, 0.5, 0.7, 0.6]]
 # input holders.
 x1 = inputs['ORG/image']
 x2 = inputs['ORG/prev_result']

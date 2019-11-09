@@ -137,8 +137,8 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
         raise ValueError('The size of x and resize_method must matched !!!')
 
     # Get the height and width of the bounding-box.
-    box_height = tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0])
-    box_width = tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1])
+    box_height = tf.round(tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0]))
+    box_width = tf.round(tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1]))
     # Avoid "y1(x1) > y2(x2)".
     box_height = tf.cast(tf.abs(box_height), 'int32')   # [?]
     box_width = tf.cast(tf.abs(box_width), 'int32')     # [?]
@@ -157,14 +157,14 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
             elif m == 'crop':
                 oy = tf.minimum(bbox[idx, 0], bbox[idx, 2])
                 ox = tf.minimum(bbox[idx, 1], bbox[idx, 3])
-                off_y = tf.cast(oy * tf.to_float(h), 'int32')
-                off_x = tf.cast(ox * tf.to_float(w), 'int32')
+                off_y = tf.cast(tf.round(oy * tf.to_float(h)), 'int32')
+                off_x = tf.cast(tf.round(ox * tf.to_float(w)), 'int32')
                 cand = tf.image.crop_to_bounding_box(cand, off_y, off_x, h, w)  # [1, h, w, c]
             else:
                 raise ValueError('Unknown resize method !!!')
             candidates.append(cand)
         # Custom operation.
-        sub_y = op_func(candidates)
+        sub_y = op_func(candidates, bbox[idx])
         # Check validity.
         if len(y.shape) != len(sub_y.shape) or y.shape[1:] != sub_y.shape[1:]:
             raise ValueError('Invalid sub_y shape ({}), must be same as the y ({}) !!!'
