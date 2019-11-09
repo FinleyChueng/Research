@@ -13,57 +13,116 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 # Just Test -------
 
 print('Test')
-
 import tensorflow as tf
+import tfmodule.util as net_util
 
+x1 = tf.placeholder(tf.float32, [None, 10, 10, 2])
+temp = [[0.2, 0.4, 0.4, 0.6],
+        [0.6, 0.2, 0.8, 0.6],
+        [0.4, 0.4, 0.6, 0.6]]
+x2 = tf.constant(temp)
+x3 = [10, 10]
+def x4(sub_y):
+    sub_y = tf.image.resize_nearest_neighbor(sub_y, x3)
+    return sub_y
+x5 = [10, 10, 2]
+
+y = net_util.batch_resize_to_bbox_for_op(x1, x2, x3, x4, x5)
+
+# a = np.ones([3, 10, 10, 2], dtype=np.float32)
+a = np.random.randint(-2, 6, [3, 10, 10, 2])
+sess = tf.Session()
+v = sess.run(y, feed_dict={x1: a})
+
+print('-- orgin --')
+print(a)
+print('== process ==')
+print(v)
+
+
+
+# print('Test')
+#
+# import tensorflow as tf
+#
+# a = tf.random.uniform([1, 10, 10, 1], maxval=1.0)
+# b = tf.random.uniform([1, 10, 10, 1], maxval=1.0)
+#
+# # a = tf.random.uniform([1, 240, 240, 1], maxval=1.0)
+# # b = tf.random.uniform([1, 240, 240, 1], maxval=1.0)
+#
+# # temp = [[0.3, 0.3, 0.9, 0.9]]
+# temp = [[0.2, 0.2, 0.8, 0.8]]
+# # temp = [[0.4, 0.4, 0.8, 0.8]]
+# bbox = tf.constant(temp)
+# bid = tf.constant([0])
+#
+# src_h, src_w = a.get_shape().as_list()[1:3]
+# dst_h = int((temp[0][2]-temp[0][0]) * src_h)
+# dst_w = int((temp[0][3]-temp[0][1]) * src_w)
+#
+# of_y = int(src_h * temp[0][0])
+# of_x = int(src_w * temp[0][1])
+# y1 = tf.image.crop_and_resize(a, bbox, bid, [dst_h, dst_w])
+# lab1 = tf.image.crop_to_bounding_box(b, of_y, of_x, dst_h, dst_w)
+# loss1 = tf.reduce_mean(lab1 * tf.log(y1))
+# # loss1 = tf.reduce_mean(tf.square(lab1 - y1))
+# print('dst_h: {}, dst_w: {}'.format(dst_h, dst_w))
+# print('of_y: {}, of_x: {}'.format(of_y, of_x))
+#
+# y2 = a
+# lab2 = tf.image.crop_and_resize(b, bbox, bid, [src_h, src_w])
+# loss2 = tf.reduce_mean(lab2 * tf.log(y2))
+# # loss2 = tf.reduce_mean(tf.square(lab2 - y2))
+#
+# by_ratio = bbox[0, 2]-bbox[0, 0]
+# bx_ratio = bbox[0, 3]-bbox[0, 1]
+#
+# sess = tf.Session()
+# v1, v2, v3, v4 = sess.run([loss1, loss2, by_ratio, bx_ratio])
+# print('loss1: {}, loss2: {}'.format(v1, v2))
+# print('l2/l1: {}, bbox --> y-ratio: {}, x-ratio: {}'.format(
+#     v2/v1, v3, v4))
+
+
+
+# print('Test')
+#
+# import tensorflow as tf
+#
 # def body(id, tensor, l):
-#     y = tensor[id]
+#     y = tf.expand_dims(tensor[id], axis=0) * tf.to_float(id)
 #     print(y)
-#     print(type(l))
-#     print(l.shape)
-#     if len(l.shape) == 0:
-#         l = tf.expand_dims(y, axis=-1)
-#     else:
-#         l = tf.concat([l, y], axis=-1)
-#     id += 1
+#     l = tf.concat([l[0: id], y, l[id+1:]], axis=0)
 #     print(l)
+#     id += 1
 #     # return id, tensor,
 #     return id, tensor, l
-
-def body(id, tensor, l):
-    y = tf.expand_dims(tensor[id], axis=0) * tf.to_float(id)
-    print(y)
-    l = tf.concat([l[0: id], y, l[id+1:]], axis=0)
-    print(l)
-    id += 1
-    # return id, tensor,
-    return id, tensor, l
-a = tf.placeholder(tf.float32, [None, 2, 3])
-bs = tf.ones_like(a, dtype=tf.int32)
-bs = tf.reduce_sum(tf.reduce_mean(bs, axis=(1, 2)))     # scalar
-idx = 0
-# st = 0.
-st = tf.zeros_like(a)
-_1, _2, out = tf.while_loop(
-    cond=lambda id, _2, _3: tf.less(id, bs),
-    body=body,
-    loop_vars=[idx, a, st]
-)
-# out = tf.stack(st, axis=-1)
-
-# --------------------------------
-x1 = np.random.randint(0, 10, (4, 2, 3))
-sess = tf.Session()
-v1 = sess.run(out, feed_dict={
-    a: x1
-})
-
-print('Origin: ', x1.shape)
-print(x1)
-print('While-loop:, ', v1.shape)
-print(v1)
-
-print('-- end --')
+# a = tf.placeholder(tf.float32, [None, 2, 3])
+# bs = tf.ones_like(a, dtype=tf.int32)
+# bs = tf.reduce_sum(tf.reduce_mean(bs, axis=(1, 2)))     # scalar
+# idx = 0
+# # st = 0.
+# st = tf.zeros_like(a)
+# _1, _2, out = tf.while_loop(
+#     cond=lambda id, _2, _3: tf.less(id, bs),
+#     body=body,
+#     loop_vars=[idx, a, st]
+# )
+#
+# # --------------------------------
+# x1 = np.random.randint(0, 10, (4, 2, 3))
+# sess = tf.Session()
+# v1 = sess.run(out, feed_dict={
+#     a: x1
+# })
+#
+# print('Origin: ', x1.shape)
+# print(x1)
+# print('While-loop:, ', v1.shape)
+# print(v1)
+#
+# print('-- end --')
 
 # ----------------------------------------------------------
 

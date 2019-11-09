@@ -37,7 +37,7 @@ def package_tensor(dic, tensor):
     return
 
 
-def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name):
+def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name, restrict_boundary=True):
     r'''
         Scale the coordinates of bounding-box according to the source/destination
             size of the corresponding image, it will re-assign (calculate) the
@@ -70,56 +70,107 @@ def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name):
     x1 = (x1 * src_width - offset_x) / dst_width
     y2 = (y2 * src_height - offset_y) / dst_height
     x2 = (x2 * src_width - offset_x) / dst_width
+    # Restrict the boundary if needed. That is, restrict the normalized
+    #   value in range (0, 1).
+    if restrict_boundary:
+        y1 = tf.maximum(0.0, tf.minimum(1.0, y1))
+        x1 = tf.maximum(0.0, tf.minimum(1.0, x1))
+        y2 = tf.maximum(0.0, tf.minimum(1.0, y2))
+        x2 = tf.maximum(0.0, tf.minimum(1.0, x2))
     # Stack.
     re_bbox = tf.stack([y1, x1, y2, x2], axis=-1, name=name)
     return re_bbox
 
 
-def batch_resize_to_bbox(x, bbox, bbox_size):
-# def batch_resize_and_op(x, dst_height, dst_width, op_func):
+def batch_resize_to_bbox_for_op(x, bbox, cor_size, op_func, output_shape):
     r'''
+        Batch process the input tensor. In detail, it will get the each sub-tensor from
+            the batch, then resize the sub-tensor to the corresponding bbox size, and
+            finally apply the custom function to the bbox tensor. The shape of output
+            tensor depends on the output_shape.
+
+    Parameters:
+        x: The tensor waits for batch process.
+        bbox: The bounding-box tensor, indicates the bbox size.
+        cor_size: The corresponding size of the bounding-box.
+        op_func: The custom function used to apply to the bbox-tensor (the tensor
+            after re-size).
+        output_shape: The shape of output tensor, it must match the output
+            of the op_func.
+
+    Return:
+        The tensor after bbox-resize and custom operation, whose shape is output_shape.
     '''
 
+    # Check validity of parameters.
+    if not isinstance(x, tf.Tensor) or len(x.shape) != 4:
+        raise TypeError('The x must be 4-D tensor !!!')
+    if not isinstance(bbox, tf.Tensor) or len(bbox.shape) != 2 or bbox.shape[1] != 4:
+        raise TypeError('The bbox must be [?, 4] Tensor !!!')
+    if not isinstance(cor_size, list) or len(cor_size) != 2:
+        raise TypeError('The cor_size must be 2-element list !!!')
+    if not callable(op_func):
+        raise TypeError('The op_func must be a custom function used to receive and process'
+                        ' the bbox-shape (re-sized) tensor !!!')
+    if output_shape is None:
+        pass
+    else:
+        if not isinstance(output_shape, list) or len(output_shape) != 3:
+            raise TypeError('The output_shape must be either None or 3-element list !!!')
 
-    pass
+    # Get the height and width of the bounding-box.
+    box_height = tf.cast(tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0]), 'int32')   # [?]
+    box_width = tf.cast(tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1]), 'int32')    # [?]
 
-    # # Resize SEG (segmentation) tensor into the shape of "Focus Bounding-box" region.
-    # FBR_height = tf.multiply(input_shape[1], focus_bbox[:, 2] - focus_bbox[:, 0])
+    # The loop body fucntion.
+    def body_func(idx, y):
+        # Resize to bbox-shape.
+        h, w = box_height[idx], box_width[idx]
+        sub_x = tf.slice(x, [idx, 0, 0, 0], [1, -1, -1, -1])     # sub_x = tf.expand_dims(x[idx], axis=0)
+        sub_y = tf.image.resize_bilinear(sub_x, [h, w])     # [1, h, w, c]
+        # Custom operation.
+        sub_y = op_func(sub_y)
+        # Check validity.
+        if len(y.shape) != len(sub_y.shape) or y.shape[1:] != sub_y.shape[1:]:
+            raise ValueError('Invalid sub_y shape ({}), must be same as the y ({}) !!!'
+                             ' Please check the custom function. '.format(sub_y.shape, y.shape))
+        # Accumulate the sub-y value.
+        if len(y.shape) != 0:
+            y = tf.concat([y[0: idx], sub_y, y[idx+1:]], axis=0)  # [?, h, w, c]
+        else:
+            y = tf.add(y, sub_y)
+        idx += 1
+        return idx, y
 
-    def body(id, tensor, l):
-        y = tf.expand_dims(tensor[id], axis=0) * tf.to_float(id)
-        print(y)
-        l = tf.concat([l[0: id], y, l[id + 1:]], axis=0)
-        print(l)
-        id += 1
-        # return id, tensor,
-        return id, tensor, l
+    # Declare the output tensor (which is actually pass through the while-loop for
+    #   gradually processing).
+    if output_shape is None:
+        y = 0.
+    else:
+        bt_ind = tf.reduce_mean(tf.zeros_like(x), axis=(1, 2, 3), keepdims=True)    # [?, 1, 1, 1]
+        os_ind = tf.expand_dims(tf.zeros(output_shape), axis=0)     # [1, h, w, c]
+        dim_diff = len(output_shape) - (len(bt_ind.shape) - 1)
+        if dim_diff > 0:  # match
+            for _ in range(dim_diff):
+                bt_ind = tf.expand_dims(bt_ind, axis=-1)
+        elif dim_diff < 0:     # index
+            for _ in range(-dim_diff):
+                bt_ind = tf.reduce_mean(bt_ind, axis=-1)
+        else:
+            pass
+        y = os_ind * bt_ind
 
-    batch_size = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(1, 2)))    # scalar
-    idx = 0
-    st = tf.zeros_like(x)
-    _1, _2, out = tf.while_loop(
-        cond=lambda id, _2, _3: tf.less(id, bs),
-        body=body,
-        loop_vars=[idx, a, st]
+    # Calculate the batch size.
+    batch_size = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(1, 2, 3)))     # scalar
+    # Start to loop.
+    index = 0
+    _1, y = tf.while_loop(
+        cond=lambda idx, _2: tf.less(idx, batch_size),
+        body=body_func,
+        loop_vars=[index, y]
     )
-    # out = tf.stack(st, axis=-1)
-
-    # --------------------------------
-    x1 = np.random.randint(0, 10, (4, 2, 3))
-    sess = tf.Session()
-    v1 = sess.run(out, feed_dict={
-        a: x1
-    })
-
-
-
-    pass
-
-
-
-
-    return
+    # Get the final batch processed tensor.
+    return y
 
 
 def copy_model_parameters(from_scope, to_scope):
