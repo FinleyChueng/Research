@@ -228,8 +228,8 @@ class DqnAgent:
 
             # Crop or resize the input image into suitable size if size not matched.
             #   What's more, scale the "Focus Bounding-box" if needed.
-            suit_w = conf_base.get('suit_width')
             suit_h = conf_base.get('suit_height')
+            suit_w = conf_base.get('suit_width')
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
                 crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
@@ -526,9 +526,9 @@ class DqnAgent:
         # Get detailed configuration.
         conf_base = self._config['Base']
         conf_train = self._config['Training']
-        # Suitable width and height.
-        suit_w = conf_base.get('suit_width')
+        # Suitable height and width.
         suit_h = conf_base.get('suit_height')
+        suit_w = conf_base.get('suit_width')
         # Classification categories.
         classification_dim = conf_base.get('classification_dimension')
         # Feature normalization method and activation function.
@@ -548,7 +548,7 @@ class DqnAgent:
                                        keep_prob=conv_kprob,
                                        regularizer=regularizer,
                                        name_space='gen_score_conv1x1_0' + str(name_idx))
-            y = tf.image.resize_bilinear(y, size=[suit_w, suit_h],
+            y = tf.image.resize_bilinear(y, size=[suit_h, suit_w],
                                          name='gen_score_bi_0' + str(name_idx))
             return y
 
@@ -740,6 +740,22 @@ class DqnAgent:
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
+            # Check the shape validity of each output tensors of "Segmentation" branch.
+            shape_validity = True
+            os1 = SEG_tensor.get_shape().as_list()[1:3]
+            if suit_h != os1[0] or suit_w != os1[1]:
+                shape_validity = False
+            os2 = SEG_logits.get_shape().as_list()[1:3]
+            if suit_h != os2[0] or suit_w != os2[1]:
+                shape_validity = False
+            for t in CEloss_tensors:
+                os3 = t.get_shape().as_list()[1:3]
+                if suit_h != os3[0] or suit_w != os3[1]:
+                    shape_validity = False
+            if not shape_validity:
+                raise ValueError('The output shape of "Segmentation" branch is invalid !!! '
+                                 'it should be: ({}, {})'.format(suit_h, suit_w))
+
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
                   'The output shape: {}'.format(name_space, SEG_tensor.shape))
@@ -767,10 +783,9 @@ class DqnAgent:
         conf_cus = self._config['Custom']
         fusion_method = conf_cus.get('result_fusion', 'prob')
 
-        # Get the shape of "Segmentation" branch.
-        upsample_size = SEG_tensor.get_shape().as_list()
-        up_h = upsample_size[1]
-        up_w = upsample_size[2]
+        # Get the shape of "Segmentation" branch. Actually is "Suit" size.
+        up_h = conf_base.get('suit_height')
+        up_w = conf_base.get('suit_width')
 
         # Get the "Focus Bounding-box" holder.
         conf_dqn = self._config['DQN']
@@ -831,7 +846,10 @@ class DqnAgent:
                                                                [None, up_h, up_w, classification_dim],
                                                                name='Complete_Result')  # [?, h, w, cls]
                 # Fuse the result in "Logit"-level, and generate the final segmentation result.
-                FUSE_result = tf.add(complete_result, REGION_tensor, name='FUSE_result')    # [?, h, w, cls]
+                FUSE_result = tf.add(complete_result, REGION_tensor, name='RawF_result')    # [?, h, w, cls]
+                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0.0),
+                                       REGION_tensor, FUSE_result,
+                                       name='FUSE_result')  # filter the init.
                 SEG_prob = tf.nn.softmax(FUSE_result, name='SEG_prob')  # [?, h, w, cls]
                 SEG_output = tf.argmax(SEG_prob, axis=-1, name='SEG_suit_output')    # [?, h, w]
             elif fusion_method == 'prob':
@@ -843,7 +861,10 @@ class DqnAgent:
                 region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
                 FUSE_result = tf.where(tf.equal(region_prob, 0.0), complete_result,
                                        tf.add(region_prob, complete_result) / 2.0,
-                                       name='FUSE_result')  # [?, h, w, cls]
+                                       name='RawF_result')  # [?, h, w, cls]
+                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0.0),
+                                       region_prob, FUSE_result,
+                                       name='FUSE_result')  # filter the init.
                 SEG_output = tf.argmax(FUSE_result, axis=-1, name='SEG_suit_output')  # [?, h, w]
             elif fusion_method == 'mask':
                 # The placeholder of "Complete Result". --> Mask.
@@ -855,7 +876,10 @@ class DqnAgent:
                 region_mask = tf.argmax(region_prob, axis=-1, name='region_mask')   # [?, h, w]
                 # Simply strategy: Use the "Region Mask" as the ground truth expects for "Background" category.
                 FUSE_result = tf.where(tf.equal(region_mask, 0), complete_result, region_mask,
-                                       name='FUSE_result')  # [?, h, w]
+                                       name='RawF_result')  # [?, h, w]
+                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0),
+                                       region_mask, FUSE_result,
+                                       name='FUSE_result')  # filter the init.
                 # Fusion result is the final segmentation result.
                 SEG_output = tf.identity(FUSE_result, name='SEG_suit_output')  # [?, h, w]
             else:
@@ -885,7 +909,7 @@ class DqnAgent:
             # Print some information.
             print('### Finish "Result Fusion" (name scope: {}). '
                   'The output shape: {}, the justified shape: {}'.format(
-                name_space, upsample_size, SEG_output.shape))
+                name_space, SEG_tensor.shape, SEG_output.shape))
 
             # Return the segmentation result and the fusion value for next iteration.
             return SEG_output, FUSE_result
