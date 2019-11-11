@@ -159,7 +159,7 @@ class BratsAdapter(Adapter):
         # Return the batch pair according to the batch size.
         if batch_size == 1:
             # Shape: [width, height, modalities], [width, height, cls]
-            return four_modality[0], ground_truth[0], MHA_idx, inst_idx, clazz_weights
+            return four_modality[0], ground_truth[0], MHA_idx, inst_idx[0], clazz_weights
         else:
             # Shape: [batches, width, height, modalities], [batches, width, height, cls]
             return four_modality, ground_truth, MHA_idx, inst_idx, clazz_weights
@@ -181,9 +181,9 @@ class BratsAdapter(Adapter):
 
         # Get image, label and flag.
         if validation:
-            test_image, test_label, finish_CMHA = self._train_brats.next_test_batch(batch_size)
+            test_image, test_label = self._train_brats.next_test_batch(batch_size)
         else:
-            test_image, test_label, finish_CMHA = self._test_brats.next_test_batch(batch_size)
+            test_image, test_label = self._test_brats.next_test_batch(batch_size)
 
         # Assign test image. Note the data type.
         four_modality = np.asarray(test_image, dtype=np.float32)
@@ -199,10 +199,10 @@ class BratsAdapter(Adapter):
         # Return the batch pair according to the batch size.
         if batch_size == 1:
             # Shape: [width, height, modalities], [width, height, cls]
-            return four_modality[0], ground_truth[0], finish_CMHA
+            return four_modality[0], ground_truth[0]
         else:
             # Shape: [batches, width, height, modalities], [batches, width, height, cls]
-            return four_modality, ground_truth, finish_CMHA
+            return four_modality, ground_truth
 
 
     def __normalize(self, src, upper):

@@ -280,8 +280,7 @@ class BRATS2015:
 
     def next_test_batch(self, batch_size):
         endbatch = np.shape(self.arr_test_imgs)[0]
-        # print(self.test_batch_index + batch_size, endbatch)
-        finish_CMHA = False
+        # get batch.
         if self.test_batch_index + batch_size >= endbatch:
             img = self.arr_test_imgs[self.test_batch_index:endbatch]
             if not self.test:
@@ -290,7 +289,6 @@ class BRATS2015:
                 label = None
             self.test_batch_index = 0
             self.next_test_MHA()
-            finish_CMHA = True
         else:
             img = self.arr_test_imgs[self.test_batch_index:self.test_batch_index + batch_size]
             if not self.test:
@@ -298,9 +296,8 @@ class BRATS2015:
             else:
                 label = None
             self.test_batch_index += batch_size
-        # label = np.eye(5)[label]
-        # label[:, :, :, 0] = label[:, :, :, 0] * 0.05
-        return img, label, finish_CMHA
+        # return image and label.
+        return img, label
 
     def next_train_MHA(self):
         # if self.train_batch_count > self.train_batch:
@@ -346,7 +343,7 @@ class BRATS2015:
 
     def next_train_batch(self, batch_size):
         endbatch = np.shape(self.arr_train_ot)[0]
-        # print(self.train_batch_index + batch_size, endbatch)
+        # clazz weights.
         clazz_sta = np.sum(self.arr_train_ot, axis=(1, 2))  # [b, cls]
         clazz_sta = np.asarray(clazz_sta > 0, dtype=np.float32)  # [b, cls]
         clazz_sta = np.sum(clazz_sta, axis=0)  # [cls]
@@ -355,21 +352,22 @@ class BRATS2015:
                                  np.zeros_like(clazz_weights),
                                  clazz_weights)  # [cls]
         clazz_weights /= np.sum(clazz_weights)
+        # MHA id.
         MHA_idx = self.train_batch_count - 1
-        inst_idx = self.train_batch_index
+        # get batch.
         if self.train_batch_index + batch_size >= endbatch:
             img = self.arr_train_imgs[self.train_batch_index:endbatch]
             label = self.arr_train_ot[self.train_batch_index:endbatch]
+            inst_idx = np.arange(self.train_batch_index, endbatch)
             self.train_batch_index = 0
             self.next_train_MHA()
         else:
             img = self.arr_train_imgs[self.train_batch_index:self.train_batch_index + batch_size]
             label = self.arr_train_ot[self.train_batch_index:self.train_batch_index + batch_size]
+            inst_idx = np.arange(self.train_batch_index, self.train_batch_index + batch_size)
             self.train_batch_index += batch_size
 
-        # label = np.eye(5)[label]
-        # label[:,:,:,0] = label[:,:,:,0] * 0.01
-        # class_weight[:,:,:,0] = class_weight[:,:,:,0] * 0.1
+        # return
         return img, label, MHA_idx, inst_idx, clazz_weights
 
 

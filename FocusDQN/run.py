@@ -12,6 +12,24 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Just Test -------
 
+import matplotlib.pyplot as plt
+print('Test')
+im = Image.fromarray(np.zeros((240, 240)))
+font = ImageFont.truetype("consola.ttf", 20, encoding="unic")
+draw = ImageDraw.Draw(im)
+# t = 'Hello World'
+# tw, th = font.getsize(t)
+# draw.text((120-tw//2, 120-th//2), t, font=font)
+t = 'Hello World\nGO: 520'
+tw, th = font.getsize_multiline(t)
+draw.multiline_text((120-tw//2, 120-th//2), t, font=font, align='center')
+ar = np.asarray(im)
+print(ar.ndim)
+plt.imshow(ar, cmap='gray')
+plt.show()
+
+
+
 # print('Test')
 # import tensorflow as tf
 # import tfmodule.util as net_util

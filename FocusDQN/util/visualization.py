@@ -1,6 +1,7 @@
 import numpy as np
 import moviepy.editor as mpy
 import cv2
+from PIL import Image, ImageDraw, ImageFont
 
 
 
@@ -21,22 +22,28 @@ class MaskVisual:
             vision_filename_mask: Specify where to save the visulization file.
         '''
 
-        # The file name mask.
-        self._anim_fn_mask = vision_filename_mask + 'anim-%05d.gif'
-        self._result_fn_mask = vision_filename_mask + 'result-%05d.jpg'
-        # The index of current animation used to save animation video.
-        self._vision_index = -1
+        # The file name mask used in "Train" phrase.
+        self._train_anim_fn_mask = vision_filename_mask + 'train/anim-%05d.gif'
+        self._train_result_fn_mask = vision_filename_mask + 'train/result-%05d.jpg'
+        # The index of current animation used in "Train" phrase.
+        self._train_vision_index = -1
+
+        # The file name mask used in "Validate" phrase.
+        self._val_anim_fn_mask = vision_filename_mask + 'validate/anim-%05d.gif'
+        self._val_result_fn_mask = vision_filename_mask + 'validate/result-%05d.jpg'
+        # The index of current animation used in "Validate" phrase.
+        self._val_vision_index = -1
 
         # The file name mask used in "Inference" phrase.
-        self._anim_fn_infer_mask = vision_filename_mask + 'inference/anim-%05d.gif'
-        self._result_fn_infer_mask = vision_filename_mask + 'inference/result-%05d.jpg'
+        self._test_anim_fn_mask = vision_filename_mask + 'test/anim-%05d.gif'
+        self._test_result_fn_mask = vision_filename_mask + 'test/result-%05d.jpg'
         # The index of current animation used in "Inference" phrase.
-        self._infer_vision_index = -1
+        self._test_vision_index = -1
 
         # Visualization parameters.
         self._fps = fps
 
-    def record(self, trace, arg=None):
+    def record(self, trace):
         r'''
             Record the trace produced by DQN agent. Especially, the trace is
                 a tuple consisting of (action_index, position_x, position_y,
@@ -46,8 +53,6 @@ class MaskVisual:
         Parameters:
             trace: The trace element indicating the agent's position and mask
                 state of current action.
-            arg: The additional arguments. Which is used to control the process
-                of recording trace.
         '''
         raise NotImplementedError
 
@@ -62,86 +67,50 @@ class MaskVisual:
         '''
         raise NotImplementedError
 
-    def show(self, mode):
+    def show(self, mode, gif_enable):
         r'''
             Show the specific animation.
 
         ----------------------------------------------------------------------------
         Parameters:
             mode: The mode indicating the "Train" or "Inference" phrase.
-        '''
-        raise NotImplementedError
-
-
-
-# Proposal-related abstraction.
-class ProposalsVisual:
-    r'''
-        Visualization of the result of RPN.
-    '''
-
-    def __init__(self, vision_filename_mask):
-        r'''
-            Initialization method.
-
-        :param vision_filename_mask:
-        '''
-
-        # The proposals result file name mask.
-        self._prop_fn_mask = vision_filename_mask + 'prop-%05d.jpg'
-        # The index of current proposals mask to save.
-        self._prop_index = -1
-
-        # The proposals result file name mask used in "Inference" phrase.
-        self._prop_fn_mask = vision_filename_mask + 'inference/prop-%05d.jpg'
-        # The index of current proposals mask used in "Inference" phrase.
-        self._infer_prop_index = -1
-
-    def prop_vis(self):
-        r'''
-            To generate the visualization result in the file system.
-        :return:
+            gif_enable: Enable "GIF" or not.
         '''
         raise NotImplementedError
 
 
 
 # Exploit the @class{~moviepy.editor}.
-class MaskVisualVMPY(MaskVisual, ProposalsVisual):
+class MaskVisualVMPY(MaskVisual):
     r'''
         This version will simply save the animation of the current epoch into
             file system.
     '''
 
-    def __init__(self, image_width, image_height,
-                 sight_stride=16,
-                 fps=25,
-                 vision_filename_mask='G:/Finley/dqn-anim/'):
+    def __init__(self,
+                 image_height,
+                 image_width,
+                 result_categories,
+                 vision_filename_mask,
+                 fps=25):
         r'''
             The initialization method. Mainly declare the parameters used in
                 @class{~moviepy.editor}
 
         ----------------------------------------------------------------------------
         Parameters:
-            image_width: The width of image processed by DQN agent.
             image_height: The height of image processed by DQN agent.
+            image_width: The width of image processed by DQN agent.
             animation_filename_mask: The filename mask of generated animation.
             in_detail: Whether to show the detailed information.
         '''
 
         # Normal Initialization.
         MaskVisual.__init__(self, fps, vision_filename_mask)
-        ProposalsVisual.__init__(self, vision_filename_mask)
 
-        # The image width and height processing by Agent.
-        self._image_width = image_width
+        # The image height and width processing by Agent.
         self._image_height = image_height
-        # Whether to enable the GIF or not.
-        self._gif_enable = None
-
-        # Fake upper and lower, used to generate the frame (only one) for
-        #   visualization of proposals.
-        self._fake_upper_lower = np.zeros((image_width, image_height))
+        self._image_width = image_width
 
         # Declaration the data used for visualization.
         #   act_pos_history: The trace of the action chosen by DQN agent.
@@ -161,21 +130,18 @@ class MaskVisualVMPY(MaskVisual, ProposalsVisual):
         self._t1c = None
         self._t2 = None
         self._f = None
-        self._ground_truth = None
-        # The sight boundary.
-        self._sight_boundary = (image_width // sight_stride, image_height // sight_stride)
+        self._label = None
+        # The result categories.
+        self._res_cate = result_categories
 
         # The normalization value.
         self._normal_value = 255
+        # Text font.
+        self._font = ImageFont.truetype("consola.ttf", 20, encoding="unic")
 
-        # The changeless elements.
-        self._first_row = None
-        self._label = None      # Used to genenrate frame.
+        return
 
-        # # The final result.
-        # self._result = None
-
-    def record(self, trace, arg=None):
+    def record(self, trace):
         r'''
             Record the trace produced by DQN agent. Especially, the trace is
                 a tuple consisting of (action_index, position_x, position_y,
@@ -185,14 +151,10 @@ class MaskVisualVMPY(MaskVisual, ProposalsVisual):
         Parameters:
             trace: The trace element indicating the agent's position and mask
                 state of current action.
-            arg: The additional arguments. Here we use it to control the
-                recording of last frame when disable "GIF".
         '''
 
         # Add trace element into action-position history list.
-        #   Condition: 1) Gif enable; 2) Trace is terminal.
-        if self._gif_enable or (not self._gif_enable and arg is True):
-            self._act_pos_history.append(trace)
+        self._act_pos_history.append(trace)
 
     def reload(self, origin):
         r'''
@@ -210,164 +172,90 @@ class MaskVisualVMPY(MaskVisual, ProposalsVisual):
         # Reload the trace information of DQN agent.
         self._act_pos_history.clear()
 
-        # # Check validity.
-        # if not isinstance(origin, tuple) or len(origin) != 3:
-        #     raise TypeError('The origin must be a tuple containing 3 element !!!')
-        #
-        # # Get the holders.
-        # modalities = origin[0]
-        # # Check the validity of origin[0].
-        # if not isinstance(modalities, np.ndarray):
-        #     raise TypeError('The origin[0] must be of @Type{numpy.ndarray} !!!')
-        # else:
-        #     # Check the dimension.
-        #     if modalities.ndim != 3:
-        #         raise Exception('The origin[0] must be a 3-D array !!!')
-        # # Reset the original image for visualization.
-        # self._t1 = modalities[:, :, 0]
-        # self._t1c = modalities[:, :, 1]
-        # self._t2 = modalities[:, :, 2]
-        # self._f = modalities[:, :, 3]
-        #
-        # # Check the validity of origin[1].
-        # if not isinstance(origin[1], np.ndarray):
-        #     raise TypeError('The origin[1] must be of @Type{numpy.ndarray} !!!')
-        # else:
-        #     # Check the dimension.
-        #     if origin[1].ndim != 2:
-        #         raise Exception('The origin[1] must be a 2-D array !!!')
-        # # Reset the label and gradient image.
-        # self._ground_truth = self._normalization(origin[1], self._normal_value)
-        #
-        # # Generate the changeless elements here, coz this method will only be called
-        # #   once per image.
-        # self._first_row, self._label = self._gen_changeless()
+        # Check validity.
+        if not isinstance(origin, tuple) or len(origin) != 2:
+            raise TypeError('The origin must be a tuple containing 2 element !!!')
 
-        # Get the GIF enable flag.
-        GIF_flag = origin[0]
-        # GIF_flag = origin[2]
-        if not isinstance(GIF_flag, bool):
-            raise TypeError('The origin[2] must be of bool type !!!')
+        # Get the holders.
+        modalities = origin[0]
+        # Check the validity of origin[0].
+        if not isinstance(modalities, np.ndarray):
+            raise TypeError('The origin[0] must be of @Type{numpy.ndarray} !!!')
+        else:
+            # Check the dimension.
+            if modalities.ndim != 3:
+                raise Exception('The origin[0] must be a 3-D array !!!')
+        # Reset the original image for visualization.
+        self._t1 = self._normalization(modalities[:, :, 0], self._normal_value)
+        self._t1c = self._normalization(modalities[:, :, 1], self._normal_value)
+        self._t2 = self._normalization(modalities[:, :, 2], self._normal_value)
+        self._f = self._normalization(modalities[:, :, 3], self._normal_value)
 
-        # Reset the gif flag.
-        self._gif_enable = GIF_flag
+        # Check the validity of origin[1].
+        if not isinstance(origin[1], np.ndarray):
+            raise TypeError('The origin[1] must be of @Type{numpy.ndarray} !!!')
+        else:
+            # Check the dimension.
+            if origin[1].ndim != 2:
+                raise Exception('The origin[1] must be a 2-D array !!!')
+        # Reset the label and gradient image.
+        self._label = self._normalization(origin[1], self._normal_value, max_val=self._res_cate)
+        return
 
-    def _normalization(self, src, upper):
+
+    def _normalization(self, src, lower, upper=None, min_val=None, max_val=None):
         r'''
             Normalization.
-
-        :param src:
-        :param upper:
-        :return:
         '''
-
-        denominator = np.max(src) - np.min(src)
+        if upper is None:
+            upper = lower
+            lower = 0
+        min_v = np.min(src) if min_val is None else min_val
+        max_v = np.max(src) if max_val is None else max_val
+        denominator = max_v - min_v
         if denominator == 0:
             normal = np.zeros(np.shape(src))
         else:
-            normal = (src - np.min(src)) / (np.max(src) - np.min(src)) * upper
+            normal = (src - min_v) / (max_v - min_v) * (upper - lower) + lower
         return normal
 
-    def _gen_changeless(self):
+    def _transfer_2val(self, bbox, h, w):
         r'''
-            Generate the changeless elements. That is,
-                1. The first row.
-                2. The label with bounding-box.
+            Transfer the normalized value to real value.
+        '''
+        y1, x1, y2, x2 = bbox
+        up = int(round(y1 * h))
+        left = int(round(x1 * w))
+        bottom = int(round(y2 * h))
+        right = int(round(x2 * w))
+        return up, left, bottom, right
 
-        :return:
+    def _draw_bbox(self, src, bbox, border_value, border_width=1, duplicate=True):
+        r'''
+            Draw the given bounding-box in the source image.
+                Note that, this method will change the source image.
         '''
 
-        # # Get the holders for convenient processing.
-        # frame_t1 = self._t1
-        # frame_t1c = self._t1c
-        # frame_t2 = self._t2
-        # frame_f = self._f
-        # # The label.
-        # frame_label = self._ground_truth
-        #
-        # # Specify the border value.
-        # border_value = self._normal_value // 3
-        #
-        # # Generate the first row according to the type of proposals.
-        # if isinstance(self._proposals, np.ndarray):
-        #     # Iteratively draw the proposals in the source image.
-        #     for bbox in self._proposals:
-        #         # Draw in the T1 image.
-        #         frame_t1 = self._draw_bbox(frame_t1, bbox=bbox, border_value=border_value)
-        #         # Draw in the T1C image.
-        #         frame_t1c = self._draw_bbox(frame_t1c, bbox=bbox, border_value=border_value)
-        #         # Draw in the T2 image.
-        #         frame_t2 = self._draw_bbox(frame_t2, bbox=bbox, border_value=border_value)
-        #         # Draw in the F image.
-        #         frame_f = self._draw_bbox(frame_f, bbox=bbox, border_value=border_value)
-        #         # Draw on the label image.
-        #         frame_label = self._draw_bbox(frame_label, bbox=bbox, border_value=border_value, duplicate=True)
-        # elif isinstance(self._proposals, tuple):
-        #     # Only need to draw once. Coz the ot_proposal is the same
-        #     #   as proposals in this case.
-        #     pass
-        # else:
-        #     raise TypeError('The proposals should be either @Type{tuple} or @Type{numpy.ndarray} !!!')
-        #
-        # # Draw OT proposal in the source image.
-        # t1 = self._draw_bbox(frame_t1, bbox=self._ot_proposal, border_value=border_value*2, transpose=False)
-        # t1c = self._draw_bbox(frame_t1c, bbox=self._ot_proposal, border_value=border_value*2, transpose=False)
-        # t2 = self._draw_bbox(frame_t2, bbox=self._ot_proposal, border_value=border_value*2, transpose=False)
-        # f = self._draw_bbox(frame_f, bbox=self._ot_proposal, border_value=border_value*2, transpose=False)
-        # # Draw OT proposal in the label image.
-        # label = self._draw_bbox(frame_label,
-        #                         bbox=self._ot_proposal,
-        #                         border_value=border_value*2,
-        #                         transpose=False,
-        #                         duplicate=True)
-        #
-        # # First row. Concatenate related modalities.
-        # first_row = np.concatenate((t1, t1c, t2, f), axis=1)
+        # Duplicate the source image and processing on the duplication if flag is true.
+        if duplicate:
+            raw = src.copy()
+        else:
+            raw = src
 
-        first_row = np.concatenate((self._t1, self._t1c, self._t2, self._f, self._ground_truth), axis=1)
-        label = self._ground_truth
+        # Firstly get the four boundary. [y1, x1, y2, x2]
+        up, left, bottom, right = self._transfer_2val(bbox, h=self._image_height, w=self._image_width)
 
-        # Finish the generation.
-        return first_row, label
+        # Assign the left boundary in the source image.
+        raw[left: left+border_width, up: bottom] = border_value
+        # Assign the right boundary in the source image.
+        raw[right-border_width: right, up: bottom] = border_value
+        # Assign the up boundary in the source image.
+        raw[left: right, up: up+border_width] = border_value
+        # Assign the bottom boundary in the source image.
+        raw[left: right, bottom-border_width: bottom] = border_value
 
-    # def _draw_bbox(self, src, bbox, border_value, border_width=1, transpose=True, duplicate=False):
-    #     r'''
-    #         Draw the given bounding-box in the source image.
-    #             Note that, this method will change the source image.
-    #
-    #     :param src:
-    #     :param bbox:
-    #     :param border_value:
-    #     :param border_width:
-    #     :return:
-    #     '''
-    #
-    #     # Duplicate the source image and processing on the
-    #     #   duplication if flag is true.
-    #     if duplicate:
-    #         raw = src.copy()
-    #     else:
-    #         raw = src
-    #
-    #     # Firstly get the four boundary.
-    #     if transpose:
-    #         # Need transpose. [x1, y1, x2, y2]
-    #         left, up, right, bottom = bbox
-    #     else:
-    #         # Correct directions.
-    #         left, right, up, bottom = bbox
-    #
-    #     # Assign the left boundary in the source image.
-    #     raw[left: left+border_width, up: bottom] = border_value
-    #     # Assign the right boundary in the source image.
-    #     raw[right-border_width: right, up: bottom] = border_value
-    #     # Assign the up boundary in the source image.
-    #     raw[left: right, up: up+border_width] = border_value
-    #     # Assign the bottom boundary in the source image.
-    #     raw[left: right, bottom-border_width: bottom] = border_value
-    #
-    #     # Finish the drawing of bounding-box.
-    #     return raw
+        # Finish the drawing of bounding-box.
+        return raw
 
     def _make_frame(self, t):
         r'''
@@ -386,84 +274,71 @@ class MaskVisualVMPY(MaskVisual, ProposalsVisual):
         '''
 
         # Get information about current trace.
-        modalities, label, vis_data, segmentation, test_prev = self._act_pos_history[int(t * self._fps - 1)]
+        cur_region, focus_bbox, reward, segmentation, ter_info = self._act_pos_history[int(t * self._fps - 1)]
 
-        # Reset the original image for visualization.
-        _t1 = modalities[:, :, 0]
-        _t1c = modalities[:, :, 1]
-        _t2 = modalities[:, :, 2]
-        _f = modalities[:, :, 3]
-        # Normalize the four modalities for visualization.
-        _t1 = self._normalization(_t1, self._normal_value)
-        _t1c = self._normalization(_t1c, self._normal_value)
-        _t2 = self._normalization(_t2, self._normal_value)
-        _f = self._normalization(_f, self._normal_value)
-        # Generate the ground truth.
-        ground_truth = self._normalization(label, self._normal_value)
+        # Normalization.
+        segmentation = self._normalization(segmentation, self._normal_value, max_val=self._res_cate)
 
-        # # Generate the four visualization image. - 60 * 60
-        # vw, vh, vc = vis_data.shape
-        # vis_arr = np.zeros((self._image_width, self._image_height, 4))
-        # for k in range(4):
-        #     vis_col = []
-        #     for i in range(self._image_width // vw):
-        #         vis_row = []
-        #         for j in range(self._image_height // vh):
-        #             chan = ((self._image_width // vw) * (self._image_height // vh)) * k + (self._image_width // vw) * i + j
-        #             vis_row.append(vis_data[:, :, chan])
-        #         vis_row = np.concatenate(vis_row, axis=1)
-        #         vis_col.append(vis_row)
-        #     vis_col = np.concatenate(vis_col, axis=0)
-        #     vis_arr[:, :, k] = vis_col
-        # envis_data = vis_arr
+        # Draw the bounding-box on image and label.
+        b_v1 = self._normal_value // 3
+        _t1 = self._draw_bbox(self._t1, cur_region, b_v1)
+        _t1c = self._draw_bbox(self._t1c, cur_region, b_v1)
+        _t2 = self._draw_bbox(self._t2, cur_region, b_v1)
+        _f = self._draw_bbox(self._f, cur_region, b_v1)
+        _lab = self._draw_bbox(self._label, cur_region, b_v1)
+        _pred = self._draw_bbox(segmentation, cur_region, b_v1)
+        # Draw the "Focus Bounding-box" if given.
+        if focus_bbox is not None:
+            b_v1 = self._normal_value // 3 * 2
+            _t1 = self._draw_bbox(_t1, cur_region, b_v1, duplicate=False)
+            _t1c = self._draw_bbox(_t1c, cur_region, b_v1, duplicate=False)
+            _t2 = self._draw_bbox(_t2, cur_region, b_v1, duplicate=False)
+            _f = self._draw_bbox(_f, cur_region, b_v1, duplicate=False)
+            _lab = self._draw_bbox(_lab, cur_region, b_v1, duplicate=False)
+            _pred = self._draw_bbox(_pred, cur_region, b_v1, duplicate=False)
 
-        # Generate the four visualization image. - 60 * 60
-        vw, vh, vc = vis_data.shape
-        vis_arr = np.zeros((self._image_width, self._image_height, 4))
-        for k in range(4):
-            vis_col = []
-            for i in range(self._image_width // vw):
-                vis_row = []
-                for j in range(self._image_height // vh):
-                    chan = ((self._image_width // vw) * (self._image_height // vh)) * k + (
-                                                                                          self._image_width // vw) * i + j
-                    if chan >= vc:
-                        vis_row.append(np.zeros([vw, vh]))
-                    else:
-                        vis_row.append(vis_data[:, :, chan])
-                vis_row = np.concatenate(vis_row, axis=1)
-                vis_col.append(vis_row)
-            vis_col = np.concatenate(vis_col, axis=0)
-            vis_arr[:, :, k] = vis_col
-        envis_data = vis_arr
+        # Scale up the focus region for better visualization.
+        vis_bbox = focus_bbox
+        SEG_stage = False
+        if vis_bbox is None:
+            vis_bbox = cur_region
+            SEG_stage = True
+        vb_y1, vb_x1, vb_y2, vb_x2 = self._transfer_2val(vis_bbox, h=self._image_height, w=self._image_width)
+        dsize = _lab.shape
+        # scale.
+        _vis_lab = _lab[vb_y1: vb_y2, vb_x1: vb_x2]
+        _vis_lab = cv2.resize(_vis_lab, dsize, interpolation=cv2.INTER_NEAREST)
+        _vis_pred = _pred[vb_y1: vb_y2, vb_x1: vb_x2]
+        _vis_pred = cv2.resize(_vis_pred, dsize, interpolation=cv2.INTER_NEAREST)
 
-        # Normalize the value.
-        evd0 = self._normalization(envis_data[:, :, 0], self._normal_value)
-        evd1 = self._normalization(envis_data[:, :, 1], self._normal_value)
-        evd2 = self._normalization(envis_data[:, :, 2], self._normal_value)
-        evd3 = self._normalization(envis_data[:, :, 3], self._normal_value)
-        segmentation = self._normalization(segmentation, self._normal_value)
+        # Indicator image.
+        _indt = Image.fromarray(np.zeros((self._image_height, self._image_width)))
+        draw = ImageDraw.Draw(_indt)
+        if SEG_stage:
+            txt = u'Segment !'
+        else:
+            txt = u'Focus !'
+        txt += u'\nx1: {}, x2: {}, y1: {}, y2: {}'.format(vb_x1, vb_x2, vb_y1, vb_y2)
+        if reward is not None:
+            txt += u'\nreward: {}'.format(reward)
+        if ter_info is not None:
+            txt += u'\n' + ter_info + u' !'
+        tw, th = self._font.getsize_multiline(txt)
+        draw.multiline_text((120 - tw // 2, 120 - th // 2), t, font=font, align='center')
+        _indt = np.asarray(_indt)
 
-        # Fake
-        fake = np.zeros_like(segmentation)
-
-        # Concatenate the first row.
-        first_row = np.concatenate((_t1, _t1c, _t2, _f, ground_truth, fake), axis=1)
-
-        # Normalize test prev.
-        test_prev = self._normalization(test_prev, self._normal_value)
-
-        # Second row. Concatenate the visualization and segmentation.
-        second_row = np.concatenate((evd0, evd1, evd2, evd3, segmentation, test_prev), axis=1)
-
+        # Generate each row.
+        row_1st = np.concatenate((_t1, _t1c, _t2), axis=1)
+        row_2nd = np.concatenate((_f, _lab, _t2), axis=1)
+        row_3rd = np.concatenate((_indt, _vis_lab, _vis_pred), axis=1)
         # Concatenate all the rows.
-        frame = np.concatenate((first_row, second_row), axis=0)
+        frame = np.concatenate((row_1st, row_2nd, row_3rd), axis=0)
 
         # Finally return the frame.
         return frame
 
 
-    def show(self, train_mode):
+    def show(self, mode, gif_enable):
         r'''
             Showing the animation of the current epoch. Actually the animation will be
                 generated as a "gif" file in the file system, and it will not directly
@@ -471,125 +346,55 @@ class MaskVisualVMPY(MaskVisual, ProposalsVisual):
 
         ----------------------------------------------------------------------------
         Parameters:
-            train_mode: The mode indicating "Train" or "Inference" phrase.
+            mode: The mode indicating "Train", "Validate" or "Inference" phrase.
         '''
 
         # Check the validity of calling.
-        valid, info = self._check_show_validity('mask')
-        # Raise error if not valid.
-        if not valid:
-            raise Exception(info)
+        if len(self._act_pos_history) == 0:
+            raise Exception('One must call the @Method{record} before calling @Method{show}')
 
         # Auto-increase the index of animation file.
-        if train_mode:
-            self._vision_index += 1
+        if mode == 'Train':
+            self._train_vision_index += 1
+        elif mode == 'Validate':
+            self._val_vision_index += 1
+        elif mode == 'Test':
+            self._test_vision_index += 1
         else:
-            self._infer_vision_index += 1
+            raise ValueError('Unknown mode value !!!')
 
         # Calculate the duration of current animation.
         duration = len(self._act_pos_history) / self._fps
 
         # Record animation if enabled.
-        if self._gif_enable:
+        if gif_enable:
             # Generate the animation using defined frame-generation method.
             a1 = mpy.VideoClip(self._make_frame, duration=duration)
             # Specify the saving path.
-            if train_mode:
-                filename = self._anim_fn_mask % self._vision_index
+            if mode == 'Train':
+                filename = self._train_anim_fn_mask % self._train_vision_index
+            elif mode == 'Validate':
+                filename = self._val_anim_fn_mask % self._val_vision_index
+            elif mode == 'Test':
+                filename = self._test_anim_fn_mask % self._test_vision_index
             else:
-                filename = self._anim_fn_infer_mask % self._infer_vision_index
+                raise ValueError('Unknown mode value !!!')
             # Save the animation (GIF) into file system.
             a1.write_gif(filename, fps=self._fps)
 
-        # And then save the final result into filesystem.
-        if self._gif_enable:
-            time_step = duration
-        else:
-            time_step = 0.
-        result = self._make_frame(time_step)
+        # Get result.
+        result = self._make_frame(duration)
         # Specify the saving path.
-        if train_mode:
-            result_file_name = self._result_fn_mask % self._vision_index
+        if mode == 'Train':
+            result_file_name = self._train_result_fn_mask % self._train_vision_index
+        elif mode == 'Validate':
+            result_file_name = self._val_result_fn_mask % self._val_vision_index
+        elif mode == 'Test':
+            result_file_name = self._test_result_fn_mask % self._test_vision_index
         else:
-            result_file_name = self._result_fn_infer_mask % self._infer_vision_index
+            raise ValueError('Unknown mode value !!!')
         # Save the result.
         cv2.imwrite(result_file_name, result)
 
-        # Reset the changeless elements.
-        self._reset_changeless()
-
         # Finish.
         return
-
-    def prop_vis(self):
-        r'''
-            Save the proposal result to local file system.
-
-        :return:
-        '''
-
-        # Check the validity of calling.
-        valid, info = self._check_show_validity('prop')
-        # Raise error if not valid.
-        if not valid:
-            raise Exception(info)
-
-        # Increase index.
-        self._prop_index += 1
-
-        # Add a frame to history.
-        self._act_pos_history.append((self._fake_upper_lower, self._fake_upper_lower))
-        # Generate a frame.
-        prop_result = self._make_frame(1 / self._fps)
-
-        # Generate the saving path according to mode.
-        result_file_name = self._prop_fn_mask % self._prop_index
-        # Record it to file system.
-        cv2.imwrite(result_file_name, prop_result)
-
-        # Reset the changeless.
-        self._reset_changeless()
-
-        # Finish.
-        return
-
-    def _check_show_validity(self, mode):
-        r'''
-            Check the validity of calling show method.
-
-        :return:
-        '''
-
-        # The flag and information.
-        valid = True
-        info = None
-
-        # # Not call the reload in this case.
-        # if self._first_row is None or self._label is None:
-        #     valid = False
-        #     info = 'One must call the @Method{reload} before calling @Method{show}'
-
-        # Must call the @Method{record} in "Mask" mode.
-        if mode == 'mask':
-            # Not call the record in this case.
-            if len(self._act_pos_history) == 0:
-                valid = False
-                info = 'One must call the @Method{record} before calling @Method{show}'
-
-        # Finish.
-        return valid, info
-
-    def _reset_changeless(self):
-        r'''
-            Reset the changeless elements.
-
-        :return:
-        '''
-
-        self._first_row = None
-        self._label = None
-
-        # Finish.
-        return
-
-
