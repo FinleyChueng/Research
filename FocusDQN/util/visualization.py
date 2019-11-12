@@ -199,7 +199,10 @@ class MaskVisualVMPY(MaskVisual):
             if origin[1].ndim != 2:
                 raise Exception('The origin[1] must be a 2-D array !!!')
         # Reset the label and gradient image.
-        self._label = self._normalization(origin[1], self._normal_value, max_val=self._res_cate)
+        lab = origin[1]
+        if lab is None:
+            lab = np.zeros((self._image_height, self._image_width), dtype=np.int64)
+        self._label = self._normalization(lab, self._normal_value, max_val=self._res_cate)
         return
 
 

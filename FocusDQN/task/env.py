@@ -16,13 +16,18 @@ from dataset.adapter.base import *
 class FocusEnv:
 
 
-    def __init__(self, config, data_adapter, tfnet_holders):
+    def __init__(self, config, data_adapter):
 
 
         # Configuration.
         self._config = config
 
+        # Get basic parameter.
+        conf_base = self._config['Base']
+        clazz_dim = conf_base.get('classification_dimension')
+
         # Data adapter.
+        self._verify_data(data_adapter, clazz_dim)
         self._adapter = data_adapter
 
         # Action quantity.
@@ -36,43 +41,19 @@ class FocusEnv:
         self._anim_recorder = None
         conf_other = self._config['Others']
         anim_path = conf_other.get('animation', None)
-        conf_base = self._config['Base']
-        clazz_dim = conf_base.get('classification_dimension')
         if anim_path is not None:
             self._anim_recorder = MaskVisualVMPY(240, 240, fps=4,
                                                  result_categories=clazz_dim,
                                                  vision_filename_mask=anim_path)
 
-
-        # Get tensorflow model inputs and outputs, respectively.
-        self._tfnet_inputs, self._tfnet_outputs = tfnet_holders
-
         # The flag indicating whether is in "Train", "Validate" or "Test" phrase.
         self._phrase = 'Train'  # Default in "Train"
 
-
-        # self._reset = False
-
-
-        # | ---> Finish holders transferring !
-        # |   ===> Inputs holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/position_info', 'ORG/Segment_Stage', 'ORG/Focus_Bbox'])
-        # |   ===> Outputs holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output'])
-        # |   ===> Losses holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values', 'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss', 'TAR/image', 'TAR/prev_result', 'TAR/position_info', 'TAR/Segment_Stage', 'TAR/Focus_Bbox', 'TAR/DQN_output'])
-        # |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
-        # |   ===> Visual holder: dict_keys([])
-
-        # Get detailed parameters.
-
-
-
-
-
-        # Some input data placeholder.
+        # --------------------- Declare some input data placeholder. ---------------------
         self._image = None  # Current processing image.
         self._label = None  # Label for current image.
         self._SEG_stage = None  # Flag indicating whether is "Segmentation" stage or not.
         self._focus_bbox = None     # Focus bounding-box. (y1, x1, y2, x2)
-        # self._focus_bbox = np.zeros([4], dtype=np.float32)  # Focus bounding-box. (y1, x1, y2, x2)
 
         # The previous "Segmentation" result (real form).
         self._SEG_prev = None
@@ -85,23 +66,13 @@ class FocusEnv:
         self._RelDir_prev = None
         self._RELATIVE_DIRECTION = ('left-up', 'right-up', 'left-bottom', 'right-bottom')
 
-
         # The time-step.
         self._time_step = None
 
+        # The process flag. (Finish current image)
+        self._finished = None
 
-
-        # # The position information. Declaration according to config.
-        # if pos_method == 'map':
-        #     self._position_info = np.zeros([image_height, image_width])
-        # elif pos_method == 'coord':
-        #     self._position_info = np.zeros([4])
-        # elif pos_method == 'sight':
-        #     self._position_info = np.zeros([4])
-        # else:
-        #     raise ValueError('Unknown position information fusion method !!!')
-
-
+        # Finish initialization.
         return
 
 
@@ -121,11 +92,10 @@ class FocusEnv:
                 and switch to next image-label pair.
         '''
 
-        # # Check the validity of calling.
-        # if self._reset:
-        #     raise Exception('Invalid process state: the processing of current image is not yet finished, '
-        #                     'can not reset the environment !!!')
-
+        # Check the validity of execution logic.
+        if not self._finished:
+            raise Exception('The processing of current image is not yet finished, '
+                            'please keep calling @method{step} !!!')
 
         # --------------------------- Reset some holders ---------------------------
         # Get detailed config parameters.
@@ -159,7 +129,8 @@ class FocusEnv:
         # Reset the time-step.
         self._time_step = 0
 
-
+        # Reset the process flag.
+        self._finished = False
 
         # -------------------------- Switch to next image-label pair. ---------------------------
         # Get the next image-label pair according to the phrase.
@@ -181,6 +152,9 @@ class FocusEnv:
 
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
+            # Record the process.
+            if self._anim_recorder is not None:
+                self._anim_recorder.reload((img.copy(), label.copy()))
             # Clazz weights.
             conf_train = self._config['Training']
             weights = conf_train.get('clazz_weights', None)
@@ -191,12 +165,9 @@ class FocusEnv:
         else:
             # Record the process.
             if self._anim_recorder is not None:
-                self._anim_recorder.reload((img.copy(), label.copy()))
+                self._anim_recorder.reload((img.copy(), label.copy() if label is not None else None))
             # Plain return.
             return
-
-
-
 
 
     def step(self, op_func, SEG_stage):
@@ -231,40 +202,18 @@ class FocusEnv:
             info: Extra information.(Optional, default is type.None)
         '''
 
-        # # Check whether switched the image or not.
-        # if not self._reset:
-        #     raise Exception('You must call the @Method{reset} first '
-        #                     'before calling this @Method{step} !!!')
-        #
-        # # Check the executability of current image-label pair.
-        # if self._terminal:
-        #     raise Exception('The process of current image-label pair is finished, it '
-        #                     'can not be @Method{step} any more !!! '
-        #                     'You should call the @Method{reset} to reset the '
-        #                     'environment to get the next image.')
-
-        # | ---> Finish
-        # holders
-        # transferring !
-        # | == = > Inputs
-        # holder: dict_keys(['ORG/image', 'ORG/prev_result', 'ORG/Focus_Bbox', 'ORG/position_info', 'ORG/Segment_Stage',
-        #                    'TEST/Complete_Result'])
-        # | == = > Outputs
-        # holder: dict_keys(['ORG/DQN_output', 'TEST/SEG_output', 'TEST/FUSE_result'])
-        # | == = > Losses
-        # holder: dict_keys(['TEST/GT_label', 'TEST/clazz_weights', 'TEST/prediction_actions', 'TEST/target_Q_values',
-        #                    'TEST/EXP_priority', 'TEST/IS_weights', 'TEST/SEG_loss', 'TEST/DQN_loss', 'TEST/NET_loss',
-        #                    'TAR/image', 'TAR/prev_result', 'TAR/Focus_Bbox', 'TAR/position_info', 'TAR/Segment_Stage',
-        #                    'TAR/DQN_output'])
-        # | == = > Summary
-        # holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
-        # | == = > Visual
-        # holder: dict_keys([])
-
-
         # Check validity.
         if not callable(op_func):
-            raise ValueError('The op_func must be a function !!!')
+            raise TypeError('The op_func must be a function !!!')
+        if not isinstance(SEG_stage, bool):
+            raise TypeError('The SEG_stage must be a boolean !!!')
+
+        # Check the validity of execution logic.
+        if self._finished:
+            raise Exception('The process of current image-label pair is finished, it '
+                            'can not be @Method{step} any more !!! '
+                            'You should call the @Method{reset} to reset the '
+                            'environment to process the next image.')
 
         # Get the detailed config.
         conf_base = self._config['Base']
@@ -289,6 +238,8 @@ class FocusEnv:
         else:
             raise ValueError('Unknown position information fusion method !!!')
 
+        # Old "Focus Bounding-box", which is used to visualization.
+        cur_bbox = self._focus_bbox.copy()
 
         # Different procedure according to phrase. "Train" phrase.
         if self._phrase == 'Train':
@@ -309,97 +260,36 @@ class FocusEnv:
                 self._time_step += 1
         # "Validate" or "Test".
         else:
+            # "Segment" stage.
+            if SEG_stage:
+                segmentation, COMP_res = op_func(
+                    [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+                self._SEG_prev = segmentation
+                self._COMP_result = COMP_res
+                reward = info = None   # fake, for conveniently coding.
+                over = False    # "Segment" stage, not over.
+            # "Focus" stage.
+            else:
+                action = op_func(
+                    [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+                dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
+                self._focus_bbox = np.asarray(dst_bbox)
+                self._time_step += 1
 
-            pass
+        # Record the process.
+        if self._anim_recorder is not None:
+            fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
+            self._anim_recorder.record((cur_bbox, fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
 
+        # Reset the process flag.
+        if over:
+            self._finished = True
 
-        # #
-        # if SEG_stage:
-        #     # -------------------------- Real "Segment" -----------------------
-        #     segmentation, COMP_res = segment_func(
-        #         [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
-        #
-        #     # -------------------------- Fake "Focus" -----------------------
-        #     action = focus_func(
-        #         [self._image, self._SEG_prev, position_info, self._focus_bbox])
-        #
-        #     # Assign some holders.
-        #     self._SEG_prev = segmentation
-        #     self._COMP_result = COMP_res
-
-
-
-
-        # Execute the actions.
-        wrong_opt, procLab_list, vis_data, test_prev = self._execute_action(action=action, arg=arg)
-        # wrong_opt, optConv_list, vis_data = self._execute_action(action=action, arg=arg)
-
-        # Only calculate the reward when the label is not NoneType.
-        if self._label is not None:
-            # Compute the reward for given action.
-            reward = self._compute_reward(action=action, arg=(wrong_opt, procLab_list))
+        # Return sample when in "Train" phrase.
+        if self._phrase == 'Train':
+            return self._focus_bbox.copy(), reward, over, info
         else:
-            # Simply return NoneType.
-            reward = None
-
-        # Judge the whether it is terminal or not.
-        terminal = self._terminal_judge(action=action, arg=wrong_opt)
-
-        # Write the segmentation to the file system in "MHA" form when "Real" testing.
-        if not self._train_mode and self._test_flag:
-            self._adapter.write_result(result=self._segmentation.copy(),
-                                       name=str(arg))
-
-        # Generate the next state or NoneType according to the terminal flag.
-        if terminal:
-            # Return the fake state (Coz still have to pass through the
-            #   tensorflow model).
-            state = self._fake_state
-            # The extra information.
-            info = 'The processing of current image is over.\n ' \
-                   'action - {} reward - {}'.format(
-                       action, reward
-                   )
-            # Reset the environment flags.
-            self.__reset_all_flags()
-        else:
-            # Generate next state.
-            state = self._gen_state()
-            # The extra information.
-            info = 'action - {}, reward - {}.'.format(
-                action, reward
-            )
-
-        # Package some additional information if needed.
-        info = self._pack_additional_info(info, arg=(procLab_list,))
-
-        # Assign the terminal flag to holder.
-        self._terminal = terminal
-
-        # # Record the process.
-        # if self._anim_recorder is not None:
-        #     # Generate the temp label for animation according to the raw label.
-        #     if self._label is not None:
-        #         # Use the raw label.
-        #         anim_label = np.argmax(self._label, axis=-1)    # [w, h]
-        #     else:
-        #         # All black is OK.
-        #         anim_label = np.zeros(self._proc_size)
-        #     # Record the process to local file system.
-        #     self._anim_recorder.record((self._4mod.copy(),
-        #                                 anim_label,
-        #                                 vis_data,
-        #                                 self._segmentation.copy(),
-        #                                 np.argmax(test_prev, axis=-1)
-        #                                 ),
-        #                                arg=terminal)  # Need copy !!!
-
-        # Release memory.
-        gc.collect()
-
-        # Return the tuple of (observation, reward, terminal, info).
-        return state, reward, terminal, info
-
+            return
 
 
 
@@ -494,27 +384,6 @@ class FocusEnv:
             raise Exception('Unknown action dimension, there is no logic with respect to '
                             'current act_dim, please check your code !!!')
 
-        # # Get the destination bbox.
-        # if not OOB_err and not terminal:
-        #     dst_bbox = anchors[action]
-        # else:
-        #     dst_bbox = None
-
-        # # Compute the reward for given action. (Only in "Train" phrase)
-        # cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
-        #                              category=clazz_dim, anchors=anchors,
-        #                              OOB_err=OOB_err, terminal=terminal,
-        #                              ter_thres=terminate_threshold,
-        #                              metric_type=reward_metric)
-        # if isinstance(cal_rewards, list):
-        #     reward = cal_rewards[action]
-        # else:
-        #     reward = cal_rewards
-
-        # # get the destination bbox.
-        # if action != 8:
-        #     dst_bbox = anchors[action]
-
         # Compute the reward for given action. (Only in "Train" phrase)
         if self._phrase == 'Train':
             cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
@@ -530,7 +399,8 @@ class FocusEnv:
             reward = None
 
         # Judge whether game over or not.
-        over, info = self.__game_over(OOB_err, terminal,
+        over, info = self.__game_over(anchors[action] if action != self._act_dim - 1 else None,
+                                      OOB_err, terminal,
                                       time_step=self._time_step,
                                       step_thres=step_threshold)
 
@@ -542,7 +412,6 @@ class FocusEnv:
 
         # Return the 1)destination bbox, 2)reward, 3)over flag and 4)information.
         return dst_bbox, reward, over, info
-
 
 
     def __anchors(self, bbox, scale, adim, arg=None):
@@ -711,9 +580,6 @@ class FocusEnv:
             raise ValueError('Unknown adim, this adim\'s anchors don\'t support now !!!')
 
 
-
-
-
     def __rewards(self, pred, label, category, anchors, OOB_err, terminal, ter_thres, metric_type):
         r'''
             Calculate the rewards for each situation. Including:
@@ -762,9 +628,7 @@ class FocusEnv:
         return rewards
 
 
-
-
-    def __game_over(self, OOB_err, terminal, time_step, step_thres):
+    def __game_over(self, candidate, OOB_err, terminal, time_step, step_thres):
         r'''
             Judge whether current processing is over according to each flag.
         '''
@@ -774,9 +638,57 @@ class FocusEnv:
             return True, 'Terminal !'
         if time_step >= step_thres:
             return True, 'Reach Threshold !'
+        if candidate is not None:
+            y1, x1, y2, x2 = candidate
+            if (y2 - y1) == 0.0 or (x2 - x1) == 0.0:
+                return True, 'Zero-scale Bbox !'
         return False, None
 
 
+    def _verify_data(self, adapter, category):
+        r'''
+            Verify the data supported by adapter.
+        '''
+
+        # Firstly check the type of adapter.
+        if not isinstance(adapter, Adapter):
+            raise TypeError('The adapter should be @Type{Adapter} !!!')
+
+        # Get a train image-label pair to verify.
+        img, label, MHA_idx, inst_idx, clazz_weights = adapter.next_image_pair(mode='Train', batch_size=1)
+
+        # Check the type and dimension of the data.
+        if not isinstance(img, np.ndarray) or not isinstance(label, np.ndarray):
+            raise TypeError('The type of image and label both should be'
+                            '@Type{numpy.ndarray} !!!')
+
+        # Now we only support single image processing.
+        if img.ndim != 3 or label.ndim != 3:    # [width, height, modalities], [width, height, cls]
+            raise Exception('The dimension of the image and label both should'
+                            'be 3 !!! img: {}, label: {}\n'
+                            'Now we only support single image processing ...'.format(img.ndim, label.ndim))
+
+        # Check the shape consistency.
+        shape_img = img.shape[:-1]
+        shape_label = label.shape[:-1]
+        shape_consistency = shape_img == shape_label
+        if not shape_consistency:
+            raise Exception('The shape of image and label are not satisfy consistency !!! '
+                            'img: {}, label: {}'.format(shape_img, shape_label))
+
+        # Check the validity of MHA_idx and inst_idx.
+        if not isinstance(MHA_idx, int):
+            raise TypeError('The MHA_idx must be of integer type !!!')
+        if not isinstance(inst_idx, int):
+            raise TypeError('The inst_idx must be of integer type !!!')
+
+        # Check the validity of clazz_weights.
+        if not isinstance(clazz_weights, np.ndarray) or len(clazz_weights) != category:
+            raise Exception('The class weights should be of '
+                            '{}-dimension numpy array !!!'.format(len(clazz_weights)))
+
+        # Finish.
+        return
 
 
 
