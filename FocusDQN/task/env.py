@@ -6,7 +6,7 @@ from keras.utils import to_categorical
 # from skimage import morphology
 from tensorflow.python import debug as tf_debug
 
-import util.evaluation as eval
+import util.evaluation as eva
 from util.visualization import *
 from core.env import *
 from dataset.adapter.base import *
@@ -31,15 +31,16 @@ class FocusEnv:
             self._act_dim = 9
         else:
             self._act_dim = 17
-        # Anchors scale.
-        self._anchor_scale = conf_dqn.get('anchors_scale', 2)
 
         # Animation recorder.
         self._anim_recorder = None
         conf_other = self._config['Others']
         anim_path = conf_other.get('animation', None)
+        conf_base = self._config['Base']
+        clazz_dim = conf_base.get('classification_dimension')
         if anim_path is not None:
             self._anim_recorder = MaskVisualVMPY(240, 240, fps=4,
+                                                 result_categories=clazz_dim,
                                                  vision_filename_mask=anim_path)
 
 
@@ -70,7 +71,8 @@ class FocusEnv:
         self._image = None  # Current processing image.
         self._label = None  # Label for current image.
         self._SEG_stage = None  # Flag indicating whether is "Segmentation" stage or not.
-        self._focus_bbox = np.zeros([4], dtype=np.float32)  # Focus bounding-box. (y1, x1, y2, x2)
+        self._focus_bbox = None     # Focus bounding-box. (y1, x1, y2, x2)
+        # self._focus_bbox = np.zeros([4], dtype=np.float32)  # Focus bounding-box. (y1, x1, y2, x2)
 
         # The previous "Segmentation" result (real form).
         self._SEG_prev = None
@@ -79,8 +81,15 @@ class FocusEnv:
         #   as part of input for "Result Fusion". So it's not real "Result"-form.
         self._COMP_result = None
 
-        # The previous "Action". (used in "restrict" mode)
-        self._ACT_prev = None
+        # The previous "Relative Directions". (used in "restrict" mode)
+        self._RelDir_prev = None
+        self._RELATIVE_DIRECTION = ('left-up', 'right-up', 'left-bottom', 'right-bottom')
+
+
+        # The time-step.
+        self._time_step = None
+
+
 
         # # The position information. Declaration according to config.
         # if pos_method == 'map':
@@ -143,8 +152,12 @@ class FocusEnv:
         # Reset the "Focus Bounding-box".
         self._focus_bbox = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float32)   # (y1, x1, y2, x2)
 
-        # Reset the "Previous Action".
-        self._ACT_prev = 0
+        # Reset the "Previous Relative Directions".
+        self._RelDir_prev = []
+        # self._RelDir_prev.clear()
+
+        # Reset the time-step.
+        self._time_step = 0
 
 
 
@@ -277,16 +290,27 @@ class FocusEnv:
             raise ValueError('Unknown position information fusion method !!!')
 
 
-        # Different procedure according to phrase.
+        # Different procedure according to phrase. "Train" phrase.
         if self._phrase == 'Train':
             # Execute train function.
             segmentation, COMP_res, action = op_func(
                 [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+            # Execution to get the next state (bbox), reward, terminal flag.
+            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
             # Real "Segment", fake "Focus".
             if SEG_stage:
-                # Assign some holders.
+                # Re-assign the "Segmentation" result and Complete info.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
+            # Fake "Segment", real "Focus".
+            else:
+                # Re-assign the current "Focus Bbox".
+                self._focus_bbox = np.asarray(dst_bbox)
+                self._time_step += 1
+        # "Validate" or "Test".
+        else:
+
+            pass
 
 
         # #
@@ -352,23 +376,23 @@ class FocusEnv:
         # Assign the terminal flag to holder.
         self._terminal = terminal
 
-        # Record the process.
-        if self._anim_recorder is not None:
-            # Generate the temp label for animation according to the raw label.
-            if self._label is not None:
-                # Use the raw label.
-                anim_label = np.argmax(self._label, axis=-1)    # [w, h]
-            else:
-                # All black is OK.
-                anim_label = np.zeros(self._proc_size)
-            # Record the process to local file system.
-            self._anim_recorder.record((self._4mod.copy(),
-                                        anim_label,
-                                        vis_data,
-                                        self._segmentation.copy(),
-                                        np.argmax(test_prev, axis=-1)
-                                        ),
-                                       arg=terminal)  # Need copy !!!
+        # # Record the process.
+        # if self._anim_recorder is not None:
+        #     # Generate the temp label for animation according to the raw label.
+        #     if self._label is not None:
+        #         # Use the raw label.
+        #         anim_label = np.argmax(self._label, axis=-1)    # [w, h]
+        #     else:
+        #         # All black is OK.
+        #         anim_label = np.zeros(self._proc_size)
+        #     # Record the process to local file system.
+        #     self._anim_recorder.record((self._4mod.copy(),
+        #                                 anim_label,
+        #                                 vis_data,
+        #                                 self._segmentation.copy(),
+        #                                 np.argmax(test_prev, axis=-1)
+        #                                 ),
+        #                                arg=terminal)  # Need copy !!!
 
         # Release memory.
         gc.collect()
@@ -396,18 +420,136 @@ class FocusEnv:
         if not isinstance(bbox, np.ndarray) or len(bbox.shape) != 4:
             raise ValueError('The bbox must be a 4-elements numpy array !!!')
 
+        # Get detailed config.
+        conf_base = self._config['Base']
+        clazz_dim = conf_base.get('classification_dimension')
+        conf_dqn = self._config['DQN']
+        anchor_scale = conf_dqn.get('anchors_scale', 2)
+        reward_metric = conf_dqn.get('reward_metric', 'Dice-M')
+        terminate_threshold = conf_dqn.get('terminal_threshold', 0.8)
+        step_threshold = conf_dqn.get('step_threshold', 10)
 
+        # Out-of-Boundary (focus out too much) error.
+        OOB_err = False
+        # Terminal flag.
+        terminal = False
 
+        # Execute the given action. Different procedure according to action quantity.
+        if self._act_dim == 9:
+            # "Restrict" mode.
+            anchors = self.__anchors(bbox, anchor_scale, 9,
+                                     arg=self._RelDir_prev[-1])     # the newest relative direction.
+            # --> select children.
+            if action <= 3:
+                # push the relative direction. -- focus in.
+                rel_dirc = self._RELATIVE_DIRECTION[action]     # coz just the same order.
+                self._RelDir_prev.append(rel_dirc)
+            # --> select parent.
+            elif action == 4:
+                # check if it's the outermost level.
+                if len(self._RelDir_prev) == 0:
+                    OOB_err = True
+                else:
+                    # pop out the relative direction. -- focus out.
+                    self._RelDir_prev.pop()
+            # --> select peers.
+            elif action <= 7:
+                # translate the current (newest) relative direction.  -- focus peer.
+                cur_Rdirc = self._RelDir_prev.pop()
+                # metaphysics formulation.
+                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
+                NRD_idx = action - 4
+                if NRD_idx - CRD_idx <= 0:
+                    NRD_idx -= 1
+                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
+                # pop out and push new relative direction.
+                self._RelDir_prev.append(next_Rdirc)
+            # --> stop, terminal.
+            else:
+                terminal = True
 
+        elif self._act_dim == 17:
+            # "Whole Candidates" mode.
+            anchors = self.__anchors(bbox, anchor_scale, 17)
+            # Fake relative direction for "Out-of-Boundary" error check.
+            fake_RD = self._RELATIVE_DIRECTION[0]
+            # --> select children. -- focus in. push
+            if action <= 3:
+                self._RelDir_prev.append(fake_RD)
+            # --> select parent. -- focus out. pop
+            elif action <= 7:
+                # check if it's the outermost level.
+                if len(self._RelDir_prev) == 0:
+                    OOB_err = True
+                else:
+                    self._RelDir_prev.pop()
+            # --> select peers. -- do nothing ...
+            elif action <= 15:
+                pass
+            # --> stop, terminal.
+            else:
+                terminal = True
 
+        else:
+            raise Exception('Unknown action dimension, there is no logic with respect to '
+                            'current act_dim, please check your code !!!')
 
-        return
+        # # Get the destination bbox.
+        # if not OOB_err and not terminal:
+        #     dst_bbox = anchors[action]
+        # else:
+        #     dst_bbox = None
+
+        # # Compute the reward for given action. (Only in "Train" phrase)
+        # cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
+        #                              category=clazz_dim, anchors=anchors,
+        #                              OOB_err=OOB_err, terminal=terminal,
+        #                              ter_thres=terminate_threshold,
+        #                              metric_type=reward_metric)
+        # if isinstance(cal_rewards, list):
+        #     reward = cal_rewards[action]
+        # else:
+        #     reward = cal_rewards
+
+        # # get the destination bbox.
+        # if action != 8:
+        #     dst_bbox = anchors[action]
+
+        # Compute the reward for given action. (Only in "Train" phrase)
+        if self._phrase == 'Train':
+            cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
+                                         category=clazz_dim, anchors=anchors,
+                                         OOB_err=OOB_err, terminal=terminal,
+                                         ter_thres=terminate_threshold,
+                                         metric_type=reward_metric)
+            if isinstance(cal_rewards, list):
+                reward = cal_rewards[action]
+            else:
+                reward = cal_rewards
+        else:
+            reward = None
+
+        # Judge whether game over or not.
+        over, info = self.__game_over(OOB_err, terminal,
+                                      time_step=self._time_step,
+                                      step_thres=step_threshold)
+
+        # Get the destination bbox.
+        if not over:
+            dst_bbox = anchors[action]
+        else:
+            dst_bbox = None
+
+        # Return the 1)destination bbox, 2)reward, 3)over flag and 4)information.
+        return dst_bbox, reward, over, info
 
 
 
     def __anchors(self, bbox, scale, adim, arg=None):
         r'''
             Generate the anchors for current bounding-box with the given scale.
+                What's more, it can restrict some anchors if given additional
+                arguments.
         '''
 
         # Get the four coordinates (normalized).
@@ -523,62 +665,116 @@ class FocusEnv:
         s16_x2 = x2
         s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
 
-        # Now select bboxes to return according to the mode.
+        # Now select anchors to return according to the mode.
         if adim == 9:
             # Check validity.
             if arg is None:
                 raise Exception('One must assign the arg with previous action when adim = 9 !!!')
-            # Judge for previous action.
-            prev = arg
-            # --> previously select children.
-            if prev == 0:
+            # Select candidates for relative direction.
+            relative = arg
+            if relative == 'left-up':
                 cands = [
                     0, 1, 2, 3,     # all children
                     7,  # parent - right-bottom
                     11, 14, 15  # peers - right, bottom, right-bottom
                 ]
-            elif prev == 1:
+            elif relative == 'right-up':
                 cands = [
                     0, 1, 2, 3,  # all children
                     6,  # parent - left-bottom
                     10, 12, 15  # peers - left, bottom, left-bottom
                 ]
-            elif prev == 2:
+            elif relative == 'left-bottom':
                 cands = [
                     0, 1, 2, 3,  # all children
                     5,  # parent - right-up
                     9, 13, 14   # peers - right, up, right-up
                 ]
-            elif prev == 3:
+            elif relative == 'right-bottom':
                 cands = [
                     0, 1, 2, 3,  # all children
                     4,  # parent - left-up
                     8, 12, 13   # peers - left, up, left-up
                 ]
-            # # --> previously select peers.
-            # elif prev
-
-
             else:
-                raise Exception('Invalid previous action value !!!')
-
-
-
+                raise Exception('Invalid relative value !!!')
+            # Iteratively get corresponding anchors.
+            r_anchors = []
+            for c in cands:
+                r_anchors.append(s_anchors[c])
+            return r_anchors
+        # No restriction.
         elif adim == 17:
             # Return all the anchors.
             return s_anchors
-
-
         else:
             raise ValueError('Unknown adim, this adim\'s anchors don\'t support now !!!')
 
 
 
-        return
+
+
+    def __rewards(self, pred, label, category, anchors, OOB_err, terminal, ter_thres, metric_type):
+        r'''
+            Calculate the rewards for each situation. Including:
+                1) The remaining value of given anchors.
+                2) The terminal moment.
+                3) The Out-of-Boundary error.
+        '''
+
+        # Reward (punishment) for "Out-of-Boundary" error.
+        if OOB_err:
+            return 0.0
+
+        # Reward for "Terminal" action.
+        if terminal:
+            if metric_type == 'Dice-M':
+                v = eva.mean_DICE_metric(pred, label, category, ignore_BG=True)
+            elif metric_type == 'Dice-P':
+                v = eva.prop_DICE_metric(pred, label, category, ignore_BG=True)
+            else:
+                raise ValueError('Unknown metric type !!!')
+            return 3.0 if v >= ter_thres else -3.0
+
+        # Rewards for each "Anchor".
+        cor_h, cor_w = label.shape
+        rewards = []
+        for bbox in anchors:
+            # boundary.
+            y1, x1, y2, x2 = bbox
+            up = int(round(y1 * cor_h))
+            left = int(round(x1 * cor_w))
+            bottom = int(round(y2 * cor_h))
+            right = int(round(x2 * cor_w))
+            # calculate.
+            region_pred = pred[up: bottom, left: right]
+            region_lab = label[up: bottom, left: right]
+            if metric_type == 'Dice-M':
+                v = eva.mean_DICE_metric(region_pred, region_lab, category, ignore_BG=True)
+            elif metric_type == 'Dice-P':
+                v = eva.prop_DICE_metric(region_pred, region_lab, category, ignore_BG=True)
+            else:
+                raise ValueError('Unknown metric type !!!')
+            # package.
+            rewards.append(v)
+
+        # Return all rewards for anchors.
+        return rewards
 
 
 
 
+    def __game_over(self, OOB_err, terminal, time_step, step_thres):
+        r'''
+            Judge whether current processing is over according to each flag.
+        '''
+        if OOB_err:
+            return True, 'Out-of-Boundary !'
+        if terminal:
+            return True, 'Terminal !'
+        if time_step >= step_thres:
+            return True, 'Reach Threshold !'
+        return False, None
 
 
 

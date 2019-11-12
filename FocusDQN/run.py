@@ -12,21 +12,49 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Just Test -------
 
+import util.evaluation as eva
+
+p = np.zeros((240, 240), dtype=np.int64)
+p[50: 80, 60: 100] = 1
+l = np.zeros((240, 240), dtype=np.int64)
+l[30: 60, 90: 120] = 1
+
+p = p[50: 50, 40: 60]
+l = l[30: 40, 50: 70]
+
+v1 = eva.prop_DICE_metric(p, l, 2, True)
+print(v1)
+v2 = eva.mean_DICE_metric(p, l, 2, True)
+print(v2)
+
+
+
 import matplotlib.pyplot as plt
-print('Test')
-im = Image.fromarray(np.zeros((240, 240)))
-font = ImageFont.truetype("consola.ttf", 20, encoding="unic")
-draw = ImageDraw.Draw(im)
-# t = 'Hello World'
-# tw, th = font.getsize(t)
-# draw.text((120-tw//2, 120-th//2), t, font=font)
-t = 'Hello World\nGO: 520'
-tw, th = font.getsize_multiline(t)
-draw.multiline_text((120-tw//2, 120-th//2), t, font=font, align='center')
-ar = np.asarray(im)
-print(ar.ndim)
-plt.imshow(ar, cmap='gray')
+plt.subplot(131)
+plt.imshow(p)
+plt.subplot(132)
+plt.imshow(l)
+plt.subplot(133)
+plt.imshow(p*l)
 plt.show()
+
+
+
+# import matplotlib.pyplot as plt
+# print('Test')
+# im = Image.fromarray(np.zeros((240, 240)))
+# font = ImageFont.truetype("consola.ttf", 20, encoding="unic")
+# draw = ImageDraw.Draw(im)
+# # t = 'Hello World'
+# # tw, th = font.getsize(t)
+# # draw.text((120-tw//2, 120-th//2), t, font=font)
+# t = 'Hello World\nGO: 520'
+# tw, th = font.getsize_multiline(t)
+# draw.multiline_text((120-tw//2, 120-th//2), t, font=font, align='center')
+# ar = np.asarray(im)
+# print(ar.ndim)
+# plt.imshow(ar, cmap='gray')
+# plt.show()
 
 
 

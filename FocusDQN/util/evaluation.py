@@ -8,35 +8,166 @@ import cv2
 # This metric is self-defined.
 # ------------------------------------------------------------
 
-def Region1(data, label):
-    completeTumor = np.zeros(data.shape)
+# def Region1(data, label):
+#     completeTumor = np.zeros(data.shape)
+#     syntheticData = np.zeros(label.shape)
+#     completeTumor[data != 0] = 1
+#     syntheticData[label != 0] = 1
+#     return completeTumor, syntheticData
+#
+#
+# def Region2(data, label):
+#     completeTumor = np.zeros(data.shape)
+#     syntheticData = np.zeros(label.shape)
+#     completeTumor[np.logical_not(np.logical_or((data == 0), (data == 2)))] = 1
+#     syntheticData[np.logical_not(np.logical_or((label == 0), (label == 2)))] = 1
+#     return completeTumor, syntheticData
+#
+#
+# def Region3(data, label):
+#     completeTumor = np.zeros(data.shape)
+#     syntheticData = np.zeros(label.shape)
+#     completeTumor[data == 4] = 1
+#     syntheticData[label == 4] = 1
+#     return completeTumor, syntheticData
+
+def BRATS_Complete(pred, label):
+    r'''
+        The metrics for BRATS. Complete tumor.
+    '''
+    completeTumor = np.zeros(pred.shape)
     syntheticData = np.zeros(label.shape)
-    completeTumor[data != 0] = 1
+    completeTumor[pred != 0] = 1
     syntheticData[label != 0] = 1
-    return completeTumor, syntheticData
+    v = DICE_Bi(completeTumor, syntheticData)
+    return v
 
 
-def Region2(data, label):
-    completeTumor = np.zeros(data.shape)
+def BRATS_Core(pred, label):
+    r'''
+        The metrics for BRATS. Core tumor.
+    '''
+    completeTumor = np.zeros(pred.shape)
     syntheticData = np.zeros(label.shape)
-    completeTumor[np.logical_not(np.logical_or((data == 0), (data == 2)))] = 1
+    completeTumor[np.logical_not(np.logical_or((pred == 0), (pred == 2)))] = 1
     syntheticData[np.logical_not(np.logical_or((label == 0), (label == 2)))] = 1
-    return completeTumor, syntheticData
+    v = DICE_Bi(pred, label)
+    return v
 
 
-def Region3(data, label):
-    completeTumor = np.zeros(data.shape)
+def BRATS_Enhance(pred, label):
+    r'''
+        The metrics for BRATS. Enhance tumor.
+    '''
+    completeTumor = np.zeros(pred.shape)
     syntheticData = np.zeros(label.shape)
-    completeTumor[data == 4] = 1
+    completeTumor[pred == 4] = 1
     syntheticData[label == 4] = 1
-    return completeTumor, syntheticData
+    v = DICE_Bi(pred, label)
+    return v
 
 
-def DICE_coef(y_true, y_pred):
-    y_true_f = y_true
-    y_pred_f = y_pred
-    intersection = np.sum(y_true_f * y_pred_f)
-    return (2. * intersection + 0.0004) / (np.sum(y_true_f) + np.sum(y_pred_f) + 0.0004)
+
+# ------------------------------------------------------------
+# This metric is self-defined. Mainly the "Dice" metric.
+# ------------------------------------------------------------
+
+def DICE_Bi(pred, label):
+    r'''
+        The simplest Dice metric form. Which is applied to
+            the "Bi-Segmentation" Task.
+    '''
+    # Check validity.
+    if not isinstance(pred, np.ndarray):
+        raise ValueError('The pred must be a array !!!')
+    if not isinstance(label, np.ndarray):
+        raise ValueError('The label must be a array !!!')
+    pred_shape = np.asarray(pred.shape)
+    lab_shape = np.asarray(label.shape)
+    if (pred_shape == 0).any() or (lab_shape == 0).any():
+        # maybe no region
+        return 0.0
+    if (pred_shape != lab_shape).any():
+        raise Exception('The shape of pred and label must be equal !!!')
+    # Transfer to binary clazz.
+    pred = pred.astype(pred.astype(np.bool), np.int64)
+    label = label.astype(label.astype(np.bool), np.int64)
+    # Calculate.
+    intersection = np.sum(pred * label)
+    union = np.sum(pred) + np.sum(label)
+    if union == 0:
+        return 1.0
+    else:
+        return 2. * intersection / union
+
+
+def prop_DICE_metric(pred, label, category, ignore_BG=True):
+    r'''
+        Dice metric (proportional). Treat the whole pixel as equal. The metric
+            value is with respect to the pixel proportion.
+    '''
+    # Check validity.
+    if not isinstance(pred, np.ndarray) or pred.ndim != 2:
+        raise ValueError('The pred must be a 2-D array !!!')
+    if not isinstance(label, np.ndarray) or label.ndim != 2:
+        raise ValueError('The label must be a 2-D array !!!')
+    pred_shape = np.asarray(pred.shape)
+    lab_shape = np.asarray(label.shape)
+    if (pred_shape == 0).any() or (lab_shape == 0).any():
+        # maybe no region
+        return 0.0
+    if (pred_shape != lab_shape).any():
+        raise Exception('The shape of pred and label must be equal !!!')
+    if max(np.max(pred), np.max(label)) > category:
+        raise Exception('The value of pred or label should not greater than category !!!')
+    # Calculate.
+    eye = np.eye(category)
+    ot_pred = eye[pred]
+    ot_lab = eye[label]
+    if ignore_BG:
+        ot_pred = ot_pred[:, :, 1:]
+        ot_lab = ot_lab[:, :, 1:]
+    intersection = np.sum(ot_pred * ot_lab)
+    union = np.sum(ot_pred) + np.sum(ot_lab)
+    if union == 0:
+        return 1.0
+    else:
+        return 2. * intersection / union
+
+
+def mean_DICE_metric(pred, label, category, ignore_BG=True):
+    r'''
+        Dice metric (mean). Calculate each category pixel, respectively.
+            The metric value is the mean of each category Dice value.
+    '''
+    # Check validity.
+    if not isinstance(pred, np.ndarray) or pred.ndim != 2:
+        raise ValueError('The pred must be a 2-D array !!!')
+    if not isinstance(label, np.ndarray) or label.ndim != 2:
+        raise ValueError('The label must be a 2-D array !!!')
+    pred_shape = np.asarray(pred.shape)
+    lab_shape = np.asarray(label.shape)
+    if (pred_shape == 0).any() or (lab_shape == 0).any():
+        # maybe no region
+        return 0.0
+    if (pred_shape != lab_shape).any():
+        raise Exception('The shape of pred and label must be equal !!!')
+    if max(np.max(pred), np.max(label)) > category:
+        raise Exception('The value of pred or label should not greater than category !!!')
+    # Calculate and mean the values.
+    vals = []
+    start_idx = 1 if ignore_BG else 0
+    for c in range(start_idx, category):
+        ot_pred = np.asarray(pred == c, np.int64)
+        ot_lab = np.asarray(label == c, np.int64)
+        intersection = np.sum(ot_pred * ot_lab)
+        union = np.sum(ot_pred) + np.sum(ot_lab)
+        if union == 0:
+            v = 1.0
+        else:
+            v = 2. * intersection / union
+        vals.append(v)
+    return np.mean(vals)
 
 
 
@@ -114,27 +245,6 @@ def SIFT_similarity_metric(image_A, image_B):
         if m.distance < 0.75 * n.distance:
             good.append(m)
     print('good', len(good))
-    # # #####################################
-    # # visualization
-    # h1, w1 = img1.shape[:2]
-    # h2, w2 = img2.shape[:2]
-    # view = np.zeros((max(h1, h2), w1 + w2, 3), np.uint8)
-    # view[:h1, :w1, 0] = img1
-    # view[:h2, w1:, 0] = img2
-    # view[:, :, 1] = view[:, :, 0]
-    # view[:, :, 2] = view[:, :, 0]
-    #
-    # for m in good:
-    #     # draw the keypoints
-    #     # print m.queryIdx, m.trainIdx, m.distance
-    #     color = tuple([np.random.randint(0, 255) for _ in range(3)])
-    #     # print 'kp1,kp2',kp1,kp2
-    #     cv2.line(view, (int(kp1[m.queryIdx].pt[0]), int(kp1[m.queryIdx].pt[1])),
-    #              (int(kp2[m.trainIdx].pt[0] + w1), int(kp2[m.trainIdx].pt[1])), color)
-    #
-    # import matplotlib.pyplot as plt
-    # plt.imshow(view)
-    # plt.show()
 
     return len(good)
 
@@ -158,43 +268,9 @@ def mdifference_similarity_algorithm(mask, src):
 
     # Calculate the standard difference for whole src.
     mdiff = np.std(c_mask - t_img)
-    # mdiff = np.std(np.absolute(c_mask - t_img))
-    # mdiff = np.sum(np.absolute(c_mask - t_img))
-
-    # if len(target_pixels_pos[0]) != 0:
-    #     print('################################')
-    #     print(c_mask)
-    #     print(c_src)
-    #     print(t_img)
-    #     print(mdiff)
 
     # return cost
     return mdiff
-
-
-
-# ------------------------------------------------------------
-# This is the Histogram-based image similarity algorithm.
-# ------------------------------------------------------------
-# def histogram_similarity_algorithm(image_A, image_B):
-#
-#     # Do not finished yet.
-#
-#     img1 = np.zeros(np.shape(image_A), dtype=np.uint8)
-#     img1[:, :] = image_A[:, :]
-#     img2 = np.zeros(np.shape(image_B), dtype=np.uint8)
-#     img2[:, :] = image_B[:, :]
-#
-#     hist1, cvals1 = exposure.histogram(img1)
-#     hist2, cvals2 = exposure.histogram(img2)
-#
-#     print(hist1, cvals1)
-#     print(hist2, cvals2)
-#     # cost = np.sum(hist1 - hist2)
-#
-#     # return cost
-#     return 9
-
 
 
 # ------------------------------------------------------------
@@ -234,329 +310,6 @@ def image2D_to_vector(src):
 
     # Return the 1-D vector.
     return vec
-
-
-# ------------------------------------------------------------
-# This version is suitable for simply coefficient calculation.
-# ------------------------------------------------------------
-
-def dice_coef(predict, grand_truth):
-    r'''
-        Calculate the Dice coefficient of the given predict result and grand truth.
-
-        Specially, below shows the formulation of Dice coefficient:
-            Dice = 2*TP / (FP + 2*TP + FN)
-
-    ------------------------------------------------------------------------------------------
-    Parameters:
-        predict: The predict result of the specific neural network.
-        grand_truth: The grand truth of the given predict result which is specific
-            for the task.
-
-    -------------------------------------------------------------------------------------------
-    Return:
-        The dice coefficient of the given predict result and grand truth.
-    '''
-
-    TP = true_positive(predict, grand_truth)
-    FP = false_positive(predict, grand_truth)
-    FN = false_negative(predict, grand_truth)
-    # calculate the denominator
-    denominator = FP + 2*TP + FN
-    if denominator == 0:
-        dice = 0
-    else:
-        dice = 2*TP / denominator
-
-    return dice
-
-def true_positive(predict, grand_truth):
-    r'''
-        Calculate the true-positive (TP) coefficient of the given predict result
-            and grand truth.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The true-positive (TP) coefficient of the given predict result and grand truth.
-        '''
-
-    # # Use vector operation to compute the TP value.
-    # TP_tensor = np.logical_and(predict, grand_truth)
-    # TP = np.sum(TP_tensor == True)
-
-    # Use vector operation to compute the TP value.
-    B_predict = np.asarray(predict, dtype=np.bool)
-    B_gt = np.asarray(grand_truth, dtype=np.bool)
-    TP_tensor = np.logical_and(B_predict, B_gt)
-    TP = np.sum(TP_tensor)
-
-    return TP
-
-def true_negative(predict, grand_truth):
-    r'''
-        Calculate the true-negative (TN) coefficient of the given predict result
-            and grand truth.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The true-negative (TN) coefficient of the given predict result and grand truth.
-        '''
-
-    # # Use vector operation to compute the FP value.
-    # TN_tensor = np.logical_or(predict, grand_truth)
-    # TN = np.sum(TN_tensor == False)
-
-    # Use vector operation to compute the FP value.
-    B_predict = np.asarray(predict, dtype=np.bool)
-    B_grand_truth = np.asarray(grand_truth, dtype=np.bool)
-    TN_tensor = np.logical_not(np.logical_or(B_predict, B_grand_truth))
-    TN = np.sum(TN_tensor)
-
-    return TN
-
-def false_positive(predict, grand_truth):
-    r'''
-        Calculate the false-positive (FP) coefficient of the given predict result
-            and grand truth.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The false-positive (FP) coefficient of the given predict result and grand truth.
-        '''
-
-    # # First find the all positive value in predict result, meanwhile, obtain the
-    # #   corresponding grand truth value at the same position as predict result.
-    # #   Generate vectors for both of them respectively.
-    # pred_p_index = np.where(predict == True)
-    # pred_p_tensor = predict[pred_p_index]
-    # gt_cor_tensor = grand_truth[pred_p_index]
-    # # Use vector operation to compute the FP value.
-    # FP_tensor = np.logical_xor(pred_p_tensor, gt_cor_tensor)
-    # FP = np.sum(FP_tensor)
-
-    # First find the all positive value in predict result, meanwhile, obtain the
-    #   corresponding grand truth value at the same position as predict result.
-    #   Generate vectors for both of them respectively.
-    B_predict = np.asarray(predict, dtype=np.bool)
-    B_grand_truth = np.asarray(grand_truth, dtype=np.bool)
-    pred_p_index = B_predict
-    pred_p_tensor = B_predict[pred_p_index]
-    gt_cor_tensor = B_grand_truth[pred_p_index]
-    # Use vector operation to compute the FP value.
-    FP_tensor = np.logical_xor(pred_p_tensor, gt_cor_tensor)
-    FP = np.sum(FP_tensor)
-
-    return FP
-
-def false_negative(predict, grand_truth):
-    r'''
-        Calculate the false-negative (FN) coefficient of the given predict result
-            and grand truth.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The false-negative (FN) coefficient of the given predict result and grand truth.
-        '''
-
-    # # First find the all negative value in predict result, meanwhile, obtain the
-    # #   corresponding grand truth value at the same position as predict result.
-    # #   Generate vectors for both of them respectively.
-    # pred_n_index = np.where(predict == False)
-    # pred_n_tensor = predict[pred_n_index]
-    # gt_cor_tensor = grand_truth[pred_n_index]
-    # # Use vector operation to compute the FP value.
-    # FN_tensor = np.logical_xor(pred_n_tensor, gt_cor_tensor)
-    # FN = np.sum(FN_tensor)
-
-    # First find the all negative value in predict result, meanwhile, obtain the
-    #   corresponding grand truth value at the same position as predict result.
-    #   Generate vectors for both of them respectively.
-    B_predict = np.asarray(predict, dtype=np.bool)
-    B_grand_truth = np.asarray(grand_truth, dtype=np.bool)
-    pred_n_index = np.logical_not(B_predict)
-    pred_n_tensor = B_predict[pred_n_index]
-    gt_cor_tensor = B_grand_truth[pred_n_index]
-    # Use vector operation to compute the FP value.
-    FN_tensor = np.logical_xor(pred_n_tensor, gt_cor_tensor)
-    FN = np.sum(FN_tensor)
-
-    return FN
-
-
-# ------------------------------------------------------------
-# The version below will skips the "NaN" when calculating.
-# ------------------------------------------------------------
-
-def NaN_dice_coef(predict, grand_truth):
-    r'''
-        Calculate the Dice coefficient of the given predict result and grand truth
-            under the condition that "NaN" does not participate in calculations.
-
-        Specially, below shows the formulation of Dice coefficient:
-            Dice = 2*TP / (FP + 2*TP + FN)
-
-    ------------------------------------------------------------------------------------------
-    Parameters:
-        predict: The predict result of the specific neural network.
-        grand_truth: The grand truth of the given predict result which is specific
-            for the task.
-
-    -------------------------------------------------------------------------------------------
-    Return:
-        The dice coefficient of the given predict result and grand truth.
-    '''
-
-    NaN_TP = NaN_true_positive(predict, grand_truth)
-    NaN_FP = NaN_false_positive(predict, grand_truth)
-    NaN_FN = NaN_false_negative(predict, grand_truth)
-    # calculate the denominator
-    denominator = NaN_FP + 2*NaN_TP + NaN_FN
-    if denominator == 0:
-        NaN_Dice = 0
-    else:
-        NaN_Dice = 2*NaN_TP / denominator
-
-    return NaN_Dice
-
-def NaN_true_positive(predict, grand_truth):
-    r'''
-        Calculate the true-positive (TP) coefficient of the given predict result
-            and grand truth under the condition that "NaN" does not participate
-            in calculations.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The true-positive (TP) coefficient of the given predict result and grand truth.
-        '''
-
-    # Firstly replace the "NaN" with "zeros".
-    duplication = predict.copy()
-    duplication[np.where(np.isnan(predict))] = 0
-    # Use vector operation to compute the TP value.
-    TP_tensor = np.logical_and(duplication, grand_truth)
-    TP = np.sum(TP_tensor == True)
-
-    return TP
-
-def NaN_true_negative(predict, grand_truth):
-    r'''
-        Calculate the true-negative (TN) coefficient of the given predict result
-            and grand truth under the condition that "NaN" does not participate
-            in calculations.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The true-negative (TN) coefficient of the given predict result and grand truth.
-        '''
-
-    # Firstly replace the "NaN" with "ones".
-    duplication = predict.copy()
-    duplication[np.where(np.isnan(predict))] = 1
-    # Use vector operation to compute the FP value.
-    TN_tensor = np.logical_or(duplication, grand_truth)
-    TN = np.sum(TN_tensor == False)
-
-    return TN
-
-def NaN_false_positive(predict, grand_truth):
-    r'''
-        Calculate the false-positive (FP) coefficient of the given predict result
-            and grand truth under the condition that "NaN" does not participate
-            in calculations.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The false-positive (FP) coefficient of the given predict result and grand truth.
-        '''
-
-    # Firstly replace the "NaN" with "zeros".
-    duplication = predict.copy()
-    duplication[np.where(np.isnan(predict))] = 0
-    # Secondly find the all positive value in predict result, meanwhile, obtain the
-    #   corresponding grand truth value at the same position as predict result.
-    #   Generate vectors for both of them respectively.
-    pred_p_index = np.where(duplication == True)
-    pred_p_tensor = duplication[pred_p_index]
-    gt_cor_tensor = grand_truth[pred_p_index]
-    # Use vector operation to compute the FP value.
-    FP_tensor = np.logical_xor(pred_p_tensor, gt_cor_tensor)
-    FP = np.sum(FP_tensor)
-
-    return FP
-
-def NaN_false_negative(predict, grand_truth):
-    r'''
-        Calculate the false-negative (FN) coefficient of the given predict result
-            and grand truth under the condition that "NaN" does not participate
-            in calculations.
-
-        ------------------------------------------------------------------------------------------
-        Parameters:
-            predict: The predict result of the specific neural network.
-            grand_truth: The grand truth of the given predict result which is specific
-                for the task.
-
-        -------------------------------------------------------------------------------------------
-        Return:
-            The false-negative (FN) coefficient of the given predict result and grand truth.
-        '''
-
-    # Firstly replace the "NaN" with "ones".
-    duplication = predict.copy()
-    duplication[np.where(np.isnan(predict))] = 1
-    # Secondly find the all negative value in predict result, meanwhile, obtain the
-    #   corresponding grand truth value at the same position as predict result.
-    #   Generate vectors for both of them respectively.
-    pred_n_index = np.where(duplication == False)
-    pred_n_tensor = duplication[pred_n_index]
-    gt_cor_tensor = grand_truth[pred_n_index]
-    # Use vector operation to compute the FP value.
-    FN_tensor = np.logical_xor(pred_n_tensor, gt_cor_tensor)
-    FN = np.sum(FN_tensor)
-
-    return FN
 
 
 
