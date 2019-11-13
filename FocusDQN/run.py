@@ -406,7 +406,17 @@ def train_func(x):
     img, SEG_prev, position_info, focus_bbox, COMP_result = x
 
     segmentation = np.zeros_like(SEG_prev)
+    y1 = np.random.randint(0, 240)
+    x1 = np.random.randint(0, 240)
+    y2 = np.random.randint(0, 240)
+    x2 = np.random.randint(0, 240)
+    y1, y2 = min(y1, y2), max(y1, y2)
+    x1, x2 = min(x1, x2), max(x1, x2)
+    c = np.random.randint(0, 5)
+    segmentation[y1: y2, x1: x2] = c
+
     COMP_res = np.zeros_like(COMP_result)
+
     # action = np.random.randint(8)
     action = np.random.randint(9)
 

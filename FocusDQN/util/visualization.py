@@ -23,19 +23,19 @@ class MaskVisual:
         '''
 
         # The file name mask used in "Train" phrase.
-        self._train_anim_fn_mask = vision_filename_mask + 'train/anim-%05d.gif'
+        self._train_anim_fn_mask = vision_filename_mask + 'train/anim-%05d.'
         self._train_result_fn_mask = vision_filename_mask + 'train/result-%05d.jpg'
         # The index of current animation used in "Train" phrase.
         self._train_vision_index = -1
 
         # The file name mask used in "Validate" phrase.
-        self._val_anim_fn_mask = vision_filename_mask + 'validate/anim-%05d.gif'
+        self._val_anim_fn_mask = vision_filename_mask + 'validate/anim-%05d.'
         self._val_result_fn_mask = vision_filename_mask + 'validate/result-%05d.jpg'
         # The index of current animation used in "Validate" phrase.
         self._val_vision_index = -1
 
         # The file name mask used in "Inference" phrase.
-        self._test_anim_fn_mask = vision_filename_mask + 'test/anim-%05d.gif'
+        self._test_anim_fn_mask = vision_filename_mask + 'test/anim-%05d.'
         self._test_result_fn_mask = vision_filename_mask + 'test/result-%05d.jpg'
         # The index of current animation used in "Inference" phrase.
         self._test_vision_index = -1
@@ -277,7 +277,7 @@ class MaskVisualVMPY(MaskVisual):
         '''
 
         # Get information about current trace.
-        cur_region, focus_bbox, reward, segmentation, ter_info = self._act_pos_history[int(t * self._fps - 1)]
+        cur_region, focus_bbox, reward, segmentation, ter_info = self._act_pos_history[int(t * self._fps)]
 
         # Normalization.
         segmentation = self._normalization(segmentation, self._normal_value, max_val=self._res_cate)
@@ -339,11 +339,13 @@ class MaskVisualVMPY(MaskVisual):
         # Concatenate all the rows.
         frame = np.concatenate((row_1st, row_2nd, row_3rd), axis=0)
 
+        frame = np.stack((frame, frame, frame), axis=-1)
+
         # Finally return the frame.
         return frame
 
 
-    def show(self, mode, gif_enable):
+    def show(self, mode, anim_type=None):
         r'''
             Showing the animation of the current epoch. Actually the animation will be
                 generated as a "gif" file in the file system, and it will not directly
@@ -372,7 +374,7 @@ class MaskVisualVMPY(MaskVisual):
         duration = len(self._act_pos_history) / self._fps
 
         # Record animation if enabled.
-        if gif_enable:
+        if anim_type is not None:
             # Generate the animation using defined frame-generation method.
             a1 = mpy.VideoClip(self._make_frame, duration=duration)
             # Specify the saving path.
@@ -385,10 +387,17 @@ class MaskVisualVMPY(MaskVisual):
             else:
                 raise ValueError('Unknown mode value !!!')
             # Save the animation (GIF) into file system.
-            a1.write_gif(filename, fps=self._fps)
+            if anim_type == 'gif':
+                filename += u'gif'
+                a1.write_gif(filename, fps=self._fps)
+            elif anim_type == 'video':
+                filename += u'mp4'
+                a1.write_videofile(filename, fps=self._fps, codec='mpeg4', audio=False)
+            else:
+                raise ValueError('Unknown animation type !!!')
 
         # Get result.
-        result = self._make_frame(duration)
+        result = self._make_frame(duration - 1.0/self._fps)
         # Specify the saving path.
         if mode == 'Train':
             result_file_name = self._train_result_fn_mask % self._train_vision_index

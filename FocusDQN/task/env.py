@@ -79,8 +79,9 @@ class FocusEnv:
         # The time-step.
         self._time_step = None
 
-        # The process flag. (Finish current image)
-        self._finished = True
+        # The process flag.
+        self._finished = True   # finish current image
+        self._FB_opted = False     # whether optimized the "Focus Bbox" or not.
 
         # Finish initialization.
         return
@@ -134,14 +135,13 @@ class FocusEnv:
 
         # Reset the "Previous Relative Directions".
         self._RelDir_prev = ['left-up']     # add default outermost direction.
-        # self._RelDir_prev = []
-        # self._RelDir_prev.clear()
 
         # Reset the time-step.
         self._time_step = 0
 
         # Reset the process flag.
         self._finished = False
+        self._FB_opted = False  # "Focus Bbox" not optimized.
 
         # -------------------------- Switch to next image-label pair. ---------------------------
         # Get the next image-label pair according to the phrase.
@@ -230,6 +230,8 @@ class FocusEnv:
         conf_base = self._config['Base']
         input_shape = conf_base.get('input_shape')
         image_height, image_width = input_shape[1:3]
+        conf_dqn = self._config['DQN']
+        initFB_optimize = conf_dqn.get('initial_bbox_optimize', True)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
 
@@ -260,8 +262,22 @@ class FocusEnv:
                                                       position_info,
                                                       self._focus_bbox.copy(),
                                                       self._COMP_result.copy()))
+
+            # # Bound the initial segmentation region as initial "Focus Bbox".
+            # #   Just for precise and fast "Focus".
+            # if initFB_optimize and not self._FB_opted and not ((segmentation == 0).all()):
+            #     init_region = np.where(segmentation != 0)
+            #     init_y1 = min(init_region[0]) / image_height
+            #     init_x1 = min(init_region[1]) / image_width
+            #     init_y2 = max(init_region[0]) / image_height
+            #     init_x2 = max(init_region[1]) / image_width
+            #     self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+            #     cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
+            #     self._FB_opted = True   # means optimized
+
             # Execution to get the next state (bbox), reward, terminal flag.
-            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
+            RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
+            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
             # Real "Segment", fake "Focus".
             if SEG_stage:
                 # Re-assign the "Segmentation" result and Complete info.
@@ -293,7 +309,7 @@ class FocusEnv:
                                   self._SEG_prev.copy(),
                                   position_info,
                                   self._focus_bbox.copy()))
-                dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
+                dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), self._RelDir_prev)
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
 
@@ -324,16 +340,19 @@ class FocusEnv:
         else:
             raise Exception('The processing of current image is not yet finish, '
                             'can not @Method{render} !!!')
+        # Get config.
+        conf_other = self._config['Others']
+        anim_type = conf_other.get('animation_type', 'gif')
         # Save the process into filesystem.
         if self._anim_recorder is not None:
-            self._anim_recorder.show(mode=self._phrase, gif_enable=True)
+            self._anim_recorder.show(mode=self._phrase, anim_type=anim_type)
         # Release the memory.
         gc.collect()
         return
 
 
 
-    def _exec_4ActRew(self, action, bbox):
+    def _exec_4ActRew(self, action, bbox, RelDirc_his):
         r'''
             Execute the given action, and compute corresponding reward.
 
@@ -369,23 +388,23 @@ class FocusEnv:
         if self._act_dim == 9:
             # "Restrict" mode.
             anchors = self.__anchors(bbox, anchor_scale, 9,
-                                     arg=self._RelDir_prev[-1])     # the newest relative direction.
+                                     arg=RelDirc_his[-1])   # the newest relative direction.
             # --> select children.
             if action <= 3:
                 # push the relative direction. -- focus in.
                 rel_dirc = self._RELATIVE_DIRECTION[action]     # coz just the same order.
-                self._RelDir_prev.append(rel_dirc)
+                RelDirc_his.append(rel_dirc)
             # --> select parent.
             elif action == 4:
                 # pop out the relative direction. -- focus out.
-                self._RelDir_prev.pop()
+                RelDirc_his.pop()
                 # check if it's the outermost level.
-                if len(self._RelDir_prev) == 0:
+                if len(RelDirc_his) == 0:
                     OOB_err = True
             # --> select peers.
             elif action <= 7:
                 # translate the current (newest) relative direction.  -- focus peer.
-                cur_Rdirc = self._RelDir_prev.pop()
+                cur_Rdirc = RelDirc_his.pop()
                 # metaphysics formulation.
                 CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
                 NRD_idx = action - 4
@@ -393,7 +412,7 @@ class FocusEnv:
                     NRD_idx -= 1
                 next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
                 # pop out and push new relative direction.
-                self._RelDir_prev.append(next_Rdirc)
+                RelDirc_his.append(next_Rdirc)
             # --> stop, terminal.
             else:
                 terminal = True
@@ -405,14 +424,14 @@ class FocusEnv:
             fake_RD = self._RELATIVE_DIRECTION[0]
             # --> select children. -- focus in. push
             if action <= 3:
-                self._RelDir_prev.append(fake_RD)
+                RelDirc_his.append(fake_RD)
             # --> select parent. -- focus out. pop
             elif action <= 7:
                 # check if it's the outermost level.
-                if len(self._RelDir_prev) == 0:
+                if len(RelDirc_his) == 0:
                     OOB_err = True
                 else:
-                    self._RelDir_prev.pop()
+                    RelDirc_his.pop()
             # --> select peers. -- do nothing ...
             elif action <= 15:
                 pass
@@ -449,7 +468,6 @@ class FocusEnv:
             dst_bbox = anchors[action]
         else:
             dst_bbox = self._FAKE_BBOX
-            # dst_bbox = None
 
         # Return the 1)destination bbox, 2)reward, 3)over flag and 4)information.
         return dst_bbox, reward, over, info
@@ -662,6 +680,8 @@ class FocusEnv:
                 v = eva.prop_DICE_metric(region_pred, region_lab, category, ignore_BG=True)
             else:
                 raise ValueError('Unknown metric type !!!')
+            # use the remaining value of "Dice" metric as reward.
+            v = 1.0 - v
             # package.
             rewards.append(v)
 
