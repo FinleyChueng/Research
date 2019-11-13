@@ -12,31 +12,31 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # Just Test -------
 
-import util.evaluation as eva
-
-p = np.zeros((240, 240), dtype=np.int64)
-p[50: 80, 60: 100] = 1
-l = np.zeros((240, 240), dtype=np.int64)
-l[30: 60, 90: 120] = 1
-
-p = p[50: 60, 40: 60]
-l = l[30: 40, 50: 70]
-
-v1 = eva.prop_DICE_metric(p, l, 2, True)
-print(v1)
-v2 = eva.mean_DICE_metric(p, l, 2, True)
-print(v2)
-
-
-
-import matplotlib.pyplot as plt
-plt.subplot(131)
-plt.imshow(p)
-plt.subplot(132)
-plt.imshow(l)
-plt.subplot(133)
-plt.imshow(p*l)
-plt.show()
+# import util.evaluation as eva
+#
+# p = np.zeros((240, 240), dtype=np.int64)
+# p[50: 80, 60: 100] = 1
+# l = np.zeros((240, 240), dtype=np.int64)
+# l[30: 60, 90: 120] = 1
+#
+# p = p[50: 60, 40: 60]
+# l = l[30: 40, 50: 70]
+#
+# v1 = eva.prop_DICE_metric(p, l, 2, True)
+# print(v1)
+# v2 = eva.mean_DICE_metric(p, l, 2, True)
+# print(v2)
+#
+#
+#
+# import matplotlib.pyplot as plt
+# plt.subplot(131)
+# plt.imshow(p)
+# plt.subplot(132)
+# plt.imshow(l)
+# plt.subplot(133)
+# plt.imshow(p*l)
+# plt.show()
 
 
 
@@ -214,162 +214,213 @@ plt.show()
 # |   ===> Summary holder: dict_keys(['TEST/Reward', 'TEST/DICE', 'TEST/BRATS_metric', 'TEST/MergeSummary'])
 # |   ===> Visual holder: dict_keys([])
 
-# print('Begin')
-from task.model import *
-import util.config as conf_util
-import tfmodule.util as netutil
-import os
-config_file = '/FocusDQN/config.ini'
-config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
-config = conf_util.parse_config(config_file)
-dqn = DqnAgent(name_space='TEST', config=config)
-inputs, outputs, losses, summary, visual = dqn.definition()
-# netutil.show_all_variables()
-# netutil.count_flops()
-# print('End')
-
-import matplotlib.pyplot as plt
-def show(label, img=None):
-    if img is not None:
-        plt.subplot(231)
-        plt.imshow(img[:, :, 0], cmap='gray')
-        plt.subplot(232)
-        plt.imshow(img[:, :, 1], cmap='gray')
-        plt.subplot(233)
-        plt.imshow(img[:, :, 2], cmap='gray')
-        plt.subplot(234)
-        plt.imshow(img[:, :, 3], cmap='gray')
-        plt.subplot(235)
-        plt.imshow(label, cmap='gray')
-    else:
-        plt.imshow(label, cmap='gray')
-    plt.show()
-    return
-
-# # get image and label.
-# adapter = BratsAdapter(enable_data_enhance=False)
-# for _ in range(15):
-# # for _ in range(35):
-#     adapter.next_image_pair('Train', batch_size=155)
-# adapter.next_image_pair('Train', batch_size=70)
-# img, lab, _1, _2, finish = adapter.next_image_pair('Train', batch_size=4)
+# # print('Begin')
+# from task.model import *
+# import util.config as conf_util
+# import tfmodule.util as netutil
+# import os
+# config_file = '/FocusDQN/config.ini'
+# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+# config = conf_util.parse_config(config_file)
+# dqn = DqnAgent(name_space='TEST', config=config)
+# inputs, outputs, losses, summary, visual = dqn.definition()
+# # netutil.show_all_variables()
+# # netutil.count_flops()
+# # print('End')
 #
-# # show
-# show(lab[0], img[0])
-
-# init.
-sess = tf.Session()
-# infer. ---
-# fake input.
-# img = img[:, :, :, :-1]
-img = np.ones([4, 240, 240, 3])
-img[:, :, :, 1] = 2
-img[:, :, :, 2] = 3
-pr = np.ones([4, 240, 240])
-pi = np.ones([4, 240, 240])
-ss = [True, True, False, False]
-# ss = [False, False, False, False]
+# import matplotlib.pyplot as plt
+# def show(label, img=None):
+#     if img is not None:
+#         plt.subplot(231)
+#         plt.imshow(img[:, :, 0], cmap='gray')
+#         plt.subplot(232)
+#         plt.imshow(img[:, :, 1], cmap='gray')
+#         plt.subplot(233)
+#         plt.imshow(img[:, :, 2], cmap='gray')
+#         plt.subplot(234)
+#         plt.imshow(img[:, :, 3], cmap='gray')
+#         plt.subplot(235)
+#         plt.imshow(label, cmap='gray')
+#     else:
+#         plt.imshow(label, cmap='gray')
+#     plt.show()
+#     return
+#
+# # # get image and label.
+# # adapter = BratsAdapter(enable_data_enhance=False)
+# # for _ in range(15):
+# # # for _ in range(35):
+# #     adapter.next_image_pair('Train', batch_size=155)
+# # adapter.next_image_pair('Train', batch_size=70)
+# # img, lab, _1, _2, finish = adapter.next_image_pair('Train', batch_size=4)
+# #
+# # # show
+# # show(lab[0], img[0])
+#
+# # init.
+# sess = tf.Session()
+# # infer. ---
+# # fake input.
+# # img = img[:, :, :, :-1]
+# img = np.ones([4, 240, 240, 3])
+# img[:, :, :, 1] = 2
+# img[:, :, :, 2] = 3
+# pr = np.ones([4, 240, 240])
+# pi = np.ones([4, 240, 240])
 # ss = [True, True, False, False]
-# fb = [[0.5, 0.7, 0.4, 0.6],
-#       [0.5, 0.7, 0.4, 0.6],
-#       [0.5, 0.7, 0.4, 0.6],
-#       [0.5, 0.7, 0.4, 0.6]]
-# fb = [[0.5, 0.4, 0.7, 0.6],
-#       [0.5, 0.4, 0.7, 0.6],
-#       [0.5, 0.4, 0.7, 0.6],
-#       [0.5, 0.4, 0.7, 0.6]]
-fb = [[0.5, 0.7, 0.7, 0.6],
-      [0.5, 0.4, 0.7, 0.8],
-      [0.5, 0.6, 0.9, 0.7],
-      [0.3, 0.4, 0.8, 0.6]]
-# fb = [[0.3, 0.5, 0.7, 0.6],
-#       [0.3, 0.5, 0.7, 0.6],
-#       [0.3, 0.5, 0.7, 0.6],
-#       [0.3, 0.5, 0.7, 0.6]]
-# cs = np.ones([4, 224, 224, 5])
-# cs = np.random.normal(0, 1, [4, 224, 224, 5])
-cs = np.random.uniform(0, 1, [4, 224, 224, 5])
-# cs = np.random.randint(0, 5, [4, 224, 224])
-# input holders.
-x1 = inputs['ORG/image']
-x2 = inputs['ORG/prev_result']
-x3 = inputs['ORG/position_info']
-x4 = inputs['ORG/Segment_Stage']
-x5 = inputs['ORG/Focus_Bbox']
-x6 = inputs['TEST/Complete_Result']
-# output holders.
-y1 = outputs['ORG/DQN_output']
-y2 = outputs['TEST/SEG_output']
-# feed.
-sess.run(tf.global_variables_initializer())
-v1, v2 = sess.run([y1, y2], feed_dict={
-    x1: img,
-    x2: pr,
-    x3: pi,
-    x4: ss,
-    x5: fb,
-    x6: cs
-})
-print('--- infer ---')
-print('DQN_output: ', v1)
-print('SEG_output: ', v2)
-print('all 0: ', np.all(v2 == 0))
-print('any non-zero: ', np.any(v2 != 0))
-print('min cls: ', np.min(v2))
-print('max cls: ', np.max(v2))
-# show(v2[0])
-
-# train. ---
-# fake input.
-lab = np.ones([4, 240, 240])
-cw = [[1, 5, 3, 4, 10],
-      [2, 6, 1, 3, 7],
-      [5, 2, 7, 1, 9],
-      [3, 5, 2, 7, 1]]
-pa = [2, 3, 1, 5]
-tqa = [0.5, 0.6, 0.9, 0.15]
-isw = [0.1, 0.4, 0.5, 0.2]
-# input holders.
-l1 = losses['TEST/GT_label']
-l2 = losses['TEST/clazz_weights']
-l3 = losses['TEST/prediction_actions']
-l4 = losses['TEST/target_Q_values']
-l5 = losses['TEST/IS_weights']
-# output holders.
-y1 = losses['TEST/EXP_priority']
-y2 = losses['TEST/SEG_loss']
-y3 = losses['TEST/DQN_loss']
-y4 = losses['TEST/NET_loss']
-# feed.
-opt = tf.train.AdamOptimizer()
-train = opt.minimize(y4)
-sess.run(tf.global_variables_initializer())
-_, v1, v2, v3, v4 = sess.run([train, y1, y2, y3, y4], feed_dict={
-    x1: img,
-    x2: pr,
-    x3: pi,
-    x4: ss,
-    x5: fb,
-    #------
-    l1: lab,
-    l2: cw,
-    l3: pa,
-    l4: tqa,
-    l5: isw
-})
-print('--- train ---')
-print('EXP_priority: ', v1)
-print('SEG_loss: %10f' % v2)
-print('DQN_loss: %10f' % v3)
-print('NET_loss: %10f' % v4)
+# # ss = [False, False, False, False]
+# # ss = [True, True, False, False]
+# # fb = [[0.5, 0.7, 0.4, 0.6],
+# #       [0.5, 0.7, 0.4, 0.6],
+# #       [0.5, 0.7, 0.4, 0.6],
+# #       [0.5, 0.7, 0.4, 0.6]]
+# # fb = [[0.5, 0.4, 0.7, 0.6],
+# #       [0.5, 0.4, 0.7, 0.6],
+# #       [0.5, 0.4, 0.7, 0.6],
+# #       [0.5, 0.4, 0.7, 0.6]]
+# fb = [[0.5, 0.7, 0.7, 0.6],
+#       [0.5, 0.4, 0.7, 0.8],
+#       [0.5, 0.6, 0.9, 0.7],
+#       [0.3, 0.4, 0.8, 0.6]]
+# # fb = [[0.3, 0.5, 0.7, 0.6],
+# #       [0.3, 0.5, 0.7, 0.6],
+# #       [0.3, 0.5, 0.7, 0.6],
+# #       [0.3, 0.5, 0.7, 0.6]]
+# # cs = np.ones([4, 224, 224, 5])
+# # cs = np.random.normal(0, 1, [4, 224, 224, 5])
+# cs = np.random.uniform(0, 1, [4, 224, 224, 5])
+# # cs = np.random.randint(0, 5, [4, 224, 224])
+# # input holders.
+# x1 = inputs['ORG/image']
+# x2 = inputs['ORG/prev_result']
+# x3 = inputs['ORG/position_info']
+# x4 = inputs['ORG/Segment_Stage']
+# x5 = inputs['ORG/Focus_Bbox']
+# x6 = inputs['TEST/Complete_Result']
+# # output holders.
+# y1 = outputs['ORG/DQN_output']
+# y2 = outputs['TEST/SEG_output']
+# # feed.
+# sess.run(tf.global_variables_initializer())
+# v1, v2 = sess.run([y1, y2], feed_dict={
+#     x1: img,
+#     x2: pr,
+#     x3: pi,
+#     x4: ss,
+#     x5: fb,
+#     x6: cs
+# })
+# print('--- infer ---')
+# print('DQN_output: ', v1)
+# print('SEG_output: ', v2)
+# print('all 0: ', np.all(v2 == 0))
+# print('any non-zero: ', np.any(v2 != 0))
+# print('min cls: ', np.min(v2))
+# print('max cls: ', np.max(v2))
+# # show(v2[0])
+#
+# # train. ---
+# # fake input.
+# lab = np.ones([4, 240, 240])
+# cw = [[1, 5, 3, 4, 10],
+#       [2, 6, 1, 3, 7],
+#       [5, 2, 7, 1, 9],
+#       [3, 5, 2, 7, 1]]
+# pa = [2, 3, 1, 5]
+# tqa = [0.5, 0.6, 0.9, 0.15]
+# isw = [0.1, 0.4, 0.5, 0.2]
+# # input holders.
+# l1 = losses['TEST/GT_label']
+# l2 = losses['TEST/clazz_weights']
+# l3 = losses['TEST/prediction_actions']
+# l4 = losses['TEST/target_Q_values']
+# l5 = losses['TEST/IS_weights']
+# # output holders.
+# y1 = losses['TEST/EXP_priority']
+# y2 = losses['TEST/SEG_loss']
+# y3 = losses['TEST/DQN_loss']
+# y4 = losses['TEST/NET_loss']
+# # feed.
+# opt = tf.train.AdamOptimizer()
+# train = opt.minimize(y4)
+# sess.run(tf.global_variables_initializer())
+# _, v1, v2, v3, v4 = sess.run([train, y1, y2, y3, y4], feed_dict={
+#     x1: img,
+#     x2: pr,
+#     x3: pi,
+#     x4: ss,
+#     x5: fb,
+#     #------
+#     l1: lab,
+#     l2: cw,
+#     l3: pa,
+#     l4: tqa,
+#     l5: isw
+# })
+# print('--- train ---')
+# print('EXP_priority: ', v1)
+# print('SEG_loss: %10f' % v2)
+# print('DQN_loss: %10f' % v3)
+# print('NET_loss: %10f' % v4)
 
 # ----------------------------------------------------------------------
 
 
 # # Environment Test. --------------------------------------------------
 
-# 17243252
-# 17241196
+import util.config as conf_util
+import os
+config_file = '/FocusDQN/config.ini'
+config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+config = conf_util.parse_config(config_file)
+
+
+# from task.model import *
+# dqn = DqnAgent(name_space='TEST', config=config)
+# inputs, outputs, losses, summary, visual = dqn.definition()
+# # input holders.
+# x1 = inputs['ORG/image']
+# x2 = inputs['ORG/prev_result']
+# x3 = inputs['ORG/position_info']
+# x4 = inputs['ORG/Segment_Stage']
+# x5 = inputs['ORG/Focus_Bbox']
+# x6 = inputs['TEST/Complete_Result']
+# # output holders.
+# y1 = outputs['ORG/DQN_output']
+# y2 = outputs['TEST/SEG_output']
+
+
+from dataset.adapter.bratsAdapter import BratsAdapter
+adapter = BratsAdapter(enable_data_enhance=False)
+
+for _ in range(35):
+# for _ in range(10):
+    adapter.next_image_pair('Train', batch_size=155)
+adapter.next_image_pair('Train', batch_size=70)
+
+
+from task.env import FocusEnv
+env = FocusEnv(config, adapter)
+
+def train_func(x):
+    img, SEG_prev, position_info, focus_bbox, COMP_result = x
+
+    segmentation = np.zeros_like(SEG_prev)
+    COMP_res = np.zeros_like(COMP_result)
+    # action = np.random.randint(8)
+    action = np.random.randint(9)
+
+    return segmentation, COMP_res, action
+
+stage = True
+env.reset()
+for _ in range(25):
+    _1, _2, over, _4 = env.step(train_func, stage)
+    if over:
+        break
+    stage = not stage
+env.render()
+
 
 # recorder = MaskVisualVMPY(240, 240, fps=4,
 #                           # vision_filename_mask='G:/Finley/Result/dqn-anim/',

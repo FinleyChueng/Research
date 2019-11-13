@@ -40,9 +40,11 @@ class FocusEnv:
         # Animation recorder.
         self._anim_recorder = None
         conf_other = self._config['Others']
-        anim_path = conf_other.get('animation', None)
+        anim_path = conf_other.get('animation_path', None)
+        anim_fps = conf_other.get('animation_fps', 4)
         if anim_path is not None:
-            self._anim_recorder = MaskVisualVMPY(240, 240, fps=4,
+            self._anim_recorder = MaskVisualVMPY(240, 240,
+                                                 fps=anim_fps,
                                                  result_categories=clazz_dim,
                                                  vision_filename_mask=anim_path)
 
@@ -53,7 +55,15 @@ class FocusEnv:
         self._image = None  # Current processing image.
         self._label = None  # Label for current image.
         self._SEG_stage = None  # Flag indicating whether is "Segmentation" stage or not.
-        self._focus_bbox = None     # Focus bounding-box. (y1, x1, y2, x2)
+
+        # The focus bounding-box. (y1, x1, y2, x2)
+        self._focus_bbox = None
+        # --> fake bbox, only (1, 1)-pixel shape.
+        input_shape = conf_base.get('input_shape')
+        image_height, image_width = input_shape[1:3]
+        fy2_1px = 1 / image_height
+        fx2_1px = 1 / image_width
+        self._FAKE_BBOX = np.asarray([0.0, 0.0, fy2_1px, fx2_1px])  # [y1, x1, y2, x2]
 
         # The previous "Segmentation" result (real form).
         self._SEG_prev = None
@@ -70,7 +80,7 @@ class FocusEnv:
         self._time_step = None
 
         # The process flag. (Finish current image)
-        self._finished = None
+        self._finished = True
 
         # Finish initialization.
         return
@@ -95,7 +105,7 @@ class FocusEnv:
         # Check the validity of execution logic.
         if not self._finished:
             raise Exception('The processing of current image is not yet finished, '
-                            'please keep calling @method{step} !!!')
+                            'please keep calling @Method{step} !!!')
 
         # --------------------------- Reset some holders ---------------------------
         # Get detailed config parameters.
@@ -123,7 +133,8 @@ class FocusEnv:
         self._focus_bbox = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float32)   # (y1, x1, y2, x2)
 
         # Reset the "Previous Relative Directions".
-        self._RelDir_prev = []
+        self._RelDir_prev = ['left-up']     # add default outermost direction.
+        # self._RelDir_prev = []
         # self._RelDir_prev.clear()
 
         # Reset the time-step.
@@ -244,8 +255,11 @@ class FocusEnv:
         # Different procedure according to phrase. "Train" phrase.
         if self._phrase == 'Train':
             # Execute train function.
-            segmentation, COMP_res, action = op_func(
-                [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+            segmentation, COMP_res, action = op_func((self._image.copy(),
+                                                      self._SEG_prev.copy(),
+                                                      position_info,
+                                                      self._focus_bbox.copy(),
+                                                      self._COMP_result.copy()))
             # Execution to get the next state (bbox), reward, terminal flag.
             dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
             # Real "Segment", fake "Focus".
@@ -253,6 +267,8 @@ class FocusEnv:
                 # Re-assign the "Segmentation" result and Complete info.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
+                reward = info = None  # fake, for conveniently coding.
+                over = False  # "Segment" stage, not over.
             # Fake "Segment", real "Focus".
             else:
                 # Re-assign the current "Focus Bbox".
@@ -262,23 +278,29 @@ class FocusEnv:
         else:
             # "Segment" stage.
             if SEG_stage:
-                segmentation, COMP_res = op_func(
-                    [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+                segmentation, COMP_res = op_func((self._image.copy(),
+                                                  self._SEG_prev.copy(),
+                                                  position_info,
+                                                  self._focus_bbox.copy(),
+                                                  self._COMP_result.copy()))
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
                 reward = info = None   # fake, for conveniently coding.
                 over = False    # "Segment" stage, not over.
             # "Focus" stage.
             else:
-                action = op_func(
-                    [self._image, self._SEG_prev, position_info, self._focus_bbox, self._COMP_result])
+                action = op_func((self._image.copy(),
+                                  self._SEG_prev.copy(),
+                                  position_info,
+                                  self._focus_bbox.copy()))
                 dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy())
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
 
         # Record the process.
         if self._anim_recorder is not None:
-            fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
+            # fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
+            fo_bbox = self._focus_bbox.copy() if not SEG_stage else None
             self._anim_recorder.record((cur_bbox, fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
 
         # Reset the process flag.
@@ -290,6 +312,24 @@ class FocusEnv:
             return self._focus_bbox.copy(), reward, over, info
         else:
             return
+
+
+    def render(self):
+        r'''
+            Render. That is, visualize the result (and the process if specified).
+        '''
+        # Check whether can render or not.
+        if self._finished:
+            pass
+        else:
+            raise Exception('The processing of current image is not yet finish, '
+                            'can not @Method{render} !!!')
+        # Save the process into filesystem.
+        if self._anim_recorder is not None:
+            self._anim_recorder.show(mode=self._phrase, gif_enable=True)
+        # Release the memory.
+        gc.collect()
+        return
 
 
 
@@ -307,8 +347,9 @@ class FocusEnv:
         action = int(action)
         if action not in range(self._act_dim):
             raise ValueError('The action must be in range(0, {}) !!!'.format(self._act_dim))
-        if not isinstance(bbox, np.ndarray) or len(bbox.shape) != 4:
-            raise ValueError('The bbox must be a 4-elements numpy array !!!')
+        if not isinstance(bbox, np.ndarray) or bbox.ndim != 1 or bbox.shape[0] != 4:
+            raise ValueError('The bbox must be a 4-elements numpy array '
+                             'just like (y1, x1, y2, x2) !!!')
 
         # Get detailed config.
         conf_base = self._config['Base']
@@ -336,12 +377,11 @@ class FocusEnv:
                 self._RelDir_prev.append(rel_dirc)
             # --> select parent.
             elif action == 4:
+                # pop out the relative direction. -- focus out.
+                self._RelDir_prev.pop()
                 # check if it's the outermost level.
                 if len(self._RelDir_prev) == 0:
                     OOB_err = True
-                else:
-                    # pop out the relative direction. -- focus out.
-                    self._RelDir_prev.pop()
             # --> select peers.
             elif action <= 7:
                 # translate the current (newest) relative direction.  -- focus peer.
@@ -408,7 +448,8 @@ class FocusEnv:
         if not over:
             dst_bbox = anchors[action]
         else:
-            dst_bbox = None
+            dst_bbox = self._FAKE_BBOX
+            # dst_bbox = None
 
         # Return the 1)destination bbox, 2)reward, 3)over flag and 4)information.
         return dst_bbox, reward, over, info
@@ -663,29 +704,31 @@ class FocusEnv:
                             '@Type{numpy.ndarray} !!!')
 
         # Now we only support single image processing.
-        if img.ndim != 3 or label.ndim != 3:    # [width, height, modalities], [width, height, cls]
-            raise Exception('The dimension of the image and label both should'
-                            'be 3 !!! img: {}, label: {}\n'
+        if img.ndim != 3 or label.ndim != 2:    # [width, height, modalities], [width, height]
+            raise Exception('The dimension of the image and label both should '
+                            'be 3 and 2 !!! img: {}, label: {}\n'
                             'Now we only support single image processing ...'.format(img.ndim, label.ndim))
 
         # Check the shape consistency.
         shape_img = img.shape[:-1]
-        shape_label = label.shape[:-1]
+        shape_label = label.shape
         shape_consistency = shape_img == shape_label
         if not shape_consistency:
             raise Exception('The shape of image and label are not satisfy consistency !!! '
                             'img: {}, label: {}'.format(shape_img, shape_label))
 
         # Check the validity of MHA_idx and inst_idx.
-        if not isinstance(MHA_idx, int):
+        if not isinstance(MHA_idx, (int, np.int, np.int32, np.int64)):
             raise TypeError('The MHA_idx must be of integer type !!!')
-        if not isinstance(inst_idx, int):
+        if not isinstance(inst_idx, (int, np.int, np.int32, np.int64)):
             raise TypeError('The inst_idx must be of integer type !!!')
 
         # Check the validity of clazz_weights.
-        if not isinstance(clazz_weights, np.ndarray) or len(clazz_weights) != category:
-            raise Exception('The class weights should be of '
-                            '{}-dimension numpy array !!!'.format(len(clazz_weights)))
+        if not isinstance(clazz_weights, np.ndarray) or \
+                        clazz_weights.ndim != 1 or \
+                        clazz_weights.shape[0] != category:
+            raise Exception('The class weights should be of 2-D numpy '
+                            'array with shape (?, category) !!!')
 
         # Finish.
         return

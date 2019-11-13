@@ -344,7 +344,8 @@ class BRATS2015:
     def next_train_batch(self, batch_size):
         endbatch = np.shape(self.arr_train_ot)[0]
         # clazz weights.
-        clazz_sta = np.sum(self.arr_train_ot, axis=(1, 2))  # [b, cls]
+        ot_samples = np.eye(5)[self.arr_train_ot]
+        clazz_sta = np.sum(ot_samples, axis=(1, 2))     # [b, cls]
         clazz_sta = np.asarray(clazz_sta > 0, dtype=np.float32)  # [b, cls]
         clazz_sta = np.sum(clazz_sta, axis=0)  # [cls]
         clazz_weights = np.sum(clazz_sta) / clazz_sta  # [cls]

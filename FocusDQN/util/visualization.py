@@ -249,13 +249,13 @@ class MaskVisualVMPY(MaskVisual):
         up, left, bottom, right = self._transfer_2val(bbox, h=self._image_height, w=self._image_width)
 
         # Assign the left boundary in the source image.
-        raw[left: left+border_width, up: bottom] = border_value
+        raw[up: up + border_width, left: right] = border_value
         # Assign the right boundary in the source image.
-        raw[right-border_width: right, up: bottom] = border_value
+        raw[bottom - border_width: bottom, left: right] = border_value
         # Assign the up boundary in the source image.
-        raw[left: right, up: up+border_width] = border_value
+        raw[up: bottom, left: left + border_width] = border_value
         # Assign the bottom boundary in the source image.
-        raw[left: right, bottom-border_width: bottom] = border_value
+        raw[up: bottom, right - border_width: right] = border_value
 
         # Finish the drawing of bounding-box.
         return raw
@@ -293,12 +293,12 @@ class MaskVisualVMPY(MaskVisual):
         # Draw the "Focus Bounding-box" if given.
         if focus_bbox is not None:
             b_v1 = self._normal_value // 3 * 2
-            _t1 = self._draw_bbox(_t1, cur_region, b_v1, duplicate=False)
-            _t1c = self._draw_bbox(_t1c, cur_region, b_v1, duplicate=False)
-            _t2 = self._draw_bbox(_t2, cur_region, b_v1, duplicate=False)
-            _f = self._draw_bbox(_f, cur_region, b_v1, duplicate=False)
-            _lab = self._draw_bbox(_lab, cur_region, b_v1, duplicate=False)
-            _pred = self._draw_bbox(_pred, cur_region, b_v1, duplicate=False)
+            _t1 = self._draw_bbox(_t1, focus_bbox, b_v1, duplicate=False)
+            _t1c = self._draw_bbox(_t1c, focus_bbox, b_v1, duplicate=False)
+            _t2 = self._draw_bbox(_t2, focus_bbox, b_v1, duplicate=False)
+            _f = self._draw_bbox(_f, focus_bbox, b_v1, duplicate=False)
+            _lab = self._draw_bbox(_lab, focus_bbox, b_v1, duplicate=False)
+            _pred = self._draw_bbox(_pred, focus_bbox, b_v1, duplicate=False)
 
         # Scale up the focus region for better visualization.
         vis_bbox = focus_bbox
@@ -309,30 +309,32 @@ class MaskVisualVMPY(MaskVisual):
         vb_y1, vb_x1, vb_y2, vb_x2 = self._transfer_2val(vis_bbox, h=self._image_height, w=self._image_width)
         dsize = _lab.shape
         # scale.
-        _vis_lab = _lab[vb_y1: vb_y2, vb_x1: vb_x2]
+        _vis_lab = self._label[vb_y1: vb_y2, vb_x1: vb_x2]
         _vis_lab = cv2.resize(_vis_lab, dsize, interpolation=cv2.INTER_NEAREST)
-        _vis_pred = _pred[vb_y1: vb_y2, vb_x1: vb_x2]
+        _vis_pred = segmentation[vb_y1: vb_y2, vb_x1: vb_x2]
         _vis_pred = cv2.resize(_vis_pred, dsize, interpolation=cv2.INTER_NEAREST)
 
         # Indicator image.
         _indt = Image.fromarray(np.zeros((self._image_height, self._image_width)))
         draw = ImageDraw.Draw(_indt)
         if SEG_stage:
-            txt = u'Segment !'
+            txt = u'<- Segment ->'
         else:
-            txt = u'Focus !'
-        txt += u'\nx1: {}, x2: {}, y1: {}, y2: {}'.format(vb_x1, vb_x2, vb_y1, vb_y2)
+            txt = u'<- Focus ->'
+        txt += u'\nx1: {}, x2: {}\ny1: {}, y2: {}'.format(vb_x1, vb_x2, vb_y1, vb_y2)
         if reward is not None:
             txt += u'\nreward: {}'.format(reward)
         if ter_info is not None:
-            txt += u'\n' + ter_info + u' !'
+            txt += u'\n' + ter_info
         tw, th = self._font.getsize_multiline(txt)
-        draw.multiline_text((120 - tw // 2, 120 - th // 2), t, font=font, align='center')
+        draw.multiline_text(((self._image_width - tw) // 2, (self._image_height - th) // 2), txt,
+                            font=self._font, align='center')
         _indt = np.asarray(_indt)
+        _indt = self._normalization(_indt, self._normal_value)
 
         # Generate each row.
         row_1st = np.concatenate((_t1, _t1c, _t2), axis=1)
-        row_2nd = np.concatenate((_f, _lab, _t2), axis=1)
+        row_2nd = np.concatenate((_f, _lab, _pred), axis=1)
         row_3rd = np.concatenate((_indt, _vis_lab, _vis_pred), axis=1)
         # Concatenate all the rows.
         frame = np.concatenate((row_1st, row_2nd, row_3rd), axis=0)
@@ -354,7 +356,7 @@ class MaskVisualVMPY(MaskVisual):
 
         # Check the validity of calling.
         if len(self._act_pos_history) == 0:
-            raise Exception('One must call the @Method{record} before calling @Method{show}')
+            raise Exception('Nothing to show !!! One must call the @Method{record} before calling @Method{show}')
 
         # Auto-increase the index of animation file.
         if mode == 'Train':
