@@ -405,7 +405,14 @@ env = FocusEnv(config, adapter)
 class T:
 
     def __init__(self):
-        self._l = [0, 2, 4, 4]
+        # self._l = [0, 0, 0, 2, 0, 4, 0, 4]
+        self._l = []
+        l = [0, 2]
+        # l = [0, 2, 5, 5, 7, 7, 4, 6, 5, 7]
+        # l = [0, 2, 5, 6, 7, 4, 6, 5, 7]
+        for le in l:
+            self._l.append(0)
+            self._l.append(le)
         self._idx = 0
 
     def train_func(self, x):
@@ -429,7 +436,7 @@ class T:
 
         # action = np.random.randint(8)
         # action = np.random.randint(9)
-        if len(self._l)-1 > self._idx:
+        if len(self._l) > self._idx:
             action = self._l[self._idx]
             self._idx += 1
         else:
@@ -438,61 +445,16 @@ class T:
         return segmentation, COMP_res, action
 
 t = T()
-stage = True
-env.reset()
-for _ in range(25):
-    _1, _2, over, _4 = env.step(t.train_func, stage)
-    if over:
-        break
-    stage = not stage
-env.render()
-
-
-# recorder = MaskVisualVMPY(240, 240, fps=4,
-#                           # vision_filename_mask='G:/Finley/Result/dqn-anim/',
-#                           vision_filename_mask='D:/Finley-Experiment/Result/dqn-anim/',
-#                           # gif_enable=False
-#                           gif_enable=True
-#                           )
-# adapter = BratsAdapter()
-# for _ in range(45):
-#     _2, label = adapter.next_image_pair('Train', 1)
-#
-# env = MazeDQNEnv(data_adapter=adapter,
-#                  proc_imgsize=(240, 240),
-#                  feats_stride=16,
-#                  respective_size=5,
-#                  anim_recorder=recorder)
-#
-#
-# env.switch(without_process=True)
-# env.switch(without_process=True)
-# img = env.switch()
-#
-# st = time.time()
-# # reset the upper environment.
-# env.reset((np.ones((20, 20, 4)),))
-# # env.reset()
-# pred_list = [2, 2, 2, 2, 2, 2, 2, 1, 2, 2, 2, 2, 3]
-# terminal = False
-# while not terminal:
-#     if len(pred_list) == 0:
-#         act = np.random.randint(4)
-#         # act = np.random.randint(5)
-#     else:
-#         act = pred_list.pop()
-#     # act = np.random.randint(5)
-#     _1, reward, terminal, _3 = env.step(act)
-#     # _1, reward, terminal, _3 = env.step(act, arg=q)
-#     print(reward)
-#
-# print(time.time() - st)
-#
-# # env.switch()
-# env.render()
-#
-# print(img.shape)
-# print(img)
+for _ in range(3):
+    stage = True
+    env.reset()
+    for _0 in range(25):
+        _1, _2, over, _4 = env.step(t.train_func, stage)
+        if over:
+            break
+        stage = not stage
+    env.render()
+    
 
 # # ---------------------------------------------------------------------
 

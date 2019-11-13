@@ -262,19 +262,17 @@ class FocusEnv:
                                                       position_info,
                                                       self._focus_bbox.copy(),
                                                       self._COMP_result.copy()))
-
-            # # Bound the initial segmentation region as initial "Focus Bbox".
-            # #   Just for precise and fast "Focus".
-            # if initFB_optimize and not self._FB_opted and not ((segmentation == 0).all()):
-            #     init_region = np.where(segmentation != 0)
-            #     init_y1 = min(init_region[0]) / image_height
-            #     init_x1 = min(init_region[1]) / image_width
-            #     init_y2 = max(init_region[0]) / image_height
-            #     init_x2 = max(init_region[1]) / image_width
-            #     self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-            #     cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
-            #     self._FB_opted = True   # means optimized
-
+            # Bound the initial segmentation region as initial "Focus Bbox".
+            #   Just for precise and fast "Focus".
+            if initFB_optimize and not self._FB_opted and SEG_stage and not ((segmentation == 0).all()):
+                init_region = np.where(segmentation != 0)
+                init_y1 = min(init_region[0]) / image_height
+                init_x1 = min(init_region[1]) / image_width
+                init_y2 = max(init_region[0]) / image_height
+                init_x2 = max(init_region[1]) / image_width
+                self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+                cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
+                self._FB_opted = True   # means optimized
             # Execution to get the next state (bbox), reward, terminal flag.
             RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
             dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
@@ -294,11 +292,23 @@ class FocusEnv:
         else:
             # "Segment" stage.
             if SEG_stage:
+                # calculate first.
                 segmentation, COMP_res = op_func((self._image.copy(),
                                                   self._SEG_prev.copy(),
                                                   position_info,
                                                   self._focus_bbox.copy(),
                                                   self._COMP_result.copy()))
+                # bound initial "Focus Bbox", for rapidly and precisely processing.
+                if initFB_optimize and not self._FB_opted and not ((segmentation == 0).all()):
+                    init_region = np.where(segmentation != 0)
+                    init_y1 = min(init_region[0]) / image_height
+                    init_x1 = min(init_region[1]) / image_width
+                    init_y2 = max(init_region[0]) / image_height
+                    init_x2 = max(init_region[1]) / image_width
+                    self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+                    cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
+                    self._FB_opted = True  # means optimized
+                # iteratively assign.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
                 reward = info = None   # fake, for conveniently coding.
