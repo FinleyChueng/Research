@@ -402,30 +402,46 @@ adapter.next_image_pair('Train', batch_size=70)
 from task.env import FocusEnv
 env = FocusEnv(config, adapter)
 
-def train_func(x):
-    img, SEG_prev, position_info, focus_bbox, COMP_result = x
+class T:
 
-    segmentation = np.zeros_like(SEG_prev)
-    y1 = np.random.randint(0, 240)
-    x1 = np.random.randint(0, 240)
-    y2 = np.random.randint(0, 240)
-    x2 = np.random.randint(0, 240)
-    y1, y2 = min(y1, y2), max(y1, y2)
-    x1, x2 = min(x1, x2), max(x1, x2)
-    c = np.random.randint(0, 5)
-    segmentation[y1: y2, x1: x2] = c
+    def __init__(self):
+        self._l = [0, 2, 4, 4]
+        self._idx = 0
 
-    COMP_res = np.zeros_like(COMP_result)
+    def train_func(self, x):
+        img, SEG_prev, position_info, focus_bbox, COMP_result = x
 
-    # action = np.random.randint(8)
-    action = np.random.randint(9)
+        segmentation = SEG_prev.copy()
+        y_min = int(round(240 * focus_bbox[0]))
+        x_min = int(round(240 * focus_bbox[1]))
+        y_max = max(1, int(round(240 * focus_bbox[2])))
+        x_max = max(1, int(round(240 * focus_bbox[3])))
+        y1 = np.random.randint(y_min, y_max)
+        x1 = np.random.randint(x_min, x_max)
+        y2 = np.random.randint(y_min, y_max)
+        x2 = np.random.randint(x_min, x_max)
+        y1, y2 = min(y1, y2), max(y1, y2)
+        x1, x2 = min(x1, x2), max(x1, x2)
+        c = np.random.randint(0, 5)
+        segmentation[y1: y2, x1: x2] = c
 
-    return segmentation, COMP_res, action
+        COMP_res = np.zeros_like(COMP_result)
 
+        # action = np.random.randint(8)
+        # action = np.random.randint(9)
+        if len(self._l)-1 > self._idx:
+            action = self._l[self._idx]
+            self._idx += 1
+        else:
+            action = np.random.randint(9)
+
+        return segmentation, COMP_res, action
+
+t = T()
 stage = True
 env.reset()
 for _ in range(25):
-    _1, _2, over, _4 = env.step(train_func, stage)
+    _1, _2, over, _4 = env.step(t.train_func, stage)
     if over:
         break
     stage = not stage

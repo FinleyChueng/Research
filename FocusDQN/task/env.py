@@ -497,16 +497,16 @@ class FocusEnv:
         s1_x2 = min(1.0, x1 + cld_w)
         s_anchors.append([s1_y1, s1_x1, s1_y2, s1_x2])
         # S2: Child right-up.
-        s2_y1 = y1
-        s2_x1 = max(0.0, x2 - cld_w)
-        s2_y2 = min(1.0, y1 + cld_h)
-        s2_x2 = x2
+        s2_y1 = max(0.0, y2 - cld_h)
+        s2_x1 = x1
+        s2_y2 = y2
+        s2_x2 = min(1.0, x1 + cld_w)
         s_anchors.append([s2_y1, s2_x1, s2_y2, s2_x2])
         # S3: Child left-bottom.
-        s3_y1 = max(0.0, y2 - cld_h)
-        s3_x1 = x1
-        s3_y2 = y2
-        s3_x2 = min(1.0, x1 + cld_w)
+        s3_y1 = y1
+        s3_x1 = max(0.0, x2 - cld_w)
+        s3_y2 = min(1.0, y1 + cld_h)
+        s3_x2 = x2
         s_anchors.append([s3_y1, s3_x1, s3_y2, s3_x2])
         # S4: Child right-bottom.
         s4_y1 = max(0.0, y2 - cld_h)
@@ -524,16 +524,16 @@ class FocusEnv:
         s5_x2 = x2
         s_anchors.append([s5_y1, s5_x1, s5_y2, s5_x2])
         # S6: Parent right-up.
-        s6_y1 = max(0.0, y2 - par_h)
-        s6_x1 = x1
-        s6_y2 = y2
-        s6_x2 = min(1.0, x1 + par_w)
+        s6_y1 = y1
+        s6_x1 = max(0.0, x2 - par_w)
+        s6_y2 = min(1.0, y1 + par_h)
+        s6_x2 = x2
         s_anchors.append([s6_y1, s6_x1, s6_y2, s6_x2])
         # S7: Parent left-bottom.
-        s7_y1 = y1
-        s7_x1 = max(0.0, x2 - par_w)
-        s7_y2 = min(1.0, y1 + par_h)
-        s7_x2 = x2
+        s7_y1 = max(0.0, y2 - par_h)
+        s7_x1 = x1
+        s7_y2 = y2
+        s7_x2 = min(1.0, x1 + par_w)
         s_anchors.append([s7_y1, s7_x1, s7_y2, s7_x2])
         # S8: Parent right-bottom.
         s8_y1 = y1
@@ -551,16 +551,16 @@ class FocusEnv:
         s9_x2 = max(0.0, x2 - par_w + pee_w)
         s_anchors.append([s9_y1, s9_x1, s9_y2, s9_x2])
         # S10: Peer right-up.
-        s10_y1 = max(0.0, y2 - par_h)
-        s10_x1 = min(1.0, x1 + par_w - pee_w)
-        s10_y2 = max(0.0, y2 - par_h + pee_h)
-        s10_x2 = min(1.0, x1 + par_w)
+        s10_y1 = min(1.0, y1 + par_h - pee_h)
+        s10_x1 = max(0.0, x2 - par_w)
+        s10_y2 = min(1.0, y1 + par_h)
+        s10_x2 = max(0.0, x2 - par_w + pee_w)
         s_anchors.append([s10_y1, s10_x1, s10_y2, s10_x2])
         # S11: Peer left-bottom.
-        s11_y1 = min(1.0, y1 + par_h - pee_h)
-        s11_x1 = max(0.0, x2 - par_w)
-        s11_y2 = min(1.0, y1 + par_h)
-        s11_x2 = max(0.0, x2 - par_w + pee_w)
+        s11_y1 = max(0.0, y2 - par_h)
+        s11_x1 = min(1.0, x1 + par_w - pee_w)
+        s11_y2 = max(0.0, y2 - par_h + pee_h)
+        s11_x2 = min(1.0, x1 + par_w)
         s_anchors.append([s11_y1, s11_x1, s11_y2, s11_x2])
         # S12: Peer right-bottom.
         s12_y1 = min(1.0, y1 + par_h - pee_h)
@@ -569,28 +569,28 @@ class FocusEnv:
         s12_x2 = min(1.0, x1 + par_w)
         s_anchors.append([s12_y1, s12_x1, s12_y2, s12_x2])
         # S13: Peer pure-left.
-        s13_y1 = y1
-        s13_x1 = max(0.0, x2 - par_w)
-        s13_y2 = y2
-        s13_x2 = max(0.0, x2 - par_w + pee_w)
+        s13_y1 = max(0.0, y2 - par_h)
+        s13_x1 = x1
+        s13_y2 = max(0.0, y2 - par_h + pee_h)
+        s13_x2 = x2
         s_anchors.append([s13_y1, s13_x1, s13_y2, s13_x2])
         # S14: Peer pure-up.
-        s14_y1 = max(0.0, y2 - par_h)
-        s14_x1 = x1
-        s14_y2 = max(0.0, y2 - par_h + pee_h)
-        s14_x2 = x2
+        s14_y1 = y1
+        s14_x1 = max(0.0, x2 - par_w)
+        s14_y2 = y2
+        s14_x2 = max(0.0, x2 - par_w + pee_w)
         s_anchors.append([s14_y1, s14_x1, s14_y2, s14_x2])
         # S15: Peer pure-right.
-        s15_y1 = y1
-        s15_x1 = min(1.0, x1 + par_w - pee_w)
-        s15_y2 = y2
-        s15_x2 = min(1.0, x1 + par_w)
+        s15_y1 = min(1.0, y1 + par_h - pee_h)
+        s15_x1 = x1
+        s15_y2 = min(1.0, y1 + par_h)
+        s15_x2 = x2
         s_anchors.append([s15_y1, s15_x1, s15_y2, s15_x2])
         # S16: Peer pure-bottom.
-        s16_y1 = min(1.0, y1 + par_h - pee_h)
-        s16_x1 = x1
-        s16_y2 = min(1.0, y1 + par_h)
-        s16_x2 = x2
+        s16_y1 = y1
+        s16_x1 = min(1.0, x1 + par_w - pee_w)
+        s16_y2 = y2
+        s16_x2 = min(1.0, x1 + par_w)
         s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
 
         # Now select anchors to return according to the mode.
@@ -604,25 +604,29 @@ class FocusEnv:
                 cands = [
                     0, 1, 2, 3,     # all children
                     7,  # parent - right-bottom
-                    11, 14, 15  # peers - right, bottom, right-bottom
+                    # 11, 14, 15  # peers - right, bottom, right-bottom
+                    14, 15, 11  # peers - right, bottom, right-bottom
                 ]
             elif relative == 'right-up':
                 cands = [
                     0, 1, 2, 3,  # all children
                     6,  # parent - left-bottom
-                    10, 12, 15  # peers - left, bottom, left-bottom
+                    # 10, 12, 15  # peers - left, bottom, left-bottom
+                    12, 10, 15  # peers - left, left-bottom, bottom
                 ]
             elif relative == 'left-bottom':
                 cands = [
                     0, 1, 2, 3,  # all children
                     5,  # parent - right-up
-                    9, 13, 14   # peers - right, up, right-up
+                    # 9, 13, 14   # peers - right, up, right-up
+                    13, 9, 14   # peers - up, right-up, right
                 ]
             elif relative == 'right-bottom':
                 cands = [
                     0, 1, 2, 3,  # all children
                     4,  # parent - left-up
-                    8, 12, 13   # peers - left, up, left-up
+                    # 8, 12, 13   # peers - left, up, left-up
+                    8, 13, 12   # peers - left-up, up, left
                 ]
             else:
                 raise Exception('Invalid relative value !!!')
