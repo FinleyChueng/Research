@@ -419,10 +419,10 @@ class T:
         img, SEG_prev, position_info, focus_bbox, COMP_result = x
 
         segmentation = SEG_prev.copy()
-        y_min = int(round(240 * focus_bbox[0]))
-        x_min = int(round(240 * focus_bbox[1]))
-        y_max = max(1, int(round(240 * focus_bbox[2])))
-        x_max = max(1, int(round(240 * focus_bbox[3])))
+        y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
+        x_min = max(0, min(239, int(round(240 * focus_bbox[1]))))
+        y_max = max(1, min(240, int(round(240 * focus_bbox[2]))))
+        x_max = max(1, min(240, int(round(240 * focus_bbox[3]))))
         y1 = np.random.randint(y_min, y_max)
         x1 = np.random.randint(x_min, x_max)
         y2 = np.random.randint(y_min, y_max)
@@ -440,7 +440,8 @@ class T:
             action = self._l[self._idx]
             self._idx += 1
         else:
-            action = np.random.randint(9)
+            action = np.random.randint(17)
+            # action = np.random.randint(9)
 
         return segmentation, COMP_res, action
 
@@ -454,7 +455,7 @@ for _ in range(3):
             break
         stage = not stage
     env.render()
-    
+
 
 # # ---------------------------------------------------------------------
 
