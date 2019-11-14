@@ -18,3 +18,39 @@ class Adapter:
             The train pair consisted of image and label.
         '''
         raise NotImplementedError
+
+    def write_result(self, result, name, mode):
+        r'''
+            Write the result according to the requirement of dataset.
+                It usually save the result file in a special form.
+
+        --------------------------------------------------------------------
+        Parameters:
+            result: The result data, usually a 3-D or 4-D array.
+            name: The file name of result.
+            mode: The dataset mode, indicating the save mode.
+        '''
+        raise NotImplementedError
+
+    def reset_position(self, offset, mode):
+        r'''
+            Reset the start position of data (instance) for iteration.
+
+        --------------------------------------------------------------------
+        Parameters:
+            offset: The offset of data instance, that is, the start position.
+            mode: The dataset mode, indicating the data iteration mode.
+        '''
+        raise NotImplementedError
+
+    def precise_locate(self, position, mode):
+        r'''
+            Precisely locating and obtain the data instance according to
+                the given position. It's just for convenient usage.
+
+        --------------------------------------------------------------------
+        Parameters:
+            position: The position of the data instance.
+            mode: The dataset mode, indicating the data iteration mode.
+        '''
+        raise NotImplementedError

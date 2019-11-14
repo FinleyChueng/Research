@@ -418,9 +418,9 @@ class BRATS2015:
             self.saveArr = None
 
 
-    def precise_find_sample(self, mha_idx, inst_idx):
+    def precise_find_train_sample(self, mha_idx, inst_idx):
         r'''
-            Use to find precise one.
+            Use to find precise train sample.
         '''
 
         # Get the sample path.
@@ -452,4 +452,16 @@ class BRATS2015:
         # label = to_categorical(label, num_classes=5)
 
         return image, label
+
+
+    def reset_train_position(self, slice_offset):
+        r'''
+            Reset the start train position.
+        '''
+        MHA_offset = slice_offset // 155
+        inst_offset = slice_offset % 155
+        self.train_batch_count += (MHA_offset - 1)
+        self.next_train_MHA()
+        self.train_batch_index = inst_offset
+        return
 

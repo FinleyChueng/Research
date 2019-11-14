@@ -375,19 +375,19 @@ config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
 config = conf_util.parse_config(config_file)
 
 
-# from task.model import *
-# dqn = DqnAgent(name_space='TEST', config=config)
-# inputs, outputs, losses, summary, visual = dqn.definition()
-# # input holders.
-# x1 = inputs['ORG/image']
-# x2 = inputs['ORG/prev_result']
-# x3 = inputs['ORG/position_info']
-# x4 = inputs['ORG/Segment_Stage']
-# x5 = inputs['ORG/Focus_Bbox']
-# x6 = inputs['TEST/Complete_Result']
-# # output holders.
-# y1 = outputs['ORG/DQN_output']
-# y2 = outputs['TEST/SEG_output']
+from task.model import *
+dqn = DqnAgent(name_space='TEST', config=config)
+inputs, outputs, losses, summary, visual = dqn.definition()
+# input holders.
+x1 = inputs['ORG/image']
+x2 = inputs['ORG/prev_result']
+x3 = inputs['ORG/position_info']
+x4 = inputs['ORG/Segment_Stage']
+x5 = inputs['ORG/Focus_Bbox']
+x6 = inputs['TEST/Complete_Result']
+# output holders.
+y1 = outputs['ORG/DQN_output']
+y2 = outputs['TEST/SEG_output']
 
 
 from dataset.adapter.bratsAdapter import BratsAdapter

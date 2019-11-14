@@ -19,9 +19,17 @@ def is_int(val_str):
 
 def is_float(val_str):
     flag = False
-    if '.' in val_str and len(val_str.split('.')) == 2:
-        if is_int(val_str.split('.')[0]) and is_int(val_str.split('.')[1]):
-            flag = True
+    if '.' in val_str and not val_str.startswith('./') and not val_str.startswith('../'):
+        if len(val_str.split('.')) == 2:
+            if is_int(val_str.split('.')[0]) and is_int(val_str.split('.')[1]):
+                flag = True
+            else:
+                flag = False
+        elif len(val_str.split('.')) == 1:
+            if is_int(val_str.split('.')[0]):
+                flag = True
+            else:
+                flag = False
         else:
             flag = False
     elif 'e' in val_str and len(val_str.split('e')) == 2:
@@ -79,6 +87,54 @@ def is_none(val_str):
         return True
     else:
         return False
+
+
+def is_tuple(val_str):
+    if val_str[0] == '(' and val_str[-1] == ')':
+        return True
+    else:
+        return False
+
+
+def parse_tuple(val_str):
+    return tuple(parse_list(val_str))
+
+
+def is_dict(val_str):
+    if val_str[0] == '{' and val_str[-1] == '}':
+        return True
+    else:
+        return False
+
+
+def parse_dict(val_str):
+    sub_str = val_str[1:-1]
+    splits = sub_str.split(',')
+    output = {}
+    for item in splits:
+        item = item.strip()
+        it_splits = item.split(':')
+        if len(it_splits) != 2:
+            raise Exception('Invalid dict string !!!')
+        k = it_splits[0]
+        v = it_splits[1]
+        v = v.strip()
+        if is_int(v):
+            v = int(v)
+        elif is_float(v):
+            v = float(v)
+        elif is_bool(v):
+            v = parse_bool(v)
+        elif is_none(v):
+            v = None
+        elif is_list(v):
+            v = parse_list(v)
+        elif is_tuple(v):
+            v = parse_tuple(v)
+        else:
+            pass
+        output[k] = v
+    return output
 
 
 def parse_value_from_string(val_str):

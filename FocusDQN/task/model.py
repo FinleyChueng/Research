@@ -256,8 +256,6 @@ class DqnAgent:
 
             # Concat the tensors to generate input for whole model.
             input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
-            if pos_method == 'map':
-                input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
 
             # After declaring the public input part, it shall deal with the input tensor
             #   according to the different stage (branch). That is:
@@ -265,14 +263,20 @@ class DqnAgent:
             # 2. Introduce the position info if it's "Region Selection" stage with the
             #       "sight" position info.
             segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None,], name='Segment_Stage')
-            def region_crop(x, bbox, size):
+            def region_crop(x, bbox, size, name):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:,0]))
-                y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name='focus_crop')
+                y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name=name+'_focus_crop')
                 return y
             input_tensor = tf.where(segment_stage,
-                                    region_crop(input_tensor, focus_bbox, [suit_h, suit_w]),
+                                    region_crop(input_tensor, focus_bbox, [suit_h, suit_w], 'SE'),
                                     input_tensor if pos_method != 'sight'
-                                    else region_crop(input_tensor, pos_info, [suit_h, suit_w]))
+                                    else region_crop(input_tensor, pos_info, [suit_h, suit_w], 'FO'),
+                                    name='2E_foInput')
+
+            # Concatenate the "Position Information" after "Focus Region" of whole tensor
+            #   if the position information supplied in the "map"-form.
+            if pos_method == 'map':
+                input_tensor = tf.concat([input_tensor, pos_info], axis=-1, name='3E_input')
 
             # Print some information.
             print('### Finish "Input Justification" (name scope: {}). '

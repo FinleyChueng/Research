@@ -90,6 +90,14 @@ class FocusEnv:
         return
 
 
+    @property
+    def acts_dim(self):
+        r'''
+            The action quantity (supported) of environment.
+        '''
+        return self._act_dim
+
+
     def switch_phrase(self, p):
         r'''
             Switch to target phrase.
@@ -150,7 +158,7 @@ class FocusEnv:
         # Get the next image-label pair according to the phrase.
         if self._phrase == 'Train':
             # Get the next train sample pair.
-            img, label, MHA_idx, inst_idx, clazz_weights = self._adapter.next_image_pair(mode='Train', batch_size=1)
+            img, label, clazz_weights, data_arg = self._adapter.next_image_pair(mode='Train', batch_size=1)
         elif self._phrase == 'Validate':
             # Get the next validate image-label pair.
             img, label = self._adapter.next_image_pair(mode='Validate', batch_size=1)
@@ -175,7 +183,7 @@ class FocusEnv:
             if weights is None:  # do not config
                 weights = clazz_weights
             # Return train samples.
-            return img.copy(), label.copy(), MHA_idx, inst_idx, weights.copy()
+            return img.copy(), label.copy(), weights.copy(), data_arg
         else:
             # Record the process.
             if self._anim_recorder is not None:
@@ -208,11 +216,18 @@ class FocusEnv:
             SEG_stage: Indicating whether is "Segment" or "Focus" stage.
 
         Return:
-            The tuple of (focus_bbox, reward, over, info) when in "Train" phrase.
-            -------------------------------------------------
-            focus_bbox: Next focus bbox of image.
+            The tuple of (SEG_prev, cur_bbox, position_info, action, reward, over,
+                SEG_cur, focus_bbox, next_posinfo, info) when in "Train" phrase.
+            ---------------------------------------------------------------
+            SEG_prev: The previous segmentation result.
+            cur_bbox: The current bbox of image.
+            position_info: The position information for current time-step.
+            action: The action executed of current time-step.
             reward: The reward of current action.
             over: Flag that indicates whether current image is finished.
+            SEG_cur: Current segmentation result.
+            focus_bbox: Next focus bbox of image.
+            next_posinfo: The fake next position information.
             info: Extra information.(Optional, default is type.None)
         '''
 
@@ -238,31 +253,52 @@ class FocusEnv:
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
 
-        # The position information. Declaration according to config.
-        if pos_method == 'map':
-            position_info = np.zeros([image_height, image_width], dtype=np.int64)
-            fy1, fx1, fy2, fx2 = self._focus_bbox
-            fy1 = int(round(image_height * fy1))
-            fx1 = int(round(image_width * fx1))
-            fy2 = int(round(image_height * fy2))
-            fx2 = int(round(image_width * fx2))
-            position_info[fy1: fy2, fx1: fx2] = 1
-        elif pos_method == 'coord':
-            position_info = self._focus_bbox.copy()
-        elif pos_method == 'sight':
-            position_info = self._focus_bbox.copy()
-        else:
-            raise ValueError('Unknown position information fusion method !!!')
+        # The position information generation function, for convenient usage.
+        def gen_position_info(focus_bbox):
+            # The position information. Declaration according to config.
+            if pos_method == 'map':
+                pos_info = np.zeros([image_height, image_width], dtype=np.int64)
+                fy1, fx1, fy2, fx2 = focus_bbox.copy()
+                fy1 = int(round(image_height * fy1))
+                fx1 = int(round(image_width * fx1))
+                fy2 = int(round(image_height * fy2))
+                fx2 = int(round(image_width * fx2))
+                pos_info[fy1: fy2, fx1: fx2] = 1
+            elif pos_method == 'coord':
+                pos_info = focus_bbox.copy()
+            elif pos_method == 'sight':
+                pos_info = focus_bbox.copy()
+            else:
+                raise ValueError('Unknown position information fusion method !!!')
+            return pos_info
 
-        # Old "Focus Bounding-box", which is used to visualization.
+        # Declare the position information here.
+        position_info = gen_position_info(self._focus_bbox)
+
+        # Old "Focus Bounding-box", which will be used as part of
+        #   experience for "Focus" branch.
         cur_bbox = self._focus_bbox.copy()
+        # Old "Previous Segmentation", which will be used as part
+        #   of sample for both "Segment" and "Focus" branch.
+        SEG_prev = self._SEG_prev.copy()
+        # The "Focus Bbox" holder, coz we need even "fake" focus bbox generated
+        #   when in "Segment" phrase.
+        focus_bbox = None
+        # The "Next Segmentation", which will be used as part
+        #   of experience for "Focus" branch.
+        SEG_cur = None
+        # The fake "Next position information", which will be used in both
+        #   "Segment" and "Focus" branch.
+        next_posinfo = None
 
+        # -------------------------------- Core Part -----------------------------
         # Different procedure according to phrase. "Train" phrase.
         if self._phrase == 'Train':
             # Execute train function.
             segmentation, COMP_res, action = op_func((self._image.copy(),
                                                       self._SEG_prev.copy(),
                                                       position_info,
+                                                      SEG_stage,
                                                       self._focus_bbox.copy(),
                                                       self._COMP_result.copy()))
             # Bound the initial segmentation region as initial "Focus Bbox".
@@ -276,9 +312,18 @@ class FocusEnv:
                 self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
                 cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
                 self._FB_opted = True   # means optimized
+
             # Execution to get the next state (bbox), reward, terminal flag.
             RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
             dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
+            # Record some result (holders).
+            #   1) the destination bbox in time for "Segment" phrase.
+            #   2) the current segmentation result for "DQN" training.
+            #   3) the fake next position information for both two branch.
+            focus_bbox = dst_bbox.copy()
+            SEG_cur = segmentation.copy()
+            next_posinfo = gen_position_info(focus_bbox)
+
             # Real "Segment", fake "Focus".
             if SEG_stage:
                 # Re-assign the "Segmentation" result and Complete info.
@@ -291,6 +336,7 @@ class FocusEnv:
                 # Re-assign the current "Focus Bbox".
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
+
         # "Validate" or "Test".
         else:
             # "Segment" stage.
@@ -299,6 +345,7 @@ class FocusEnv:
                 segmentation, COMP_res = op_func((self._image.copy(),
                                                   self._SEG_prev.copy(),
                                                   position_info,
+                                                  SEG_stage,
                                                   self._focus_bbox.copy(),
                                                   self._COMP_result.copy()))
                 # bound initial "Focus Bbox", for rapidly and precisely processing.
@@ -314,23 +361,25 @@ class FocusEnv:
                 # iteratively assign.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
-                reward = info = None   # fake, for conveniently coding.
+                action = reward = info = None   # fake, for conveniently coding.
                 over = False    # "Segment" stage, not over.
             # "Focus" stage.
             else:
                 action = op_func((self._image.copy(),
                                   self._SEG_prev.copy(),
                                   position_info,
+                                  SEG_stage,
                                   self._focus_bbox.copy()))
                 dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), self._RelDir_prev)
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
+        # -------------------------------- Core Part -----------------------------
 
         # Record the process.
         if self._anim_recorder is not None:
             # fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
             fo_bbox = self._focus_bbox.copy() if not SEG_stage else None
-            self._anim_recorder.record((cur_bbox, fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
+            self._anim_recorder.record((cur_bbox.copy(), fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
 
         # Reset the process flag.
         if over:
@@ -338,12 +387,15 @@ class FocusEnv:
 
         # Return sample when in "Train" phrase.
         if self._phrase == 'Train':
-            return self._focus_bbox.copy(), reward, over, info
+            return (SEG_prev, cur_bbox, position_info), \
+                   action, reward, over, \
+                   (SEG_cur, focus_bbox, next_posinfo), \
+                   info
         else:
             return
 
 
-    def render(self):
+    def render(self, anim_type):
         r'''
             Render. That is, visualize the result (and the process if specified).
         '''
@@ -353,9 +405,10 @@ class FocusEnv:
         else:
             raise Exception('The processing of current image is not yet finish, '
                             'can not @Method{render} !!!')
-        # Get config.
-        conf_other = self._config['Others']
-        anim_type = conf_other.get('animation_type', 'gif')
+        # # Get config.
+        # conf_other = self._config['Others']
+        # anim_type = conf_other.get('animation_type', 'gif')
+
         # Save the process into filesystem.
         if self._anim_recorder is not None:
             self._anim_recorder.show(mode=self._phrase, anim_type=anim_type)

@@ -31,9 +31,6 @@ class BratsAdapter(Adapter):
         # The actual class and parameters.
         self._train_brats = BRATS2015(train=True, test=False, validation_set_num=10)
         self._test_brats = BRATS2015(train=False, test=True)
-        # self._train_brats = BRATS2015(train=True, test=False, validation_set_num=1)
-        # self._train_brats = BRATS2015()
-        # self._test_brats = BRATS2015()
 
         # The variables used in enhance.
         self._enhance_opt_list = []
@@ -55,9 +52,9 @@ class BratsAdapter(Adapter):
             A tuple of (image, label).
         '''
 
+        # Check validity.
         if not isinstance(mode, str):
             raise TypeError('The mode should be @Type{str} !!!')
-
         if not isinstance(batch_size, int):
             raise TypeError('The batch_size should be @Type{int} !!!')
 
@@ -69,24 +66,26 @@ class BratsAdapter(Adapter):
         elif mode == 'Test':
             return self.__next_test_pair(batch_size, validation=False)
         else:
-            raise Exception('Unknown dataset mode: {} !!!'.format(mode))
+            raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
 
     def write_result(self, result, name, mode='Test'):
         r'''
             Save the segmentation result in "MHA" form to the file system.
 
-        :param result:
-        :param name:
-        :param mode:
-        :return:
+        -----------------------------------------------
+        Parameters:
+            result: The segmentation of an image instance. That is,
+                a 2-D array.
+            name: The file name of result.
+            mode: Indicates the mode of adapter, whether to save the
+                train, validate or test result.
         '''
 
+        # Check validity.
         if not isinstance(result, np.ndarray) or result.ndim != 2:
             raise TypeError('The result should be an 2-D @Type{numpy.ndarray} !!!')
-
         if not isinstance(name, str):
             raise TypeError('The name should be @Type{str} !!!')
-
         if not isinstance(mode, str):
             raise TypeError('The mode should be @Type{str} !!!')
 
@@ -98,10 +97,73 @@ class BratsAdapter(Adapter):
         elif mode == 'Test':
             self._test_brats.saveItk([result], name='Finley_'+name)
         else:
-            raise Exception('Unknown dataset mode: {} !!!'.format(mode))
-
+            raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
         # Finish.
         return
+
+    def reset_position(self, offset, mode='Train'):
+        r'''
+            Reset the position of the data iteration for given mode.
+
+        -----------------------------------------------
+        Parameters:
+            offset: The offset from start position. That is,
+                a total iteration value.
+            mode: Indicates the mode of adapter to be reset.
+        '''
+
+        # Check validity.
+        if not isinstance(offset, int):
+            raise TypeError('The offset must be an integer !!!')
+        if not isinstance(mode, str):
+            raise TypeError('The mode must be a string !!!')
+
+        # Return train or test pair according to the mode.
+        if mode == 'Train':
+            self._train_brats.reset_train_position(offset)
+        elif mode == 'Validate':
+            raise NotImplementedError
+        elif mode == 'Test':
+            raise NotImplementedError
+        else:
+            raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
+        # Finish.
+        return
+
+    def precise_locate(self, position, mode='Train'):
+
+        r'''
+            Precisely locate the image slice instance and then return
+                the image-label pair according to the given position.
+
+        -----------------------------------------------
+        Parameters:
+            position: The position of the image slice instance,
+                note that, it's the total (global) iteration (position).
+            mode: Indicates the mode of adapter, whether to return
+                the train image pair or test image pair.
+
+        ----------------------------------------------------------
+        Return:
+            A tuple of (image, label).
+        '''
+
+        # Check validity.
+        if not isinstance(position, int):
+            raise TypeError('The position must be an integer !!!')
+        if not isinstance(mode, str):
+            raise TypeError('The mode should be @Type{str} !!!')
+
+        # Return train or test pair according to the mode.
+        if mode == 'Train':
+            mha_idx, inst_idx = position
+            return self._train_brats.precise_find_train_sample(mha_idx, inst_idx)
+        elif mode == 'Validate':
+            raise NotImplementedError
+        elif mode == 'Test':
+            raise NotImplementedError
+        else:
+            raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
 
 
     def __next_train_pair(self, batch_size):
@@ -159,10 +221,10 @@ class BratsAdapter(Adapter):
         # Return the batch pair according to the batch size.
         if batch_size == 1:
             # Shape: [width, height, modalities], [width, height, cls]
-            return four_modality[0], ground_truth[0], MHA_idx, inst_idx[0], clazz_weights
+            return four_modality[0], ground_truth[0], clazz_weights, MHA_idx, inst_idx[0]
         else:
             # Shape: [batches, width, height, modalities], [batches, width, height, cls]
-            return four_modality, ground_truth, MHA_idx, inst_idx, clazz_weights
+            return four_modality, ground_truth, clazz_weights, MHA_idx, inst_idx
 
 
     def __next_test_pair(self, batch_size, validation):
