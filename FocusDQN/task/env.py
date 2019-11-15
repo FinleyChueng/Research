@@ -252,6 +252,8 @@ class FocusEnv:
         initFB_optimize = conf_dqn.get('initial_bbox_optimize', True)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
+        conf_train = self._config['Training']
+        sample_share = conf_train.get('sample_share', False)
 
         # The position information generation function, for convenient usage.
         def gen_position_info(focus_bbox):
@@ -275,21 +277,25 @@ class FocusEnv:
         # Declare the position information here.
         position_info = gen_position_info(self._focus_bbox)
 
+        # Visualiztion related.
+        vis_bbox = self._focus_bbox.copy()
+
         # Old "Focus Bounding-box", which will be used as part of
         #   experience for "Focus" branch.
         cur_bbox = self._focus_bbox.copy()
         # Old "Previous Segmentation", which will be used as part
         #   of sample for both "Segment" and "Focus" branch.
         SEG_prev = self._SEG_prev.copy()
+
         # The "Focus Bbox" holder, coz we need even "fake" focus bbox generated
         #   when in "Segment" phrase.
-        focus_bbox = None
+        focus_bbox = np.zeros_like(self._focus_bbox)
         # The "Next Segmentation", which will be used as part
         #   of experience for "Focus" branch.
-        SEG_cur = None
+        SEG_cur = np.zeros_like(self._SEG_prev)
         # The fake "Next position information", which will be used in both
         #   "Segment" and "Focus" branch.
-        next_posinfo = None
+        next_posinfo = np.zeros_like(position_info)
 
         # -------------------------------- Core Part -----------------------------
         # Different procedure according to phrase. "Train" phrase.
@@ -301,6 +307,10 @@ class FocusEnv:
                                                       SEG_stage,
                                                       self._focus_bbox.copy(),
                                                       self._COMP_result.copy()))
+            # Execution to get the next state (bbox), reward, terminal flag.
+            RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
+            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
+
             # Bound the initial segmentation region as initial "Focus Bbox".
             #   Just for precise and fast "Focus".
             if initFB_optimize and not self._FB_opted and SEG_stage and not ((segmentation == 0).all()):
@@ -310,22 +320,24 @@ class FocusEnv:
                 init_y2 = max(init_region[0]) / image_height
                 init_x2 = max(init_region[1]) / image_width
                 self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-                cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
-                self._FB_opted = True   # means optimized
-
-            # Execution to get the next state (bbox), reward, terminal flag.
-            RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
-            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
-            # Record some result (holders).
-            #   1) the destination bbox in time for "Segment" phrase.
-            #   2) the current segmentation result for "DQN" training.
-            #   3) the fake next position information for both two branch.
-            focus_bbox = dst_bbox.copy()
-            SEG_cur = segmentation.copy()
-            next_posinfo = gen_position_info(focus_bbox)
+                vis_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
+                self._FB_opted = True  # means optimized
 
             # Real "Segment", fake "Focus".
             if SEG_stage:
+                # To generate the next state for "Focus" if enable "Sample Share".
+                if sample_share:
+                    #   1) the destination bbox in time for "Segment" phrase.
+                    #   2) the current segmentation result for "DQN" training.
+                    #   3) the fake next position information for both two branch.
+                    focus_bbox = dst_bbox.copy()
+                    next_posinfo = gen_position_info(focus_bbox)
+                    SEG_cur, _2, _3 = op_func((self._image.copy(),
+                                               self._SEG_prev.copy(),
+                                               next_posinfo,
+                                               SEG_stage,
+                                               focus_bbox,
+                                               self._COMP_result.copy()))
                 # Re-assign the "Segmentation" result and Complete info.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
@@ -336,6 +348,11 @@ class FocusEnv:
                 # Re-assign the current "Focus Bbox".
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
+                # Use the "Real Next Focus Bbox" when it's over. Meanwhile
+                #   update the next position information.
+                if over:
+                    focus_bbox = self._focus_bbox.copy()
+                    next_posinfo = gen_position_info(focus_bbox)
 
         # "Validate" or "Test".
         else:
@@ -356,7 +373,7 @@ class FocusEnv:
                     init_y2 = max(init_region[0]) / image_height
                     init_x2 = max(init_region[1]) / image_width
                     self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-                    cur_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
+                    vis_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
                     self._FB_opted = True  # means optimized
                 # iteratively assign.
                 self._SEG_prev = segmentation
@@ -379,10 +396,10 @@ class FocusEnv:
         if self._anim_recorder is not None:
             # fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
             fo_bbox = self._focus_bbox.copy() if not SEG_stage else None
-            self._anim_recorder.record((cur_bbox.copy(), fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
+            self._anim_recorder.record((vis_bbox.copy(), fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
 
-        # Reset the process flag.
-        if over:
+        # Reset the process flag. Only the over of "Focus" stage means real terminate.
+        if not SEG_stage and over:
             self._finished = True
 
         # Return sample when in "Train" phrase.
@@ -785,7 +802,8 @@ class FocusEnv:
             raise TypeError('The adapter should be @Type{Adapter} !!!')
 
         # Get a train image-label pair to verify.
-        img, label, MHA_idx, inst_idx, clazz_weights = adapter.next_image_pair(mode='Train', batch_size=1)
+        img, label, clazz_weights, data_arg = adapter.next_image_pair(mode='Train', batch_size=1)
+        MHA_idx, inst_idx = data_arg
 
         # Check the type and dimension of the data.
         if not isinstance(img, np.ndarray) or not isinstance(label, np.ndarray):

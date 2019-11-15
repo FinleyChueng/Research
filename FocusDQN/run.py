@@ -375,28 +375,30 @@ config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
 config = conf_util.parse_config(config_file)
 
 
-from task.model import *
-dqn = DqnAgent(name_space='TEST', config=config)
-inputs, outputs, losses, summary, visual = dqn.definition()
-# input holders.
-x1 = inputs['ORG/image']
-x2 = inputs['ORG/prev_result']
-x3 = inputs['ORG/position_info']
-x4 = inputs['ORG/Segment_Stage']
-x5 = inputs['ORG/Focus_Bbox']
-x6 = inputs['TEST/Complete_Result']
-# output holders.
-y1 = outputs['ORG/DQN_output']
-y2 = outputs['TEST/SEG_output']
+# from task.model import *
+# dqn = DqnAgent(name_space='TEST', config=config)
+# inputs, outputs, losses, summary, visual = dqn.definition()
+# # input holders.
+# x1 = inputs['ORG/image']
+# x2 = inputs['ORG/prev_result']
+# x3 = inputs['ORG/position_info']
+# x4 = inputs['ORG/Segment_Stage']
+# x5 = inputs['ORG/Focus_Bbox']
+# x6 = inputs['TEST/Complete_Result']
+# # output holders.
+# y1 = outputs['ORG/DQN_output']
+# y2 = outputs['TEST/SEG_output']
 
 
 from dataset.adapter.bratsAdapter import BratsAdapter
 adapter = BratsAdapter(enable_data_enhance=False)
 
-for _ in range(35):
-# for _ in range(10):
-    adapter.next_image_pair('Train', batch_size=155)
-adapter.next_image_pair('Train', batch_size=70)
+# for _ in range(35):
+# # for _ in range(10):
+#     adapter.next_image_pair('Train', batch_size=155)
+# adapter.next_image_pair('Train', batch_size=70)
+
+adapter.reset_position(35*155+70)
 
 
 from task.env import FocusEnv
@@ -416,13 +418,14 @@ class T:
         self._idx = 0
 
     def train_func(self, x):
-        img, SEG_prev, position_info, focus_bbox, COMP_result = x
+        img, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
 
         segmentation = SEG_prev.copy()
         y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
         x_min = max(0, min(239, int(round(240 * focus_bbox[1]))))
         y_max = max(1, min(240, int(round(240 * focus_bbox[2]))))
         x_max = max(1, min(240, int(round(240 * focus_bbox[3]))))
+        print(y_min, y_max, x_min, x_max)
         y1 = np.random.randint(y_min, y_max)
         x1 = np.random.randint(x_min, x_max)
         y2 = np.random.randint(y_min, y_max)
@@ -440,8 +443,8 @@ class T:
             action = self._l[self._idx]
             self._idx += 1
         else:
-            action = np.random.randint(17)
-            # action = np.random.randint(9)
+            # action = np.random.randint(17)
+            action = np.random.randint(9)
 
         return segmentation, COMP_res, action
 
@@ -450,11 +453,11 @@ for _ in range(3):
     stage = True
     env.reset()
     for _0 in range(25):
-        _1, _2, over, _4 = env.step(t.train_func, stage)
-        if over:
+        _1, _2, _3, over, _4, _5 = env.step(t.train_func, stage)
+        if not stage and over:
             break
         stage = not stage
-    env.render()
+    env.render('gif')
 
 
 # # ---------------------------------------------------------------------

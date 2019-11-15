@@ -225,7 +225,7 @@ class BRATS2015:
         if isot :
             return img_array
         else:
-            # img_array = (img_array - img_array.mean())/ img_array.std()
+            img_array = (img_array - img_array.mean()) / img_array.std()
             return img_array
 
     def __read_img_test__(self, mha_path, isot=False):
@@ -234,7 +234,7 @@ class BRATS2015:
         if isot:
             return img_array
         else:
-            # img_array = (img_array - img_array.mean()) / img_array.std()
+            img_array = (img_array - img_array.mean()) / img_array.std()
             return img_array
 
     def next_test_MHA(self):
@@ -369,7 +369,7 @@ class BRATS2015:
             self.train_batch_index += batch_size
 
         # return
-        return img, label, MHA_idx, inst_idx, clazz_weights
+        return img, label, clazz_weights, MHA_idx, inst_idx
 
 
     def saveItk(self, array, name):

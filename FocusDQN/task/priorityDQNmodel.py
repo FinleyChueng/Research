@@ -590,11 +590,32 @@ class DeepQNetwork(DQN):
         batch_size = conf_train.get('batch_size', 32)
         replay_iter = conf_train.get('replay_iter', 1)
 
-        # # Total steps count used to control whether to training or not.
-        # total_steps = 0
-        # # Remainder of last difference of total steps.
-        # ts_diff_remainder = 0
+        # Declare the store function for "Sample/Experience Store".
+        def store_2mem(exp, SEG_stage):
+            r'''
+                experience likes below:
+                (sample_meta, SEG_stage, SEG_prev, cur_bbox, position_info,
+                    action, reward, terminal, SEG_cur, focus_bbox, next_posinfo)
+            '''
+            # Add to sample storage.
+            if SEG_stage:
+                self._sample_storage.append(exp)
+                if len(self._sample_storage) > memory_size:
+                    self._sample_storage.popleft()
+            else:
+                # store the experience in "Replay Memory".
+                if prioritized_replay:
+                    # using the "Prioritized Replay".
+                    self._replay_memory.store(exp)
+                else:
+                    self._replay_memory.append(exp)
+                    # remove element (experience) if exceeds max size.
+                    if len(self._replay_memory) > memory_size:
+                        self._replay_memory.popleft()
+            # Finish.
+            return
 
+        # ------------------------ Train Loop Part ------------------------
         # Start to training ...
         for turn in range(start_pos, max_iteration):
             # Some info holder.
@@ -624,59 +645,85 @@ class DeepQNetwork(DQN):
             else:
                 raise ValueError('Unknown sample store type !!!')
 
-            # Go processing current image.
-            SEG_stage = True
-            # 9999999999: max step per iteration.
-            for step in range(9999999999):
-                # Push forward the environment.
-                (SEG_prev, cur_bbox, position_info), \
-                    action, reward, terminal, \
-                    (SEG_cur, focus_bbox, next_posinfo), \
-                    info = self._env.step(self._func_4train, SEG_stage=SEG_stage)
+            # ---------------------------- Core Part ----------------------------
+            # Pre-execute one step.
+            (S_SEG_prev, S_cur_bbox, S_position_info), \
+                S_action, S_reward, S_terminal, \
+                (S_SEG_cur, S_focus_bbox, S_next_posinfo), \
+                S_info = self._env.step(self._func_4train, SEG_stage=True)
+            store_2mem((sample_meta, True, S_SEG_prev, S_cur_bbox, S_position_info,
+                        S_action, S_reward, S_terminal, S_SEG_cur, S_focus_bbox, S_next_posinfo),
+                       SEG_stage=True)
+            # The "Focus".
+            (F_SEG_prev, F_cur_bbox, F_position_info), \
+                F_action, F_reward, F_terminal, \
+                (F_SEG_cur, F_focus_bbox, F_next_posinfo), \
+                F_info = self._env.step(self._func_4train, SEG_stage=False)
+            #  --> update visual.
+            turn_rewards += F_reward
+            # The terminal flag only works when in "Focus" phrase.
+            if F_terminal:
+                # Store all the elements if terminate in one step.
+                store_2mem((sample_meta, False, F_SEG_prev, F_cur_bbox, F_position_info,
+                            F_action, F_reward, F_terminal, F_SEG_cur, F_focus_bbox, F_next_posinfo),
+                           SEG_stage=False)
+                # Show some info. --------------------------------------------
+                self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
+                                   "cost time: {}".format(
+                    turn, 1, turn_rewards, self._epsilon, time.time() - start_time))
+                # ------------------------------------------------------------
 
-                # The experience.
-                exp = (sample_meta,
-                       SEG_stage,
-                       SEG_prev,
-                       cur_bbox,
-                       position_info,
-                       action,
-                       reward,
-                       terminal,
-                       SEG_cur,
-                       focus_bbox,
-                       next_posinfo
-                       )
-                # Add to sample storage.
-                if SEG_stage:
-                    self._sample_storage.append(exp)
-                    if len(self._sample_storage) > memory_size:
-                        self._sample_storage.popleft()
-                else:
-                    # store the experience in "Replay Memory".
-                    if prioritized_replay:
-                        # using the "Prioritized Replay".
-                        self._replay_memory.store(exp)
-                    else:
-                        self._replay_memory.append(exp)
-                        # remove element (experience) if exceeds max size.
-                        if len(self._replay_memory) > memory_size:
-                            self._replay_memory.popleft()
+            # Start iteration if not terminal in the very beginning.
+            else:
+                # Record the "Previous State" for "Focus" (DQN)
+                F_SEG_PREV = F_SEG_prev.copy()
+                F_CUR_BBOX = F_cur_bbox.copy()
+                F_POS_INFO = F_position_info.copy()
 
-                # The terminal flag only works when in "Focus" phrase.
-                if not SEG_stage and terminal:
-                    # Show some info. --------------------------------------------
-                    self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
-                                       "cost time: {}".format(
-                        turn, step // 2, turn_rewards, self._epsilon, time.time() - start_time))
-                    # ------------------------------------------------------------
-                    break
+                # 9999999999: max step per iteration.
+                for step in range(9999999999):
+                    # Execute the "Segment" phrase.
+                    (S_SEG_prev, S_cur_bbox, S_position_info), \
+                        S_action, S_reward, S_terminal, \
+                        (S_SEG_cur, S_focus_bbox, S_next_posinfo), \
+                        S_info = self._env.step(self._func_4train, SEG_stage=True)
+                    # Store the sample into "Segment" storage.
+                    store_2mem((sample_meta, True, S_SEG_prev, S_cur_bbox, S_position_info,
+                                S_action, S_reward, S_terminal, S_SEG_cur, S_focus_bbox, S_next_posinfo),
+                               SEG_stage=True)
 
-                # Change to next stage.
-                SEG_stage = not SEG_stage
+                    # Execute the "Focus" phrase.
+                    (F_SEG_prev, F_cur_bbox, F_position_info), \
+                        F_action, F_reward, F_terminal, \
+                        (F_SEG_cur, F_focus_bbox, F_next_posinfo), \
+                        F_info = self._env.step(self._func_4train, SEG_stage=False)
+                    # Store the experience into "Focus" replay memory.
+                    store_2mem((sample_meta, False, F_SEG_PREV, F_CUR_BBOX, F_POS_INFO,
+                                F_action, F_reward, F_terminal, F_SEG_prev, F_cur_bbox, F_position_info),
+                               SEG_stage=False)
 
-                # Update some info for visual.
-                turn_rewards += reward
+                    # The terminal flag only works when in "Focus" phrase.
+                    if F_terminal:
+                        # Store the all elements (Cur - Next) if it's terminate now.
+                        #   Note that, it's the last experience, so we have to add it.
+                        store_2mem((sample_meta, False, F_SEG_prev, F_cur_bbox, F_position_info,
+                                    F_action, F_reward, F_terminal, F_SEG_cur, F_focus_bbox, F_next_posinfo),
+                                   SEG_stage=False)
+                        # Show some info. --------------------------------------------
+                        self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
+                                           "cost time: {}".format(
+                            turn, step, turn_rewards, self._epsilon, time.time() - start_time))
+                        # ------------------------------------------------------------
+                        break
+
+                    # Switch to next state (SEG_prev, cur_bbox, pos_info) for "Focus" phrase.
+                    F_SEG_PREV = F_SEG_prev.copy()
+                    F_CUR_BBOX = F_cur_bbox.copy()
+                    F_POS_INFO = F_position_info.copy()
+
+                    # Update some info for visual.
+                    turn_rewards += F_reward
+            # ---------------------------- End of core part ----------------------------
 
             # Finish the process of current image. Render.
             self._env.render('video')
