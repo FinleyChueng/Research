@@ -287,6 +287,7 @@ class FocusEnv:
 
         # Visualiztion related.
         vis_bbox = self._focus_bbox.copy()
+        vis_reward = None
 
         # Old "Focus Bounding-box", which will be used as part of
         #   experience for "Focus" branch.
@@ -346,14 +347,15 @@ class FocusEnv:
                                                SEG_stage,
                                                focus_bbox,
                                                self._COMP_result.copy()))
-                # Re-assign the "Segmentation" result and Complete info.
+                # Iteratively re-assign the "Segmentation" result and Complete info.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
-                reward = info = None  # fake, for conveniently coding.
+                # Update the visual information.
+                vis_reward = info = None  # fake, for conveniently coding.
                 over = False  # "Segment" stage, not over.
             # Fake "Segment", real "Focus".
             else:
-                # Re-assign the current "Focus Bbox".
+                # Iteratively re-assign the current "Focus Bbox".
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
                 # Use the "Real Next Focus Bbox" when it's over. Meanwhile
@@ -361,6 +363,8 @@ class FocusEnv:
                 if over:
                     focus_bbox = self._focus_bbox.copy()
                     next_posinfo = gen_position_info(focus_bbox)
+                # Update the visual information.
+                vis_reward = reward
 
         # "Validate" or "Test".
         else:
@@ -405,7 +409,7 @@ class FocusEnv:
         if self._anim_recorder is not None:
             # fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
             fo_bbox = self._focus_bbox.copy() if not SEG_stage else None
-            self._anim_recorder.record((vis_bbox.copy(), fo_bbox, reward, self._SEG_prev.copy(), info))    # Need copy !!!
+            self._anim_recorder.record((vis_bbox.copy(), fo_bbox, vis_reward, self._SEG_prev.copy(), info))    # Need copy !!!
 
         # Reset the process flag. Only the over of "Focus" stage means real terminate.
         if not SEG_stage and over:

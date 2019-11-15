@@ -331,14 +331,22 @@ class MaskVisualVMPY(MaskVisual):
         # Normalization.
         segmentation = self._normalization(segmentation, self._normal_value, max_val=self._res_cate)
 
+        # Draw the suit bbox for better visual.
+        _t1 = self.__draw_suit_bbox(self._t1)
+        _t1c = self.__draw_suit_bbox(self._t1c)
+        _t2 = self.__draw_suit_bbox(self._t2)
+        _f = self.__draw_suit_bbox(self._f)
+        _lab = self.__draw_suit_bbox(self._label)
+        _pred = self.__draw_suit_bbox(segmentation)
+
         # Draw the bounding-box on image and label.
         b_v1 = self._normal_value // 3
-        _t1 = self._draw_bbox(self._t1, cur_region, b_v1)
-        _t1c = self._draw_bbox(self._t1c, cur_region, b_v1)
-        _t2 = self._draw_bbox(self._t2, cur_region, b_v1)
-        _f = self._draw_bbox(self._f, cur_region, b_v1)
-        _lab = self._draw_bbox(self._label, cur_region, b_v1)
-        _pred = self._draw_bbox(segmentation, cur_region, b_v1)
+        _t1 = self._draw_bbox(_t1, cur_region, b_v1, duplicate=False)
+        _t1c = self._draw_bbox(_t1c, cur_region, b_v1, duplicate=False)
+        _t2 = self._draw_bbox(_t2, cur_region, b_v1, duplicate=False)
+        _f = self._draw_bbox(_f, cur_region, b_v1, duplicate=False)
+        _lab = self._draw_bbox(_lab, cur_region, b_v1, duplicate=False)
+        _pred = self._draw_bbox(_pred, cur_region, b_v1, duplicate=False)
         # Draw the "Focus Bounding-box" if given.
         if focus_bbox is not None:
             b_v1 = self._normal_value // 3 * 2
@@ -380,14 +388,6 @@ class MaskVisualVMPY(MaskVisual):
                             font=self._font, align='center')
         _indt = np.asarray(_indt)
         _indt = self._normalization(_indt, self._normal_value)
-
-        # Draw the suit bbox for better visual.
-        _t1 = self.__draw_suit_bbox(_t1, duplicate=False)
-        _t1c = self.__draw_suit_bbox(_t1c, duplicate=False)
-        _t2 = self.__draw_suit_bbox(_t2, duplicate=False)
-        _f = self.__draw_suit_bbox(_f, duplicate=False)
-        _lab = self.__draw_suit_bbox(_lab, duplicate=False)
-        _pred = self.__draw_suit_bbox(_pred, duplicate=False)
 
         # Generate each row.
         row_1st = np.concatenate((_t1, _t1c, _t2), axis=1)

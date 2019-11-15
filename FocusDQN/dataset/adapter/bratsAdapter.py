@@ -120,7 +120,7 @@ class BratsAdapter(Adapter):
         '''
 
         # Check validity.
-        if not isinstance(offset, int):
+        if not isinstance(offset, (int, np.int, np.int32, np.int64)):
             raise TypeError('The offset must be an integer !!!')
         if offset < 0:
             raise ValueError('The offset should not be negative !!!')
@@ -160,7 +160,8 @@ class BratsAdapter(Adapter):
         # Check validity.
         if not isinstance(position, tuple) or len(position) != 2:
             raise TypeError('The position must be a tuple consists of (mha_idx, inst_idx) !!!')
-        if not isinstance(position[0], int) or not isinstance(position[1], int):
+        if not isinstance(position[0], (int, np.int, np.int32, np.int64)) or \
+                not isinstance(position[1], (int, np.int, np.int32, np.int64)):
             raise TypeError('The mha_idx and inst_idx should be integer !!!')
         if position[0] < 0 or position[1] < 0:
             raise ValueError('The mha_idx and inst_idx should not be negative !!!')
