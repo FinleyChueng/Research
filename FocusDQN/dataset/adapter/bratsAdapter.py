@@ -14,7 +14,7 @@ class BratsAdapter(Adapter):
             to caller.
     '''
 
-    def __init__(self, need_normalization=False, enable_data_enhance=True):
+    def __init__(self, need_normalization=False, enable_data_enhance=False):
         r'''
             The initialize method of this class.
 
@@ -122,6 +122,8 @@ class BratsAdapter(Adapter):
         # Check validity.
         if not isinstance(offset, int):
             raise TypeError('The offset must be an integer !!!')
+        if offset < 0:
+            raise ValueError('The offset should not be negative !!!')
         if not isinstance(mode, str):
             raise TypeError('The mode must be a string !!!')
 
@@ -156,8 +158,12 @@ class BratsAdapter(Adapter):
         '''
 
         # Check validity.
-        if not isinstance(position, int):
-            raise TypeError('The position must be an integer !!!')
+        if not isinstance(position, tuple) or len(position) != 2:
+            raise TypeError('The position must be a tuple consists of (mha_idx, inst_idx) !!!')
+        if not isinstance(position[0], int) or not isinstance(position[1], int):
+            raise TypeError('The mha_idx and inst_idx should be integer !!!')
+        if position[0] < 0 or position[1] < 0:
+            raise ValueError('The mha_idx and inst_idx should not be negative !!!')
         if not isinstance(mode, str):
             raise TypeError('The mode should be @Type{str} !!!')
 

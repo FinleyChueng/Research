@@ -149,14 +149,13 @@ class DeepQNetwork(DQN):
             iter = int(float(k) * total_turns)
             epsilon_book.append((iter, epsilon_dict[k]))
         print('### --> Epsilon book: {}'.format(epsilon_book))
-        # self._epsilon_book = epsilon_book
 
         # Determine the start position if enable restore from last position.
         conf_others = self._config['Others']
         restore_from_bp = conf_others.get('restore_breakpoint', True)
         if restore_from_bp:
             # Compute last iter.
-            glo_step = self._global_step.eval(self._sess)
+            glo_step = int(self._global_step.eval(self._sess))
             last_iter = glo_step * replay_iter
             # Compute the start epoch and iteration.
             start_epoch = last_iter // max_iteration
@@ -553,7 +552,7 @@ class DeepQNetwork(DQN):
             for sample in data_batch:
                 if store_type == 'light':
                     mha_idx, inst_idx, weights = sample[0]
-                    img, lab = self._data_adapter.precise_locate(mha_idx, inst_idx)
+                    img, lab = self._data_adapter.precise_locate((mha_idx, inst_idx))
                 elif store_type == 'heave':
                     img, lab, weights = sample[0]
                 else:
@@ -669,7 +668,7 @@ class DeepQNetwork(DQN):
             out_summary = self._summary[self._name_space + '/MergeSummary']
             # Execute test environment to get the reward situation of current DQN model.
             # cur_reward_list = self.test(10)
-            reward_list, DICE_list, BRATS_list = self.test(2)
+            reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
             # Compute the summary value and add into statistic graph.
             feed_dict[s1] = reward_list
             feed_dict[s2] = DICE_list
@@ -954,5 +953,4 @@ class DeepQNetwork(DQN):
 
         # Return the next Q values.
         return next_q_values
-
 

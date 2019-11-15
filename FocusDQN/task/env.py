@@ -28,6 +28,8 @@ class FocusEnv:
         # Get basic parameter.
         conf_base = self._config['Base']
         clazz_dim = conf_base.get('classification_dimension')
+        suit_height = conf_base.get('suit_height')
+        suit_width = conf_base.get('suit_width')
 
         # Data adapter.
         self._verify_data(data_adapter, clazz_dim)
@@ -49,6 +51,8 @@ class FocusEnv:
             self._anim_recorder = MaskVisualVMPY(240, 240,
                                                  fps=anim_fps,
                                                  result_categories=clazz_dim,
+                                                 suit_height=suit_height,
+                                                 suit_width=suit_width,
                                                  vision_filename_mask=anim_path)
 
         # The flag indicating whether is in "Train", "Validate" or "Test" phrase.

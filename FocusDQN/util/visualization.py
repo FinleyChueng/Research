@@ -92,7 +92,9 @@ class MaskVisualVMPY(MaskVisual):
                  image_width,
                  result_categories,
                  vision_filename_mask,
-                 fps=25):
+                 fps=25,
+                 suit_height=None,
+                 suit_width=None):
         r'''
             The initialization method. Mainly declare the parameters used in
                 @class{~moviepy.editor}
@@ -111,6 +113,10 @@ class MaskVisualVMPY(MaskVisual):
         # The image height and width processing by Agent.
         self._image_height = image_height
         self._image_width = image_width
+
+        # The suit height and width.
+        self._suit_height = suit_height
+        self._suit_width = suit_width
 
         # Declaration the data used for visualization.
         #   act_pos_history: The trace of the action chosen by DQN agent.
@@ -260,6 +266,49 @@ class MaskVisualVMPY(MaskVisual):
         # Finish the drawing of bounding-box.
         return raw
 
+    def __draw_suit_bbox(self, src, duplicate=True):
+        r'''
+            Draw the suit bbox if given the suit height and width.
+        '''
+
+        # Not specific, return the source image.
+        if self._suit_height is None and self._suit_width is None:
+            return src
+
+        # Duplicate the source image and processing on the duplication if flag is true.
+        if duplicate:
+            raw = src.copy()
+        else:
+            raw = src
+
+        # Draw config.
+        border_value = int(self._normal_value // 10)
+        border_width = 1
+
+        # offset height and width.
+        suit_height = self._suit_height if self._suit_height is not None else self._image_height
+        suit_width = self._suit_width if self._suit_width is not None else self._image_width
+        offset_h = (self._image_height - suit_height) // 2
+        offset_w = (self._image_width - suit_width) // 2
+
+        # Firstly get the four boundary. [y1, x1, y2, x2]
+        up = max(0, offset_h)
+        left = max(0, offset_w)
+        bottom = min(self._image_height, self._image_height - offset_h)
+        right = min(self._image_width, self._image_width - offset_w)
+
+        # Assign the left boundary in the source image.
+        raw[up: up + border_width, left: right] = border_value
+        # Assign the right boundary in the source image.
+        raw[bottom - border_width: bottom, left: right] = border_value
+        # Assign the up boundary in the source image.
+        raw[up: bottom, left: left + border_width] = border_value
+        # Assign the bottom boundary in the source image.
+        raw[up: bottom, right - border_width: right] = border_value
+
+        # Finish the drawing of bounding-box.
+        return raw
+
     def _make_frame(self, t):
         r'''
             The frame-generation update method for @class{~moviepy.editor}. Simply
@@ -331,6 +380,14 @@ class MaskVisualVMPY(MaskVisual):
                             font=self._font, align='center')
         _indt = np.asarray(_indt)
         _indt = self._normalization(_indt, self._normal_value)
+
+        # Draw the suit bbox for better visual.
+        _t1 = self.__draw_suit_bbox(_t1, duplicate=False)
+        _t1c = self.__draw_suit_bbox(_t1c, duplicate=False)
+        _t2 = self.__draw_suit_bbox(_t2, duplicate=False)
+        _f = self.__draw_suit_bbox(_f, duplicate=False)
+        _lab = self.__draw_suit_bbox(_lab, duplicate=False)
+        _pred = self.__draw_suit_bbox(_pred, duplicate=False)
 
         # Generate each row.
         row_1st = np.concatenate((_t1, _t1c, _t2), axis=1)

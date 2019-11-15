@@ -77,6 +77,17 @@ def scale_bbox(bbox, src_height, src_width, dst_height, dst_width, name, restric
         x1 = tf.maximum(0.0, tf.minimum(1.0, x1))
         y2 = tf.maximum(0.0, tf.minimum(1.0, y2))
         x2 = tf.maximum(0.0, tf.minimum(1.0, x2))
+    # Avoid the "Zero-Scale" situation. Use left-up point as fake bounding-box.
+    fy2_1px = 1 / dst_height
+    fx2_1px = 1 / dst_width
+    fy1 = 0.0 * tf.ones_like(y1)
+    fx1 = 0.0 * tf.ones_like(x1)
+    fy2 = fy2_1px * tf.ones_like(y2)
+    fx2 = fx2_1px * tf.ones_like(x2)
+    y1 = tf.where(tf.equal(y2 - y1, 0.0), fy1, y1)
+    x1 = tf.where(tf.equal(x2 - x1, 0.0), fx1, x1)
+    y2 = tf.where(tf.equal(y2 - y1, 0.0), fy2, y2)
+    x2 = tf.where(tf.equal(x2 - x1, 0.0), fx2, x2)
     # Stack.
     re_bbox = tf.stack([y1, x1, y2, x2], axis=-1, name=name)
     return re_bbox

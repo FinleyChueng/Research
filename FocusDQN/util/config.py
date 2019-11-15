@@ -148,6 +148,10 @@ def parse_value_from_string(val_str):
         val = parse_bool(val_str)
     elif is_none(val_str):
         val = None
+    elif is_tuple(val_str):
+        val = parse_tuple(val_str)
+    elif is_dict(val_str):
+        val = parse_dict(val_str)
     else:
         val = val_str
     return val
@@ -157,7 +161,9 @@ def parse_config(filename):
     config = configparser.ConfigParser()
     config.read(filename)
     output = {}
+    print('Parse config ... : {}'.format(filename))
     for section in config.sections():
+        print('[{}]'.format(section))
         output[section] = {}
         for key in config[section]:
             val_str = str(config[section][key])
@@ -165,6 +171,7 @@ def parse_config(filename):
                 val = parse_value_from_string(val_str)
             else:
                 val = None
-            print(section, key, val_str, val)
+            print('\t {}: {}  (-> raw_str: {})'.format(key, val, val_str))
             output[section][key] = val
+    print('Finish config parse ...')
     return output

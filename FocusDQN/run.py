@@ -368,121 +368,91 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 # # Environment Test. --------------------------------------------------
 
-import util.config as conf_util
-import os
-config_file = '/FocusDQN/config.ini'
-config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
-config = conf_util.parse_config(config_file)
-
-
-# from task.model import *
-# dqn = DqnAgent(name_space='TEST', config=config)
-# inputs, outputs, losses, summary, visual = dqn.definition()
-# # input holders.
-# x1 = inputs['ORG/image']
-# x2 = inputs['ORG/prev_result']
-# x3 = inputs['ORG/position_info']
-# x4 = inputs['ORG/Segment_Stage']
-# x5 = inputs['ORG/Focus_Bbox']
-# x6 = inputs['TEST/Complete_Result']
-# # output holders.
-# y1 = outputs['ORG/DQN_output']
-# y2 = outputs['TEST/SEG_output']
-
-
-from dataset.adapter.bratsAdapter import BratsAdapter
-adapter = BratsAdapter(enable_data_enhance=False)
-
-# for _ in range(35):
-# # for _ in range(10):
-#     adapter.next_image_pair('Train', batch_size=155)
-# adapter.next_image_pair('Train', batch_size=70)
-
-adapter.reset_position(35*155+70)
-
-
-from task.env import FocusEnv
-env = FocusEnv(config, adapter)
-
-class T:
-
-    def __init__(self):
-        # self._l = [0, 0, 0, 2, 0, 4, 0, 4]
-        self._l = []
-        l = [0, 2]
-        # l = [0, 2, 5, 5, 7, 7, 4, 6, 5, 7]
-        # l = [0, 2, 5, 6, 7, 4, 6, 5, 7]
-        for le in l:
-            self._l.append(0)
-            self._l.append(le)
-        self._idx = 0
-
-    def train_func(self, x):
-        img, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
-
-        segmentation = SEG_prev.copy()
-        y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
-        x_min = max(0, min(239, int(round(240 * focus_bbox[1]))))
-        y_max = max(1, min(240, int(round(240 * focus_bbox[2]))))
-        x_max = max(1, min(240, int(round(240 * focus_bbox[3]))))
-        print(y_min, y_max, x_min, x_max)
-        y1 = np.random.randint(y_min, y_max)
-        x1 = np.random.randint(x_min, x_max)
-        y2 = np.random.randint(y_min, y_max)
-        x2 = np.random.randint(x_min, x_max)
-        y1, y2 = min(y1, y2), max(y1, y2)
-        x1, x2 = min(x1, x2), max(x1, x2)
-        c = np.random.randint(0, 5)
-        segmentation[y1: y2, x1: x2] = c
-
-        COMP_res = np.zeros_like(COMP_result)
-
-        # action = np.random.randint(8)
-        # action = np.random.randint(9)
-        if len(self._l) > self._idx:
-            action = self._l[self._idx]
-            self._idx += 1
-        else:
-            # action = np.random.randint(17)
-            action = np.random.randint(9)
-
-        return segmentation, COMP_res, action
-
-t = T()
-for _ in range(3):
-    stage = True
-    env.reset()
-    for _0 in range(25):
-        _1, _2, _3, over, _4, _5 = env.step(t.train_func, stage)
-        if not stage and over:
-            break
-        stage = not stage
-    env.render('gif')
-
-
-# # ---------------------------------------------------------------------
-
-
-# Reward Test. --------------------------------------------------
-
-# import collections
-# a = collections.deque()
+# import util.config as conf_util
+# import os
+# config_file = '/FocusDQN/config.ini'
+# config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+# config = conf_util.parse_config(config_file)
 #
-# a.append(1)
-# a.append(2)
-# a.append(3)
 #
-# print(a)
+# # from task.model import *
+# # dqn = DqnAgent(name_space='TEST', config=config)
+# # inputs, outputs, losses, summary, visual = dqn.definition()
+# # # input holders.
+# # x1 = inputs['ORG/image']
+# # x2 = inputs['ORG/prev_result']
+# # x3 = inputs['ORG/position_info']
+# # x4 = inputs['ORG/Segment_Stage']
+# # x5 = inputs['ORG/Focus_Bbox']
+# # x6 = inputs['TEST/Complete_Result']
+# # # output holders.
+# # y1 = outputs['ORG/DQN_output']
+# # y2 = outputs['TEST/SEG_output']
 #
-# a.popleft()
-# print(a)
-# a.append(4)
-# print(a)
 #
-# a.extend([0, 0, 0, 0])
-# a.extend(np.zeros(4))
+# from dataset.adapter.bratsAdapter import BratsAdapter
+# adapter = BratsAdapter(enable_data_enhance=False)
+# adapter.reset_position(35*155+70)
 #
-# print(a)
+#
+# from task.env import FocusEnv
+# env = FocusEnv(config, adapter)
+#
+# class T:
+#
+#     def __init__(self):
+#         # self._l = [0, 0, 0, 2, 0, 4, 0, 4]
+#         self._l = []
+#         l = [0, 2]
+#         # l = [0, 2, 5, 5, 7, 7, 4, 6, 5, 7]
+#         # l = [0, 2, 5, 6, 7, 4, 6, 5, 7]
+#         for le in l:
+#             self._l.append(0)
+#             self._l.append(le)
+#         self._idx = 0
+#
+#     def train_func(self, x):
+#         img, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
+#
+#         segmentation = SEG_prev.copy()
+#         y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
+#         x_min = max(0, min(239, int(round(240 * focus_bbox[1]))))
+#         y_max = max(1, min(240, int(round(240 * focus_bbox[2]))))
+#         x_max = max(1, min(240, int(round(240 * focus_bbox[3]))))
+#         print(y_min, y_max, x_min, x_max)
+#         y1 = np.random.randint(y_min, y_max)
+#         x1 = np.random.randint(x_min, x_max)
+#         y2 = np.random.randint(y_min, y_max)
+#         x2 = np.random.randint(x_min, x_max)
+#         y1, y2 = min(y1, y2), max(y1, y2)
+#         x1, x2 = min(x1, x2), max(x1, x2)
+#         c = np.random.randint(0, 5)
+#         segmentation[y1: y2, x1: x2] = c
+#
+#         COMP_res = np.zeros_like(COMP_result)
+#
+#         # action = np.random.randint(8)
+#         # action = np.random.randint(9)
+#         if len(self._l) > self._idx:
+#             action = self._l[self._idx]
+#             self._idx += 1
+#         else:
+#             # action = np.random.randint(17)
+#             action = np.random.randint(9)
+#
+#         return segmentation, COMP_res, action
+#
+# t = T()
+# for _ in range(3):
+#     stage = True
+#     env.reset()
+#     for _0 in range(25):
+#         _1, _2, _3, over, _4, _5 = env.step(t.train_func, stage)
+#         if not stage and over:
+#             break
+#         stage = not stage
+#     env.render('gif')
+
 
 # # ---------------------------------------------------------------------
 
@@ -490,116 +460,22 @@ for _ in range(3):
 
 # Whole Test. ---------------------------------------------------------
 
-from net.resnet import *
+from task.framework import DeepQNetwork
+import util.config as conf_util
+import os
 
-recorder = MaskVisualVMPY(240, 240, fps=4,
-                          # vision_filename_mask='E:/Finley/Result/caldqn-333/',
-                          vision_filename_mask='E:/Finley/Result/caldqn-anim/',
-                          # vision_filename_mask='G:/Finley/Result/dqn-anim/',
-                          # vision_filename_mask='D:/Finley-Experiment/Result/dqn-anim/',
-                          )
+config_file = '/FocusDQN/config.ini'
+config_file = os.path.abspath(os.path.dirname(os.getcwd())) + config_file
+config = conf_util.parse_config(config_file)
+
 data_adapter = BratsAdapter(enable_data_enhance=False)
-# For Debug
-# for _ in range(858):
-# for _ in range(35):
-# for _ in range(3750):
-#     data_adapter.next_image_pair('Train', 1)
-# for _ in range(51):
-#     data_adapter.next_image_pair('Test', 1)
 
-# epsilon_dict = [(0, 1.0),
-#                 (3000, 0.9),
-#                 (6000, 0.8),
-#                 (9000, 0.7),
-#                 (12000, 0.6),
-#                 (15000, 0.5),
-#                 (18000, 0.4),
-#                 (21000, 0.3),
-#                 (24000, 0.2),
-#                 (27000, 0.1),
-#                 (30000, 0.0),
-#                 ]
+dqn = DeepQNetwork(config=config,
+                   name_space='ME',
+                   data_adapter=data_adapter)
 
-# epsilon_dict = [(0, 0.8),
-#                 (3750, 0.7),
-#                 (7500, 0.6),
-#                 (11250, 0.5),
-#                 (15000, 0.4),
-#                 (18750, 0.3),
-#                 (22500, 0.2),
-#                 (26250, 0.1),
-#                 (30000, 0.0)
-#                 ]
-
-# epsilon_dict = [(25, 0.7),
-#                 (50, 0.6),
-#                 (75, 0.5),
-#                 (100, 0.4),
-#                 (125, 0.3),
-#                 (150, 0.2),
-#                 (175, 0.1),
-#                 (200, 0.0)
-#                 ]
-
-dqn = DeepQNetwork(data_adapter=data_adapter,
-                   input_image_size=(240, 240),
-                   clazz_dim=5,
-                   feature_extraction_network=ResNet(),
-                   anim_recorder=recorder,
-                   # Custom
-                   # epsilon_dict=epsilon_dict,
-                   # batch_size=2,
-                   # track_len=5,
-                   batch_size=2,
-                   track_len=8,
-                   # batch_size=4,
-                   # batch_size=8,
-                   learning_rate=1e-4,
-                   # learning_rate=4e-5,
-                   # learning_rate=10e-6,
-                   # replay_memory_size=1000,
-                   # replay_memory_size=2000,
-                   replay_memory_size=20,
-                   # replay_memory_size=30,
-                   # replay_memory_size=50,
-                   save_per_step=1000,
-                   # save_per_step=100,
-                   # save_per_step=10000,
-                   # replay_period=100,
-                   replay_period=2,
-                   # replay_period=50,
-                   # replay_period=20,
-                   breakpoint_dir='./tmp/breakpoint',
-                   params_dir='./tmp/ImageSegmentation/',
-                   summary_dir='./tmp/Summary/',
-                   log_dir='./tmp/Logs/whole-log.txt',
-                   use_all_masks=False,
-                   # use_all_masks=True,
-                   # prioritized_replay=False,
-                   prioritized_replay=True,
-                   double_q=True)
-
-
-
-# dqn.train(5, max_turns=260, restore_from_bp=False)
-# dqn.train(1, max_turns=5*260, restore_from_bp=False)
-
-dqn.train(1, max_turns=6*260, restore_from_bp=False)
-
-# dqn.train(1, max_turns=5*260, restore_from_bp=False)
-
-
-dqn.test(10)
-
-dqn.test(110, real_test=True)
-
-
-
-#
-#   1. 把 学习率 改为了 10000 次下降 0.5
-#   2. 把 正则化系数 改成了 1e-7 ， 并包含了 kernel 和 bias
-#   3. 把 ResNet 换成了 slim 里的结构， 把 transition layer 改成了 二层的结构
-#   4. 把 ResNet 里的 BN 全都换成 true
-#   5. 把 BN 改成了 0.9 并去掉了 renorm
-#   6. (未添加--就是还原BN的顺序这样，没加)
+# Train.
+dqn.train(epochs=1, max_iteration=260*155)
+# Test.
+dqn.test(10, is_validate=False)
 
