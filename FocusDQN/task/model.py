@@ -818,32 +818,6 @@ class DqnAgent:
                 oy2 = bbox[2]
                 ox2 = bbox[3]
                 # Compute pad size.
-
-
-                # py_bot = tf.minimum(oy1, oy2)
-                # py_bot = tf.round(tf.to_float(up_h) * py_bot) - tf.to_float(0)
-                # py_bot = tf.cast(py_bot, 'int32')  # Bottom
-                # py_up = tf.maximum(oy1, oy2)
-                # py_up = tf.to_float(up_h) - tf.round(tf.to_float(up_h) * py_up)
-                # py_up = tf.cast(py_up, 'int32')  # Up
-                # px_left = tf.minimum(ox1, ox2)
-                # px_left = tf.round(tf.to_float(up_w) * px_left) - tf.to_float(0)
-                # px_left = tf.cast(px_left, 'int32')  # Left
-                # px_right = tf.maximum(ox1, ox2)
-                # px_right = tf.to_float(up_w) - tf.round(tf.to_float(up_w) * px_right)
-                # px_right = tf.cast(px_right, 'int32')  # Right
-
-
-                # py_bot = tf.minimum(oy1, oy2) - 0.0
-                # py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')  # Bottom
-                # py_up = 1.0 - tf.maximum(oy1, oy2)
-                # py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')  # Up
-                # px_left = tf.minimum(ox1, ox2) - 0.0
-                # px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')  # Left
-                # px_right = 1.0 - tf.maximum(ox1, ox2)
-                # px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')  # Right
-
-
                 py_up = tf.minimum(oy1, oy2) - 0.0
                 py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')   # Up
                 py_bot = 1.0 - tf.maximum(oy1, oy2)
@@ -852,17 +826,12 @@ class DqnAgent:
                 px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')   # Left
                 px_right = 1.0 - tf.maximum(ox1, ox2)
                 px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')     # Right
-
-
                 # Add rectify value to the "right" and "bottom" coz there's
                 #   deviation in the round operation.
                 py_diff = up_h - tf.cast(tf.round(tf.abs(oy2 - oy1) * up_h), 'int32') - py_up - py_bot
                 px_diff = up_w - tf.cast(tf.round(tf.abs(ox2 - ox1) * up_w), 'int32') - px_left - px_right
-
                 py_bot += py_diff
                 px_right += px_diff
-
-
                 # Generate pad vector.
                 pads = [[0, 0],
                         [py_bot, py_up],

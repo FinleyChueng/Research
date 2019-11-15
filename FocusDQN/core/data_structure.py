@@ -2,50 +2,6 @@ import numpy as np
 import collections
 
 
-# Env-related abstractions
-class Env:
-
-    def step(self, action_index, arg):
-        r'''
-            Execute the action_index specific action, and return a tuple of
-            (state, reward, terminal, info).
-
-        --------------------------------------------------------------------
-        Parameters:
-            action_index: The index of action chosen by DQN agent.
-            arg: Additional parameters used in the implementation.
-
-        --------------------------------------------------------------------
-        Return:
-            The tuple of (state, reward, terminal, info).
-                state: The current state after executed the specific action.
-                reward: The reward of specific action.
-                terminal: A flag implies whether the task is in terminal state.
-                info: Some other information, which is optional.
-        '''
-        raise NotImplementedError
-
-    def reset(self, arg):
-        r'''
-            Reset the environment. (That is states)
-
-        --------------------------------------------------------------------
-        Parameters:
-            arg: Additional parameters used in the implementation.
-
-        --------------------------------------------------------------------
-        Return:
-            The initial state of the environment.
-        '''
-        raise NotImplementedError
-
-    def render(self):
-        r'''
-            The method that visualize the environment (specially its states).
-        '''
-        raise NotImplementedError
-
-
 
 # --------------------------------------------
 # Data Structure.

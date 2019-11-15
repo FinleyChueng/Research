@@ -641,7 +641,8 @@ class DeepQNetwork(DQN):
             exp_pri = self._losses[self._name_space + '/EXP_priority']
             # Extend the weights with fake sample weights.
             FAKE_W = [fake_weight] * len(mini_batch)
-            ISWeights = FAKE_W.extend(ISWeights)
+            FAKE_W.extend(ISWeights)
+            ISWeights = FAKE_W
             # Add to feed dictionary.
             feed_dict[ISw] = ISWeights
             # Execute the training operation.
