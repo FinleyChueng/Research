@@ -33,24 +33,24 @@ class DQN:
         with open(log_dir, 'w') as f:
             f.write('')
 
-    def train(self, epochs):
+    def train(self, epochs, max_iter):
         r'''
             Start to train the DQN agent in fixed epochs.
 
         Parameters:
             epochs: Indicates the training epochs.
+            max_iter: Indicates the iterations for one epoch.
         '''
-
         raise NotImplementedError
 
-    def test(self, epochs):
+    def test(self, iteration, is_validate):
         r'''
             Start to test the DQN agent in fixed epochs.
 
         Parameters:
-            epochs: Indicates the testing epochs.
+            iteration: Indicates the iterations for one epoch in testing phrase.
+            is_validate: Indicates whether it's "Validate" or real "Test".
         '''
-
         raise NotImplementedError
 
 

@@ -1,6 +1,14 @@
 # Adapter-related abstractions
 class Adapter:
 
+    @property
+    def slices_3d(self):
+        r'''
+            The quantity of slices of 3-D data. 2-D data do not need to
+                implement this property.
+        '''
+        return -1
+
     def next_image_pair(self, mode, batch_size):
         r'''
             Return the next image pair which is in local file system.

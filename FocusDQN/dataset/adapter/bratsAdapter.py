@@ -37,6 +37,13 @@ class BratsAdapter(Adapter):
         self._train_image = None    # Used to cache current training image
         self._train_label = None    # Used to cache current training label
 
+    @property
+    def slices_3d(self):
+        r'''
+            The quantity of slices of one single patient.
+        '''
+        return 155
+
     def next_image_pair(self, mode, batch_size):
         r'''
             Return the image pair consisted of (image, label).

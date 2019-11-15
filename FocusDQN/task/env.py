@@ -188,8 +188,8 @@ class FocusEnv:
             # Record the process.
             if self._anim_recorder is not None:
                 self._anim_recorder.reload((img.copy(), label.copy() if label is not None else None))
-            # Plain return.
-            return
+            # Return the label used to compute metric when in "Validate" phrase.
+            return label.copy() if label is not None else None
 
 
     def step(self, op_func, SEG_stage):
@@ -229,6 +229,10 @@ class FocusEnv:
             focus_bbox: Next focus bbox of image.
             next_posinfo: The fake next position information.
             info: Extra information.(Optional, default is type.None)
+            ---------------------------------------------------------------
+            The tuple of (over, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
+                ** Note that, the reward is None when in "Test" phrase, and the
+                    SEG_cur will be used to write result in "Test" phrase.
         '''
 
         # Check validity.
@@ -379,6 +383,7 @@ class FocusEnv:
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
                 action = reward = info = None   # fake, for conveniently coding.
+                SEG_cur = segmentation.copy()   # real, used to compute metric in "Validate" phrase, and write result.
                 over = False    # "Segment" stage, not over.
             # "Focus" stage.
             else:
@@ -409,7 +414,8 @@ class FocusEnv:
                    (SEG_cur, focus_bbox, next_posinfo), \
                    info
         else:
-            return
+            # Return terminal flag (most important), and other information.
+            return over, (SEG_cur, reward, info)
 
 
     def render(self, anim_type):
