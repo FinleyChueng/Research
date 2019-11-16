@@ -590,8 +590,8 @@ class FocusEnv:
             raise Exception('Unknown action dimension, there is no logic with respect to '
                             'current act_dim, please check your code !!!')
 
-        # Compute the reward for given action. (Only in "Train" phrase)
-        if self._phrase == 'Train':
+        # Compute the reward for given action if the label is not None.
+        if self._label is not None:
             cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
                                          category=clazz_dim, anchors=anchors,
                                          OOB_err=OOB_err, terminal=terminal,

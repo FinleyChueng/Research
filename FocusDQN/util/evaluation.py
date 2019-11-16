@@ -8,29 +8,6 @@ import cv2
 # This metric is self-defined.
 # ------------------------------------------------------------
 
-# def Region1(data, label):
-#     completeTumor = np.zeros(data.shape)
-#     syntheticData = np.zeros(label.shape)
-#     completeTumor[data != 0] = 1
-#     syntheticData[label != 0] = 1
-#     return completeTumor, syntheticData
-#
-#
-# def Region2(data, label):
-#     completeTumor = np.zeros(data.shape)
-#     syntheticData = np.zeros(label.shape)
-#     completeTumor[np.logical_not(np.logical_or((data == 0), (data == 2)))] = 1
-#     syntheticData[np.logical_not(np.logical_or((label == 0), (label == 2)))] = 1
-#     return completeTumor, syntheticData
-#
-#
-# def Region3(data, label):
-#     completeTumor = np.zeros(data.shape)
-#     syntheticData = np.zeros(label.shape)
-#     completeTumor[data == 4] = 1
-#     syntheticData[label == 4] = 1
-#     return completeTumor, syntheticData
-
 def BRATS_Complete(pred, label):
     r'''
         The metrics for BRATS. Complete tumor.
@@ -90,8 +67,8 @@ def DICE_Bi(pred, label):
     if (pred_shape != lab_shape).any():
         raise Exception('The shape of pred and label must be equal !!!')
     # Transfer to binary clazz.
-    pred = pred.astype(pred.astype(np.bool), np.int64)
-    label = label.astype(label.astype(np.bool), np.int64)
+    pred = pred.astype(np.bool).astype(np.int64)
+    label = label.astype(np.bool).astype(np.int64)
     # Calculate.
     intersection = np.sum(pred * label)
     union = np.sum(pred) + np.sum(label)

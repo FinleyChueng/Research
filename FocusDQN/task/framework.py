@@ -212,10 +212,10 @@ class DeepQNetwork(DQN):
             self._env.switch_phrase('Test')
 
         # Check whether need additional iteration to deal with 3-D data.
-        if self._data_adapter.slice_3d <= 0:
+        if self._data_adapter.slices_3d <= 0:
             iter_3d = 1
         else:
-            iter_3d = self._data_adapter.slice_3d
+            iter_3d = self._data_adapter.slices_3d
 
         # Metrics.
         total_rewards = []  # rewards
@@ -249,31 +249,38 @@ class DeepQNetwork(DQN):
                     if is_validate:
                         it_reward.append(reward)
 
+                    # Current slice is finish.
                     if terminal:
-                        label_3d.append(label)
+                        if is_validate:
+                            label_3d.append(label)
                         pred_3d.append(segmentation)
                         break
-                # Render environment.
-                self._env.render(anim_type='video')
+                # Render environment. No need visualize each one.
+                if it % (iter_3d // 7):
+                    self._env.render(anim_type='video')
 
                 # Update turn metric.
                 turn_reward.append(np.sum(it_reward))
 
-            # Update total metric.
-            total_rewards.append(turn_reward)   # [turn, iter_3d]
-            label_3d = np.asarray(label_3d)
-            pred_3d = np.asarray(pred_3d)
-            brats_1 = eva.BRATS_Complete(pred=pred_3d, label=label_3d)
-            brats_2 = eva.BRATS_Core(pred=pred_3d, label=label_3d)
-            brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=label_3d)
-            brats_metrics.append([brats_1, brats_2, brats_3])   # [turn, 3]
-            cate_dice = []
-            for c in range(clazz_dim):
-                cate_pred = pred_3d == c
-                cate_lab = label_3d == c
-                cdice = eva.DICE_Bi(pred=cate_pred, label=cate_lab)
-                cate_dice.append(cdice)
-            dice_metrics.append(cate_dice)  # [turn, category]
+            # Update total metric or write the result according to the phrase.
+            if is_validate:
+                total_rewards.append(turn_reward)   # [turn, iter_3d]
+                label_3d = np.asarray(label_3d)
+                pred_3d = np.asarray(pred_3d)
+                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=label_3d)
+                brats_2 = eva.BRATS_Core(pred=pred_3d, label=label_3d)
+                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=label_3d)
+                brats_metrics.append([brats_1, brats_2, brats_3])   # [turn, 3]
+                cate_dice = []
+                for c in range(clazz_dim):
+                    cate_pred = pred_3d == c
+                    cate_lab = label_3d == c
+                    cdice = eva.DICE_Bi(pred=cate_pred, label=cate_lab)
+                    cate_dice.append(cdice)
+                dice_metrics.append(cate_dice)  # [turn, category]
+            else:
+                self._data_adapter.write_result(result=pred_3d, name=str(t))
+
         # ----------------------------- End of loop. -------------------------
 
         # Mean the metrics.
