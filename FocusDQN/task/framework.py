@@ -468,14 +468,15 @@ class DeepQNetwork(DQN):
                 lab_3d = []
                 for _2 in range(self._data_adapter.slices_3d // batch_size + 1):
                     val_imgs, val_labs = self._data_adapter.next_image_pair('Validate', batch_size=batch_size)
+                    la_l = val_imgs.shape[0]
                     feed_dict = {
                         # Origin input part.
-                        x1: val_imgs[:last_len],
-                        x2: SEG_prevs[:last_len],
-                        x3: position_infos[:last_len],
-                        x4: SEG_stages[:last_len],
-                        x5: focus_bboxes[:last_len],
-                        x6: COMP_results[:last_len]
+                        x1: val_imgs[:la_l],
+                        x2: SEG_prevs[:la_l],
+                        x3: position_infos[:la_l],
+                        x4: SEG_stages[:la_l],
+                        x5: focus_bboxes[:la_l],
+                        x6: COMP_results[:la_l]
                     }
                     preds = self._sess.run(o1, feed_dict=feed_dict)
                     pred_3d.extend(preds)
