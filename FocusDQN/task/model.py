@@ -834,7 +834,7 @@ class DqnAgent:
                 px_right += px_diff
                 # Generate pad vector.
                 pads = [[0, 0],
-                        [py_bot, py_up],
+                        [py_up, py_bot],
                         [px_left, px_right],
                         [0, 0]]
                 # Pad the tensor.

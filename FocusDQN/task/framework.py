@@ -480,7 +480,7 @@ class DeepQNetwork(DQN):
             # ---------------------------- End of core part ----------------------------
 
             # Finish the process of current image. Render.
-            self._env.render('video')
+            self._env.render(None)
 
             # Check whether to training or not.
             exec_train = (len(self._sample_storage) >= (batch_size // 2)) and \
