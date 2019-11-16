@@ -480,19 +480,22 @@ class DeepQNetwork(DQN):
                     preds = self._sess.run(o1, feed_dict=feed_dict)
                     pred_3d.extend(preds)
                     lab_3d.extend(val_labs)
-                    brats_1 = eva.BRATS_Complete(pred=pred_3d, label=lab_3d)
-                    brats_2 = eva.BRATS_Core(pred=pred_3d, label=lab_3d)
-                    brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=lab_3d)
-                    BRATSs.append([brats_1, brats_2, brats_3])
-                    dice = []
-                    for c in range(clazz_dim):
-                        cate_pred = pred_3d == c
-                        cate_lab = lab_3d == c
-                        dice.append(eva.DICE_Bi(pred=cate_pred, label=cate_lab))
-                    DICEs.append(dice)
                     # visual.
                     if self._pre_visutil is not None:
                         self._pre_visutil.visualize((val_imgs[0], val_labs[0], preds[0]), mode='Train')
+                # metric.
+                pred_3d = np.asarray(pred_3d)
+                lab_3d = np.asarray(lab_3d)
+                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=lab_3d)
+                brats_2 = eva.BRATS_Core(pred=pred_3d, label=lab_3d)
+                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=lab_3d)
+                BRATSs.append([brats_1, brats_2, brats_3])
+                dice = []
+                for c in range(clazz_dim):
+                    cate_pred = pred_3d == c
+                    cate_lab = lab_3d == c
+                    dice.append(eva.DICE_Bi(pred=cate_pred, label=cate_lab))
+                DICEs.append(dice)
             DICE = np.mean(np.asarray(DICEs), axis=0)      # category
             BRATS = np.mean(np.asarray(BRATSs), axis=0)    # 3
             return DICE, BRATS
