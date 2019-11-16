@@ -9,6 +9,7 @@ from task.model import DqnAgent
 from task.env import FocusEnv
 import tfmodule.util as tf_util
 import util.evaluation as eva
+from util.visualization import PictureVisual
 
 
 
@@ -109,6 +110,22 @@ class DeepQNetwork(DQN):
         pretrain_optimizer = tf.train.AdamOptimizer(pretrain_learning_rate)
         sloss = self._losses[self._name_space + '/SEG_loss']
         self._pre_op = pretrain_optimizer.minimize(sloss, global_step=self._pre_step)
+        # Visualization util for pre-train.
+        self._pre_visutil = None
+        anim_path = conf_others.get('animation_path', None)
+        if anim_path is not None:
+            conf_base = self._config['Base']
+            input_shape = conf_base.get('input_shape')[1:3]
+            suit_h = conf_base.get('suit_height')
+            suit_w = conf_base.get('suit_width')
+            clazz_dim = conf_base.get('classification_dimension')
+            self._pre_visutil = PictureVisual(image_height=input_shape[0],
+                                              image_width=input_shape[1],
+                                              result_categories=clazz_dim,
+                                              file_path=anim_path,
+                                              name_scope='SinSEG',
+                                              suit_height=suit_h,
+                                              suit_width=suit_w)
 
         # The summary writer for whole model.
         summary_path = conf_others.get('summary_path')
@@ -305,7 +322,7 @@ class DeepQNetwork(DQN):
                         pred_3d.append(segmentation)
                         break
                 # Render environment. No need visualize each one.
-                if it % (iter_3d // 3):
+                if it % (iter_3d // 6) == 0:
                     self._env.render(anim_type='video')
 
                 # Update turn metric.
@@ -387,6 +404,8 @@ class DeepQNetwork(DQN):
         # Get config.
         conf_base = self._config['Base']
         input_shape = conf_base.get('input_shape')[1:3]
+        suit_h = conf_base.get('suit_height')
+        suit_w = conf_base.get('suit_width')
         clazz_dim = conf_base.get('classification_dimension')
         conf_train = self._config['Training']
         batch_size = conf_train.get('batch_size', 32)
@@ -395,9 +414,10 @@ class DeepQNetwork(DQN):
         double_q = conf_dqn.get('double_dqn', None)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
+        CR_method = conf_cus.get('result_fusion', 'prob')
         conf_others = self._config['Others']
         save_steps = conf_others.get('save_steps', 1000)
-        save_steps *= 5
+        save_steps *= 4
         params_dir = conf_others.get('net_params')
 
         # Get origin input part.
@@ -430,6 +450,54 @@ class DeepQNetwork(DQN):
         else:
             raise ValueError('Unknown position information fusion method !!!')
 
+        # The sub-function used to "Validate". Meanwhile define some holders and data.
+        x6 = self._inputs[self._name_space + '/Complete_Result']
+        o1 = self._outputs[self._name_space + '/SEG_output']
+        if CR_method == 'logit' or CR_method == 'prob':
+            COMP_results = np.zeros((batch_size, suit_h, suit_w, clazz_dim), dtype=np.float32)
+        elif CR_method == 'mask':
+            COMP_results = np.zeros((batch_size, suit_h, suit_w), dtype=np.float32)
+        else:
+            raise ValueError('Unknown result fusion method !!!')
+        # Validate function.
+        def seg_validate(instance_num):
+            BRATSs = []
+            DICEs = []
+            for _1 in range(instance_num):
+                pred_3d = []
+                lab_3d = []
+                for _2 in range(self._data_adapter.slices_3d // batch_size + 1):
+                    val_imgs, val_labs = self._data_adapter.next_image_pair('Validate', batch_size=batch_size)
+                    feed_dict = {
+                        # Origin input part.
+                        x1: val_imgs[:last_len],
+                        x2: SEG_prevs[:last_len],
+                        x3: position_infos[:last_len],
+                        x4: SEG_stages[:last_len],
+                        x5: focus_bboxes[:last_len],
+                        x6: COMP_results[:last_len]
+                    }
+                    preds = self._sess.run(o1, feed_dict=feed_dict)
+                    pred_3d.extend(preds)
+                    lab_3d.extend(val_labs)
+                    brats_1 = eva.BRATS_Complete(pred=pred_3d, label=lab_3d)
+                    brats_2 = eva.BRATS_Core(pred=pred_3d, label=lab_3d)
+                    brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=lab_3d)
+                    BRATSs.append([brats_1, brats_2, brats_3])
+                    dice = []
+                    for c in range(clazz_dim):
+                        cate_pred = pred_3d == c
+                        cate_lab = lab_3d == c
+                        dice.append(eva.DICE_Bi(pred=cate_pred, label=cate_lab))
+                    DICEs.append(dice)
+                    # visual.
+                    if self._pre_visutil is not None:
+                        self._pre_visutil.visualize((val_imgs[0], val_labs[0], preds[0]), mode='Train')
+            DICE = np.mean(np.asarray(DICEs), axis=0)      # category
+            BRATS = np.mean(np.asarray(BRATSs), axis=0)    # 3
+            return DICE, BRATS
+        # ------------------------- end of sub-func ------------------------
+
         # Start to train.
         for ite in range(start_pos // batch_size, max_iteration // batch_size + 1):
             # Prepare the input batch.
@@ -437,17 +505,19 @@ class DeepQNetwork(DQN):
             if clazz_weights is not None:
                 weights = np.asarray([clazz_weights])
                 weights = weights * np.ones((batch_size, clazz_dim))
+            # The length of input batches, mainly for last slice.
+            last_len = images.shape[0]
             # Generate the basic feed dictionary lately used for training the "Segmentation" network.
             feed_dict = {
                 # Origin input part.
-                x1: images,
-                x2: SEG_prevs,
-                x3: position_infos,
-                x4: SEG_stages,
-                x5: focus_bboxes,
+                x1: images[:last_len],
+                x2: SEG_prevs[:last_len],
+                x3: position_infos[:last_len],
+                x4: SEG_stages[:last_len],
+                x5: focus_bboxes[:last_len],
                 # Loss part.
-                l1: labels,
-                l2: weights
+                l1: labels[:last_len],
+                l2: weights[:last_len]
             }
 
             # Execute the training operator for "Segmentation".
@@ -467,8 +537,8 @@ class DeepQNetwork(DQN):
                 s3 = self._summary[self._name_space + '/BRATS_metric']
                 out_summary = self._summary[self._name_space + '/MergeSummary']
                 # Execute "Validate".
-                reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
                 reward_list = 0
+                DICE_list, BRATS_list = seg_validate(2)
                 # Compute the summary value and add into statistic graph.
                 feed_dict[s1] = reward_list
                 feed_dict[s2] = DICE_list

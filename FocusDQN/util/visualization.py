@@ -11,7 +11,7 @@ class MaskVisual:
         Visualization of the procedure of operating mask of @class{ImSegEnv}
     '''
 
-    def __init__(self, fps, vision_filename_mask):
+    def __init__(self, fps, vision_path, name_scope):
         r'''
             The initialization method. Mainly declare the parameters used in
                 @class{~matplotlib.pyplot}
@@ -19,24 +19,25 @@ class MaskVisual:
         ----------------------------------------------------------------------------
         Parameters:
             fps: The FPS.
-            vision_filename_mask: Specify where to save the visulization file.
+            vision_path: Specify where to save the visualization file.
+            name_scope: For better distinguish file.
         '''
 
         # The file name mask used in "Train" phrase.
-        self._train_anim_fn_mask = vision_filename_mask + 'train/anim-%05d.'
-        self._train_result_fn_mask = vision_filename_mask + 'train/result-%05d.jpg'
+        self._train_anim_fn_mask = vision_path + 'train/' + name_scope + '-anim-%05d.'
+        self._train_result_fn_mask = vision_path + 'train/' + name_scope + '-result-%05d.jpg'
         # The index of current animation used in "Train" phrase.
         self._train_vision_index = -1
 
         # The file name mask used in "Validate" phrase.
-        self._val_anim_fn_mask = vision_filename_mask + 'validate/anim-%05d.'
-        self._val_result_fn_mask = vision_filename_mask + 'validate/result-%05d.jpg'
+        self._val_anim_fn_mask = vision_path + 'validate/' + name_scope + '-anim-%05d.'
+        self._val_result_fn_mask = vision_path + 'validate/' + name_scope + 'result-%05d.jpg'
         # The index of current animation used in "Validate" phrase.
         self._val_vision_index = -1
 
         # The file name mask used in "Inference" phrase.
-        self._test_anim_fn_mask = vision_filename_mask + 'test/anim-%05d.'
-        self._test_result_fn_mask = vision_filename_mask + 'test/result-%05d.jpg'
+        self._test_anim_fn_mask = vision_path + 'test/' + name_scope + '-anim-%05d.'
+        self._test_result_fn_mask = vision_path + 'test/' + name_scope + '-result-%05d.jpg'
         # The index of current animation used in "Inference" phrase.
         self._test_vision_index = -1
 
@@ -80,6 +81,158 @@ class MaskVisual:
 
 
 
+# Used for static image.
+class PictureVisual:
+    r'''
+        Used to visualize the static image.
+    '''
+
+    def __init__(self,
+                 image_height,
+                 image_width,
+                 result_categories,
+                 file_path,
+                 name_scope,
+                 suit_height=None,
+                 suit_width=None
+                 ):
+        r'''
+            Initialization.
+        '''
+
+        # Basic.
+        self._image_height = image_height
+        self._image_width = image_width
+        self._res_cate = result_categories
+        # Suit size.
+        self._suit_height = suit_height
+        self._suit_width = suit_width
+        # Normalize value.
+        self._normal_value = 255
+
+        # The file name mask used in "Train" phrase.
+        self._train_result_fn_mask = file_path + 'train/' + name_scope + '-result-%05d.jpg'
+        self._train_vision_index = -1
+        # The file name mask used in "Validate" phrase.
+        self._val_result_fn_mask = file_path + 'validate/' + name_scope + '-result-%05d.jpg'
+        self._val_vision_index = -1
+        # The file name mask used in "Inference" phrase.
+        self._test_result_fn_mask = file_path + 'test/' + name_scope + '-result-%05d.jpg'
+        self._test_vision_index = -1
+        # Finish.
+        return
+
+
+    def visualize(self, data, mode):
+        r'''
+            Visualize the data, that is, save the data in picture-form in file system.
+        '''
+
+        # Get elements.
+        image, label, segmentation = data
+
+        # Normalization.
+        t1 = self._normalization(image[:, :, 0], self._normal_value, max_val=self._res_cate)
+        t1c = self._normalization(image[:, :, 1], self._normal_value, max_val=self._res_cate)
+        t2 = self._normalization(image[:, :, 2], self._normal_value, max_val=self._res_cate)
+        f = self._normalization(image[:, :, 3], self._normal_value, max_val=self._res_cate)
+        label = self._normalization(label, self._normal_value, max_val=self._res_cate)
+        segmentation = self._normalization(segmentation, self._normal_value, max_val=self._res_cate)
+
+        # Draw the suit bbox for better visual.
+        _t1 = self.__draw_suit_bbox(t1)
+        _t1c = self.__draw_suit_bbox(t1c)
+        _t2 = self.__draw_suit_bbox(t2)
+        _f = self.__draw_suit_bbox(f)
+        _lab = self.__draw_suit_bbox(label)
+        _pred = self.__draw_suit_bbox(segmentation)
+
+        # Generate each row.
+        row_1st = np.concatenate((_t1, _t1c, _t2), axis=1)
+        row_2nd = np.concatenate((_f, _lab, _pred), axis=1)
+        # Concatenate all the rows.
+        result = np.concatenate((row_1st, row_2nd), axis=0)
+
+        # Specify the saving path.
+        if mode == 'Train':
+            self._train_vision_index += 1
+            result_file_name = self._train_result_fn_mask % self._train_vision_index
+        elif mode == 'Validate':
+            self._val_vision_index += 1
+            result_file_name = self._val_result_fn_mask % self._val_vision_index
+        elif mode == 'Test':
+            self._test_vision_index += 1
+            result_file_name = self._test_result_fn_mask % self._test_vision_index
+        else:
+            raise ValueError('Unknown mode value !!!')
+        # Save the result.
+        cv2.imwrite(result_file_name, result)
+
+        # Finish.
+        return
+
+
+    def _normalization(self, src, lower, upper=None, min_val=None, max_val=None):
+        r'''
+            Normalization.
+        '''
+        if upper is None:
+            upper = lower
+            lower = 0
+        min_v = np.min(src) if min_val is None else min_val
+        max_v = np.max(src) if max_val is None else max_val
+        denominator = max_v - min_v
+        if denominator == 0:
+            normal = np.zeros(np.shape(src))
+        else:
+            normal = (src - min_v) / (max_v - min_v) * (upper - lower) + lower
+        return normal
+
+    def __draw_suit_bbox(self, src, duplicate=True):
+        r'''
+            Draw the suit bbox if given the suit height and width.
+        '''
+
+        # Not specific, return the source image.
+        if self._suit_height is None and self._suit_width is None:
+            return src
+
+        # Duplicate the source image and processing on the duplication if flag is true.
+        if duplicate:
+            raw = src.copy()
+        else:
+            raw = src
+
+        # Draw config.
+        border_value = int(self._normal_value // 10)
+        border_width = 1
+
+        # offset height and width.
+        suit_height = self._suit_height if self._suit_height is not None else self._image_height
+        suit_width = self._suit_width if self._suit_width is not None else self._image_width
+        offset_h = (self._image_height - suit_height) // 2
+        offset_w = (self._image_width - suit_width) // 2
+
+        # Firstly get the four boundary. [y1, x1, y2, x2]
+        up = max(0, offset_h)
+        left = max(0, offset_w)
+        bottom = min(self._image_height, self._image_height - offset_h)
+        right = min(self._image_width, self._image_width - offset_w)
+
+        # Assign the left boundary in the source image.
+        raw[up: up + border_width, left: right] = border_value
+        # Assign the right boundary in the source image.
+        raw[bottom - border_width: bottom, left: right] = border_value
+        # Assign the up boundary in the source image.
+        raw[up: bottom, left: left + border_width] = border_value
+        # Assign the bottom boundary in the source image.
+        raw[up: bottom, right - border_width: right] = border_value
+
+        # Finish the drawing of bounding-box.
+        return raw
+
+
+
 # Exploit the @class{~moviepy.editor}.
 class MaskVisualVMPY(MaskVisual):
     r'''
@@ -91,7 +244,8 @@ class MaskVisualVMPY(MaskVisual):
                  image_height,
                  image_width,
                  result_categories,
-                 vision_filename_mask,
+                 vision_path,
+                 name_scope,
                  fps=25,
                  suit_height=None,
                  suit_width=None):
@@ -103,12 +257,16 @@ class MaskVisualVMPY(MaskVisual):
         Parameters:
             image_height: The height of image processed by DQN agent.
             image_width: The width of image processed by DQN agent.
-            animation_filename_mask: The filename mask of generated animation.
-            in_detail: Whether to show the detailed information.
+            result_categories: The category quantity.
+            vision_path: Specify where to save the result file.
+            name_scope: For better distinguish.
+            fps: The FPS for animation.
+            suit_height: The suit height for task.
+            suit_width: The suit width for task.
         '''
 
         # Normal Initialization.
-        MaskVisual.__init__(self, fps, vision_filename_mask)
+        MaskVisual.__init__(self, fps, vision_path, name_scope)
 
         # The image height and width processing by Agent.
         self._image_height = image_height

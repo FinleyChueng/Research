@@ -103,7 +103,8 @@ class FocusEnv:
                                                  result_categories=clazz_dim,
                                                  suit_height=suit_height,
                                                  suit_width=suit_width,
-                                                 vision_filename_mask=anim_path)
+                                                 vision_path=anim_path,
+                                                 name_scope='FocusEnv')
 
         # The flag indicating whether is in "Train", "Validate" or "Test" phrase.
         self._phrase = 'Train'  # Default in "Train"
