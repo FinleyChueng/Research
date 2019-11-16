@@ -395,7 +395,10 @@ class MaskVisualVMPY(MaskVisual):
         left = int(round(x1 * w))
         bottom = int(round(y2 * h))
         right = int(round(x2 * w))
-        return up, left, bottom, right
+        if ((bottom - up) == 0) or ((right - left) == 0):
+            return 0, 0, 1, 1
+        else:
+            return up, left, bottom, right
 
     def _draw_bbox(self, src, bbox, border_value, border_width=1, duplicate=True):
         r'''
@@ -554,6 +557,7 @@ class MaskVisualVMPY(MaskVisual):
         # Concatenate all the rows.
         frame = np.concatenate((row_1st, row_2nd, row_3rd), axis=0)
 
+        # Stack to generate 3-channels image.
         frame = np.stack((frame, frame, frame), axis=-1)
 
         # Finally return the frame.

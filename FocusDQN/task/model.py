@@ -828,8 +828,10 @@ class DqnAgent:
                 px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')     # Right
                 # Add rectify value to the "right" and "bottom" coz there's
                 #   deviation in the round operation.
-                py_diff = up_h - tf.cast(tf.round(tf.abs(oy2 - oy1) * up_h), 'int32') - py_up - py_bot
-                px_diff = up_w - tf.cast(tf.round(tf.abs(ox2 - ox1) * up_w), 'int32') - px_left - px_right
+                iy_h = tf.reduce_sum(tf.reduce_mean(tf.ones_like(y, dtype=tf.int32), axis=(0, 2, 3)))   # height of y
+                iy_w = tf.reduce_sum(tf.reduce_mean(tf.ones_like(y, dtype=tf.int32), axis=(0, 1, 3)))   # width of y
+                py_diff = up_h - iy_h - py_up - py_bot
+                px_diff = up_w - iy_w - px_left - px_right
                 py_bot += py_diff
                 px_right += px_diff
                 # Generate pad vector.
