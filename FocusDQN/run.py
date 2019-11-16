@@ -5,8 +5,8 @@ from dataset.adapter.bratsAdapter import *
 from util.visualization import *
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 
 
@@ -475,7 +475,7 @@ dqn = DeepQNetwork(config=config,
                    data_adapter=data_adapter)
 
 # Train.
-dqn.train(epochs=1, max_iteration=260*155)
+dqn.train(epochs=2, max_iteration=260*155)
 # Test.
 dqn.test(10, is_validate=False)
 

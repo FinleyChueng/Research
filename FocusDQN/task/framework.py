@@ -7,6 +7,7 @@ import tensorflow as tf
 from core.dqn import *
 from task.model import DqnAgent
 from task.env import FocusEnv
+import tfmodule.util as tf_util
 import util.evaluation as eva
 
 
@@ -47,6 +48,8 @@ class DeepQNetwork(DQN):
 
         # Define the model. (Mainly initialize the variable here.)
         self._model = DqnAgent(self._config, name_space=self._name_space)
+        # Show the quantity of parameters.
+        tf_util.show_all_variables()
 
         # Define the environment.
         self._env = FocusEnv(self._config, data_adapter=data_adapter)
@@ -95,9 +98,17 @@ class DeepQNetwork(DQN):
         share_learning_rate = tf.train.exponential_decay(learning_rate, self._global_step,
                                                          decay_iter, decay_rate, staircase=True)
         optimizer = tf.train.AdamOptimizer(share_learning_rate)
-        # Define the training operator.
+        # Define the training operator for "End-to-End".
         net_loss = self._losses[self._name_space + '/NET_loss']
         self._train_op = optimizer.minimize(net_loss, global_step=self._global_step)
+
+        # Define the training operator for single "Segmentation".
+        self._pre_step = tf.Variable(0, trainable=False, name='pretrain_step')
+        pretrain_learning_rate = tf.train.exponential_decay(learning_rate, self._pre_step,
+                                                            decay_iter, decay_rate, staircase=True)
+        pretrain_optimizer = tf.train.AdamOptimizer(pretrain_learning_rate)
+        sloss = self._losses[self._name_space + '/SEG_loss']
+        self._pre_op = pretrain_optimizer.minimize(sloss, global_step=self._pre_step)
 
         # The summary writer for whole model.
         summary_path = conf_others.get('summary_path')
@@ -132,8 +143,17 @@ class DeepQNetwork(DQN):
 
         # Get config.
         conf_train = self._config['Training']
+        batch_size = conf_train.get('batch_size', 32)
         epsilon_dict = conf_train.get('epsilon_dict', None)
         replay_iter = conf_train.get('replay_iter', 1)
+        pre_epochs = conf_train.get('customize_pretrain_epochs', 1)
+        conf_others = self._config['Others']
+        restore_from_bp = conf_others.get('restore_breakpoint', True)
+
+        # Check the train epochs validity. Coz we use the "Pre-train".
+        if epochs < pre_epochs:
+            raise Exception('The total epochs must no less than pre-train epochs !!! '
+                            'Please change the total epochs or pre-train epochs.')
 
         # Get or compute the epsilon dict here.
         if epsilon_dict is None:
@@ -143,16 +163,47 @@ class DeepQNetwork(DQN):
                 epsilon_dict[str(iv)] = 1.0 - iv
 
         # Translate to "iteration -> epsilon" form.
-        total_turns = epochs * max_iteration
+        total_turns = (epochs - pre_epochs) * max_iteration
         epsilon_book = []
         for k in epsilon_dict.keys():
             iter = int(float(k) * total_turns)
             epsilon_book.append((iter, epsilon_dict[k]))
         print('### --> Epsilon book: {}'.format(epsilon_book))
 
-        # Determine the start position if enable restore from last position.
-        conf_others = self._config['Others']
-        restore_from_bp = conf_others.get('restore_breakpoint', True)
+        # ---------------- Pre-train the "Segmentation" branch (model). ----------------
+        print('\n\nPre-training the SEGMENTATION model !!!')
+        # Determine the start position.
+        if restore_from_bp:
+            glo_step = int(self._global_step.eval(self._sess))
+            if glo_step != 0:
+                # Means it was in "End-to-end" phrase last time.
+                start_epoch = pre_epochs
+                start_iter = -1
+            else:
+                # Compute last iter.
+                pre_step = int(self._pre_step.eval(self._sess))
+                last_iter = pre_step * batch_size
+                # Compute the start epoch and iteration.
+                start_epoch = last_iter // max_iteration
+                start_iter = last_iter % max_iteration
+        else:
+            start_epoch = start_iter = 0
+        # Start train the "Segmentation" model.
+        for epoch in range(start_epoch, pre_epochs):
+            # Reset the start position of iteration.
+            self._data_adapter.reset_position(start_iter)
+            # Start training.
+            self._customize_pretrain(max_iteration, start_iter)
+            # Re-assign the start position iteration to zero.
+            #   Note that, only the first epoch is specified,
+            #   others start from zero.
+            start_iter = 0
+            # Print some info.
+            print('Finish the epoch {} for SEGMENTATION'.format(epoch))
+
+        # ---------------- Train the whole model many times. (Depend on epochs) ----------------
+        print('\n\nEnd-to-End Training !!!')
+        # Determine the start position.
         if restore_from_bp:
             # Compute last iter.
             glo_step = int(self._global_step.eval(self._sess))
@@ -162,10 +213,8 @@ class DeepQNetwork(DQN):
             start_iter = last_iter % max_iteration
         else:
             start_epoch = start_iter = 0
-
-        # Train the whole model many times. (Depend on epochs)
-        print('\n\nEnd-to-End Training !!!')
-        for epoch in range(start_epoch, epochs):
+        # Start train the whole model.
+        for epoch in range(start_epoch, epochs - pre_epochs):
             # Reset the start position of iteration.
             self._data_adapter.reset_position(start_iter)
             # Start training.
@@ -175,7 +224,7 @@ class DeepQNetwork(DQN):
             #   others start from zero.
             start_iter = 0
             # Print some info.
-            print('Finish the epoch {}'.format(epoch))
+            print('Finish the epoch {} for WHOLE'.format(epoch))
 
         # Finish the whole training phrase.
         return
@@ -256,7 +305,7 @@ class DeepQNetwork(DQN):
                         pred_3d.append(segmentation)
                         break
                 # Render environment. No need visualize each one.
-                if it % (iter_3d // 7):
+                if it % (iter_3d // 3):
                     self._env.render(anim_type='video')
 
                 # Update turn metric.
@@ -308,14 +357,14 @@ class DeepQNetwork(DQN):
         params_dir = conf_others.get('net_params')
         if params_dir is not None:
             if not params_dir.endswith('/'): params_dir += '/'
-            var_list = tf.trainable_variables()
-            g_list = tf.global_variables()
-            for v in g_list:
-                if 'global_step' in v.name:
-                    var_list.append(v)
-                    break
-            self._saver = tf.train.Saver(var_list=var_list)
-            # self._saver = tf.train.Saver()
+            # var_list = tf.trainable_variables()
+            # g_list = tf.global_variables()
+            # for v in g_list:
+            #     if 'global_step' in v.name:
+            #         var_list.append(v)
+            #         break
+            # self._saver = tf.train.Saver(var_list=var_list)
+            self._saver = tf.train.Saver()
             checkpoint_state = tf.train.get_checkpoint_state(params_dir)
             if checkpoint_state and checkpoint_state.model_checkpoint_path:
                 path = checkpoint_state.model_checkpoint_path
@@ -330,15 +379,114 @@ class DeepQNetwork(DQN):
         return
 
 
+    def _customize_pretrain(self, max_iteration, start_pos):
+        r'''
+            Pre-train the "Segmentation" network for better performance.
+        '''
+
+        # Get config.
+        conf_base = self._config['Base']
+        input_shape = conf_base.get('input_shape')[1:3]
+        clazz_dim = conf_base.get('classification_dimension')
+        conf_train = self._config['Training']
+        batch_size = conf_train.get('batch_size', 32)
+        clazz_weights = conf_train.get('clazz_weights', None)
+        conf_dqn = self._config['DQN']
+        double_q = conf_dqn.get('double_dqn', None)
+        conf_cus = self._config['Custom']
+        pos_method = conf_cus.get('position_info', 'map')
+        conf_others = self._config['Others']
+        save_steps = conf_others.get('save_steps', 1000)
+        save_steps *= 5
+        params_dir = conf_others.get('net_params')
+
+        # Get origin input part.
+        if double_q is None:
+            org_name = self._name_space
+        else:
+            org_name = double_q[0]
+        x1 = self._inputs[org_name + '/image']
+        x2 = self._inputs[org_name + '/prev_result']
+        x3 = self._inputs[org_name + '/position_info']
+        x4 = self._inputs[org_name + '/Segment_Stage']
+        x5 = self._inputs[org_name + '/Focus_Bbox']
+        # Get loss input part.
+        l1 = self._losses[self._name_space + '/GT_label']
+        l2 = self._losses[self._name_space + '/clazz_weights']
+        # Get loss value holder.
+        sloss = self._losses[self._name_space + '/SEG_loss']
+
+        # Fake data. (Focus bbox, SEG stage)
+        SEG_stages = [True,] * batch_size
+        focus_bboxes = np.asarray([[0.0, 0.0, 1.0, 1.0]])   # [[y1, x1, y2, x2]]
+        focus_bboxes = focus_bboxes * np.ones((batch_size, 4))
+        SEG_prevs = np.zeros((batch_size, input_shape[0], input_shape[1]))
+        if pos_method == 'map':
+            position_infos = np.ones((batch_size, input_shape[0], input_shape[1]))
+        elif pos_method == 'coord':
+            position_infos = focus_bboxes.copy()
+        elif pos_method == 'sight':
+            position_infos = focus_bboxes.copy()
+        else:
+            raise ValueError('Unknown position information fusion method !!!')
+
+        # Start to train.
+        for ite in range(start_pos // batch_size, max_iteration // batch_size + 1):
+            # Prepare the input batch.
+            images, labels, weights, _4 = self._data_adapter.next_image_pair('Train', batch_size=batch_size)
+            if clazz_weights is not None:
+                weights = np.asarray([clazz_weights])
+                weights = weights * np.ones((batch_size, clazz_dim))
+            # Generate the basic feed dictionary lately used for training the "Segmentation" network.
+            feed_dict = {
+                # Origin input part.
+                x1: images,
+                x2: SEG_prevs,
+                x3: position_infos,
+                x4: SEG_stages,
+                x5: focus_bboxes,
+                # Loss part.
+                l1: labels,
+                l2: weights
+            }
+
+            # Execute the training operator for "Segmentation".
+            _, v1_cost = self._sess.run([self._pre_op, sloss], feed_dict=feed_dict)
+
+            # Print some info. --------------------------------------------
+            self._logger.info("Iter {} --> SEG loss: {} ".format(ite, v1_cost))
+            # ------------------------------------------------------------
+
+            # Get the pretrain step lately used to determine whether to save model or not.
+            step = self._pre_step.eval()
+            # Calculate the summary to get the statistic graph.
+            if step > 0 and step % (save_steps * 5) == 0:
+                # Get summary holders.
+                s1 = self._summary[self._name_space + '/Reward']
+                s2 = self._summary[self._name_space + '/DICE']
+                s3 = self._summary[self._name_space + '/BRATS_metric']
+                out_summary = self._summary[self._name_space + '/MergeSummary']
+                # Execute "Validate".
+                reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
+                reward_list = 0
+                # Compute the summary value and add into statistic graph.
+                feed_dict[s1] = reward_list
+                feed_dict[s2] = DICE_list
+                feed_dict[s3] = BRATS_list
+                summary = self._sess.run(out_summary, feed_dict=feed_dict)
+                self._summary_writer.add_summary(summary, step)
+                self._summary_writer.flush()
+            # Save the model (parameters) within the fix period.
+            if step > 0 and step % save_steps == 0:
+                self._saver.save(self._sess, params_dir, 233)
+        # Finish.
+        return
+
+
     def _train(self, max_iteration, start_pos, epsilon_book):
         r'''
             End-to-end train the whole model.
-
-        :param images_per_epoch:
-        :return:
         '''
-
-        print('-----> Start the "End-to-End" training policy !!!')
 
         # Get config.
         conf_dqn = self._config['DQN']
@@ -625,7 +773,7 @@ class DeepQNetwork(DQN):
         dloss = self._losses[self._name_space + '/DQN_loss']
         nloss = self._losses[self._name_space + '/NET_loss']
 
-        # Generate the basic feed dictionary lately used for training the DQN agent.
+        # Generate the basic feed dictionary lately used for training the whole model.
         feed_dict = {
             # Origin input part.
             x1: images,
@@ -668,14 +816,13 @@ class DeepQNetwork(DQN):
         # Get the global step lately used to determine whether to save model or not.
         step = self._global_step.eval()
         # Calculate the summary to get the statistic graph.
-        if step > 0 and step % save_steps == 0:
+        if step > 0 and step % (save_steps * 5) == 0:
             # Get summary holders.
             s1 = self._summary[self._name_space + '/Reward']
             s2 = self._summary[self._name_space + '/DICE']
             s3 = self._summary[self._name_space + '/BRATS_metric']
             out_summary = self._summary[self._name_space + '/MergeSummary']
-            # Execute test environment to get the reward situation of current DQN model.
-            # cur_reward_list = self.test(10)
+            # Execute "Validate".
             reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
             # Compute the summary value and add into statistic graph.
             feed_dict[s1] = reward_list

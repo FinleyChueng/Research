@@ -150,12 +150,12 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
     # Get the height and width of the bounding-box.
     box_height = tf.round(tf.multiply(tf.to_float(cor_size[0]), bbox[:, 2] - bbox[:, 0]))
     box_width = tf.round(tf.multiply(tf.to_float(cor_size[1]), bbox[:, 3] - bbox[:, 1]))
-    # Avoid "Zero Scale".
-    box_height = tf.maximum(1, box_height)
-    box_width = tf.maximum(1, box_width)
     # Avoid "y1(x1) > y2(x2)".
     box_height = tf.cast(tf.abs(box_height), 'int32')   # [?]
     box_width = tf.cast(tf.abs(box_width), 'int32')     # [?]
+    # Avoid "Zero Scale".
+    box_height = tf.maximum(1, box_height)
+    box_width = tf.maximum(1, box_width)
 
     # The loop body function.
     def body_func(idx, y):
