@@ -28,7 +28,7 @@ def BRATS_Core(pred, label):
     syntheticData = np.zeros(label.shape)
     completeTumor[np.logical_not(np.logical_or((pred == 0), (pred == 2)))] = 1
     syntheticData[np.logical_not(np.logical_or((label == 0), (label == 2)))] = 1
-    v = DICE_Bi(pred, label)
+    v = DICE_Bi(completeTumor, syntheticData)
     return v
 
 
@@ -40,7 +40,7 @@ def BRATS_Enhance(pred, label):
     syntheticData = np.zeros(label.shape)
     completeTumor[pred == 4] = 1
     syntheticData[label == 4] = 1
-    v = DICE_Bi(pred, label)
+    v = DICE_Bi(completeTumor, syntheticData)
     return v
 
 

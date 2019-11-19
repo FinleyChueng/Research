@@ -454,6 +454,8 @@ class FocusEnv:
                 dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), self._RelDir_prev)
                 self._focus_bbox = np.asarray(dst_bbox)
                 self._time_step += 1
+            # Update visual info.
+            vis_reward = reward
         # -------------------------------- Core Part -----------------------------
 
         # Record the process.

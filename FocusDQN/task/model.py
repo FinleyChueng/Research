@@ -448,7 +448,7 @@ class DqnAgent:
 
             # Fuse (concat) the position vector if use "coord"-like position information.
             if pos_method == 'coord':
-                pos_info = self._inputs['position_info']
+                pos_info = self._inputs[name_space + '/position_info']
                 flat_tensor = tf.concat([flat_tensor, pos_info], axis=-1, name='fuse_pos_coord')  # [?, OC+4]
 
             # Pass through two fully connected layers.

@@ -49,8 +49,6 @@ class DeepQNetwork(DQN):
 
         # Define the model. (Mainly initialize the variable here.)
         self._model = DqnAgent(self._config, name_space=self._name_space)
-        # Show the quantity of parameters.
-        tf_util.show_all_variables()
 
         # Define the environment.
         self._env = FocusEnv(self._config, data_adapter=data_adapter)
@@ -68,16 +66,8 @@ class DeepQNetwork(DQN):
         # Declare the normal storage for segmentation sample.
         self._sample_storage = collections.deque()
 
-        # # session
-        # config = tf.ConfigProto()
-        # # 最多占gpu资源的70%
-        # config.gpu_options.per_process_gpu_memory_fraction=0.7
-        # # 开始不会给tensorflow全部gpu资源 而是按需增加
-        # config.gpu_options.allow_growth = True
-        # self._sess = tf.InteractiveSession(config=config)
-
         # session
-        self._sess = tf.InteractiveSession()
+        self._sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
         # # Use the @Util{tfdebug}...
         # from tensorflow.python import debug as tf_debug
         # # 使用tf_debug的wrapper来包裹原来的session，使得启动后能进入
@@ -93,6 +83,8 @@ class DeepQNetwork(DQN):
         self._losses = losses
         self._summary = summary
         self._visual = visual
+        # Show the quantity of parameters.
+        tf_util.show_all_variables()
 
         # Define a unified optimizer.
         self._global_step = tf.Variable(0, trainable=False, name='global_step')
@@ -416,8 +408,10 @@ class DeepQNetwork(DQN):
         pos_method = conf_cus.get('position_info', 'map')
         CR_method = conf_cus.get('result_fusion', 'prob')
         conf_others = self._config['Others']
-        save_steps = conf_others.get('save_steps', 1000)
+        save_steps = conf_others.get('save_steps', 100)
         save_steps *= 4
+        validate_steps = conf_others.get('validate_steps', 500)
+        validate_steps //= 4
         params_dir = conf_others.get('net_params')
 
         # Get origin input part.
@@ -532,9 +526,9 @@ class DeepQNetwork(DQN):
             # ------------------------------------------------------------
 
             # Get the pretrain step lately used to determine whether to save model or not.
-            step = self._pre_step.eval()
+            step = self._pre_step.eval(self._sess)
             # Calculate the summary to get the statistic graph.
-            if step > 0 and step % (save_steps * 5) == 0:
+            if step > 0 and step % validate_steps == 0:
                 # Get summary holders.
                 s1 = self._summary[self._name_space + '/Reward']
                 s2 = self._summary[self._name_space + '/DICE']
@@ -543,6 +537,9 @@ class DeepQNetwork(DQN):
                 # Execute "Validate".
                 reward_list = 0
                 DICE_list, BRATS_list = seg_validate(2)
+                # Print some info. --------------------------------------------
+                self._logger.info("Iter {} --> DICE: {}, BRATS: {} ".format(ite, DICE_list, BRATS_list))
+                # ------------------------------------------------------------
                 # Compute the summary value and add into statistic graph.
                 feed_dict[s1] = reward_list
                 feed_dict[s2] = DICE_list
@@ -757,7 +754,8 @@ class DeepQNetwork(DQN):
         conf_others = self._config['Others']
         # memory_size = conf_others.get('replay_memories')
         store_type = conf_others.get('sample_type', 'light')
-        save_steps = conf_others.get('save_steps', 1000)
+        save_steps = conf_others.get('save_steps', 100)
+        validate_steps = conf_others.get('validate_steps', 500)
         params_dir = conf_others.get('net_params')
 
         # ------------------------------- Data Preparation ------------------------
@@ -888,9 +886,9 @@ class DeepQNetwork(DQN):
 
         # ------------------------------- Save Model Parameters ------------------------
         # Get the global step lately used to determine whether to save model or not.
-        step = self._global_step.eval()
+        step = self._global_step.eval(self._sess)
         # Calculate the summary to get the statistic graph.
-        if step > 0 and step % (save_steps * 5) == 0:
+        if step > 0 and step % validate_steps == 0:
             # Get summary holders.
             s1 = self._summary[self._name_space + '/Reward']
             s2 = self._summary[self._name_space + '/DICE']
