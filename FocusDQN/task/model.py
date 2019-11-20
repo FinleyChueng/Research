@@ -188,6 +188,8 @@ class DqnAgent:
         # --------------------------------- "Input Justification" part. ------------------------------------
         # Get configuration for justification.
         conf_cus = self._config['Custom']
+        # Determine the input type.
+        input_type = conf_cus.get('input_type', 'whole')
         # Determine the introduction method of "Position Information".
         pos_method = conf_cus.get('position_info', 'map')
 
@@ -206,6 +208,15 @@ class DqnAgent:
 
             # The bounding-box indicating whether to focus on.
             focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
+
+            # The flag that indicates whether it's "Segment" or "Focus" stage.
+            segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None, ], name='Segment_Stage')
+
+            # Declare the function used to crop the specific bbox region of input tensor.
+            def region_crop(x, bbox, size, name):
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))
+                y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name=name + '_focus_crop')
+                return y
 
             # Define the "Position Information" placeholder.
             pos_name = 'position_info'
@@ -254,24 +265,30 @@ class DqnAgent:
                                                  dst_width=suit_w,
                                                  name='SFB_4input')
 
-            # Concat the tensors to generate input for whole model.
-            input_tensor = tf.concat([raw_image, prev_result], axis=-1, name='2E_input')
+            # Different fusion method for input according to input type.
+            if input_type == 'region':
+                # After declaring the public input part, it shall deal with the input tensor
+                #   according to the different stage (branch). That is:
+                # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
+                # 2. Introduce the position info if it's "Region Selection" stage with the
+                #       "sight" position info.
+                input_tensor = tf.where(segment_stage,
+                                        region_crop(raw_image, focus_bbox, [suit_h, suit_w], 'SE'),
+                                        raw_image if pos_method != 'sight'
+                                        else region_crop(raw_image, pos_info, [suit_h, suit_w], 'FO'),
+                                        name='1E_foInput')
+            elif input_type == 'WR':
+                # Concatenate the "Whole Perspective" with "Region Perspective".
+                input_tensor = region_crop(raw_image, focus_bbox, [suit_h, suit_w], '1E_foInput')
+                input_tensor = tf.concat([raw_image, input_tensor], axis=-1, name='WR_input')
+            elif input_type == 'whole':
+                # Do not need do something, use raw image is okay.
+                input_tensor = raw_image
+            else:
+                raise ValueError('Unknown input type !!!')
 
-            # After declaring the public input part, it shall deal with the input tensor
-            #   according to the different stage (branch). That is:
-            # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
-            # 2. Introduce the position info if it's "Region Selection" stage with the
-            #       "sight" position info.
-            segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None,], name='Segment_Stage')
-            def region_crop(x, bbox, size, name):
-                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:,0]))
-                y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name=name+'_focus_crop')
-                return y
-            input_tensor = tf.where(segment_stage,
-                                    region_crop(input_tensor, focus_bbox, [suit_h, suit_w], 'SE'),
-                                    input_tensor if pos_method != 'sight'
-                                    else region_crop(input_tensor, pos_info, [suit_h, suit_w], 'FO'),
-                                    name='2E_foInput')
+            # Concat the tensors to generate input for whole model.
+            input_tensor = tf.concat([input_tensor, prev_result], axis=-1, name='2E_input')
 
             # Concatenate the "Position Information" after "Focus Region" of whole tensor
             #   if the position information supplied in the "map"-form.
@@ -540,6 +557,7 @@ class DqnAgent:
         activation = conf_base.get('activation', 'relu')
         # Dropout (keep probability) for convolution and fully-connect operation.
         conv_kprob = conf_base.get('convolution_dropout', 1.0)
+        fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
         # Regularization Related.
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
@@ -556,6 +574,40 @@ class DqnAgent:
                                          name='gen_score_bi_0' + str(name_idx))
             return y
 
+        # Declare the weights generation function. Which used to generate different
+        #   weights (method) function according to structure.
+        def FPN_weights(x, cor_size, structure):
+            if structure == 'FPN-pW':
+                w = tf.reshape(x, [-1, cor_size[0], cor_size[1] * classification_dim, x.shape[-1]],
+                               name='FPN_pW_reshape')  # [?, h, w*cls, scales]
+                w = cus_layers.base_conv2d(w, x.shape[-1], 1, 1,
+                                           feature_normalization=fe_norm,
+                                           activation=activation,
+                                           keep_prob=conv_kprob,
+                                           regularizer=regularizer,
+                                           name_space='FPN_pW_1x1conv')
+                w = tf.nn.softmax(w, axis=-1, name='FPN_pW_softmax')
+                w = tf.reshape(w, [-1, cor_size[0], cor_size[1], classification_dim, x.shape[-1]],
+                               name='FPN_pW_weights')  # [?, h, w, cls, scales]
+            elif structure == 'FPN-fW' or structure == 'FPN-S':
+                w = tf.expand_dims(tf.reduce_mean(x, axis=(0, 1, 2, 3)), axis=0)  # [1, scales]
+                w = cus_layers.base_fc(w, int(x.shape[-1]),
+                                       feature_normalization=fe_norm,
+                                       activation=activation,
+                                       keep_prob=fc_kprob,
+                                       regularizer=regularizer,
+                                       name_space='FPN_wt')  # [1, scales]
+                w = tf.nn.softmax(w, axis=-1, name='FPN_fW_weights')  # [1, scales]
+                if up_structure == 'FPN-S':
+                    w = tf.one_hot(tf.argmax(w, axis=-1), depth=x.shape[-1],
+                                   name='FPN_S_weights')  # [1, scales]
+                w = tf.expand_dims(tf.expand_dims(tf.expand_dims(w, axis=0), axis=0),
+                                   axis=0, name='FPN_flat_w')  # [1, 1, 1, 1, scales]
+                w = tf.multiply(w, tf.ones_like(x), name='FPN_weights')     # [?, h, w, cls, scales]
+            else:
+                raise ValueError('Unknown FPN up-sample structure !!!')
+            return w
+
         # --------------------------------- "Segmentation" branch. ------------------------------------
         # Get configuration for ResNet
         conf_res = self._config['ResNet']
@@ -564,7 +616,8 @@ class DqnAgent:
         kernel_numbers = conf_res.get('kernel_numbers')
         layer_units = conf_res.get('layer_units')
         # Get parameters.
-        up_structure = conf_up.get('upsample_structure', 'raw-U')
+        skip_method = conf_up.get('skip_connection', 'raw')
+        up_structure = conf_up.get('upsample_structure', 'U-Net')
         up_method = conf_up.get('scale_up', 'ResV2')
         up_fuse = conf_up.get('upsample_fusion', 'concat')
         upres_layers = conf_up.get('upres_layers', 3)
@@ -579,6 +632,98 @@ class DqnAgent:
         score_chan = conf_up.get('score_chans', 16)
         fuse_score = conf_up.get('fuse_scores', False)
 
+        # Declare the function used to "Up-sample" and add "Skip Connection".
+        def up_block(x, scale, index, ds_idx, thres_id):
+            r'''
+                Generate the U-structure network, including: gradually up-sample
+                    and add "Skip Connection". Or, just "Up-sample".
+            '''
+            # Scale up the feature maps. Whether use the pure de-conv
+            #   or the "residual" de-conv.
+            y = cus_res.transition_layer(x, kernel_numbers[ds_idx],
+                                         scale_down=False,
+                                         scale_factor=scale,
+                                         structure=up_method,
+                                         feature_normalization=fe_norm,
+                                         activation=activation,
+                                         keep_prob=conv_kprob,
+                                         regularizer=regularizer,
+                                         name_space='Scale_Up0' + str(index + 1))  # [?, 2x, 2x, 0.5c]
+
+            # Add "Skip Connection" if specified.
+            if skip_method == 'raw':
+                # Use the raw down-sampled feature maps.
+                skip_conn = DS_feats[ds_idx]
+            elif skip_method == 'conv':
+                # Pass through a 1x1 conv to get the skip connection features.
+                raw_ds = DS_feats[ds_idx]
+                skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='skip_conv0' + str(index + 1))
+            elif skip_method == 'res':
+                # Pass through a residual layer to get the skip connection features.
+                raw_ds = DS_feats[ds_idx]
+                skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
+                                                   kernel_size=1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='skip_conv0' + str(index + 1))
+            elif skip_method == 'w/o':
+                # Do not use "Skip Connection".
+                skip_conn = None
+            else:
+                raise ValueError('Unknown "Skip Connection" method !!!')
+
+            # Now determine the features fusion method.
+            if skip_conn is not None:
+                if up_fuse == 'add':
+                    y = tf.add(y, skip_conn, name='skip_add0' + str(index + 1))  # [2x, 2x, 0.5c]
+                elif up_fuse == 'concat':
+                    y = tf.concat([y, skip_conn], axis=-1, name='skip_concat0' + str(index + 1))  # [2x, 2x, c]
+                else:
+                    raise ValueError('Unknown "Skip Feature" fusion method !!!')
+
+            # After up-sample, pass through the residual blocks to convolution.
+            if isinstance(upres_layers, int):
+                layer_num = upres_layers
+            elif upres_layers == 'same':
+                if index != thres_id:
+                    layer_num = layer_units[ds_idx] - 1
+                else:
+                    # The last layer is special. Coz the corresponding layer
+                    #   is max pooling, and it don't use any convolution.
+                    layer_num = conf_up.get('last_match', 3)
+            else:
+                raise ValueError('Unknown up-sample block layers !!!')
+            # Specify the layer for residual block. Note that, we may use 1x1 conv
+            #   if @{layer_num} is a string.
+            if isinstance(layer_num, int) and layer_num > 0:
+                y = cus_res.residual_block(y, y.shape[-1], layer_num,
+                                           feature_normalization=fe_norm,
+                                           activation=activation,
+                                           keep_prob=conv_kprob,
+                                           regularizer=regularizer,
+                                           name_space='UpResidual_conv0' + str(index + 1))
+            elif layer_num == '1x1conv':
+                y = cus_layers.base_conv2d(y, y.shape[-1], 1, 1,
+                                           feature_normalization=fe_norm,
+                                           activation=activation,
+                                           keep_prob=conv_kprob,
+                                           regularizer=regularizer,
+                                           name_space='Up1x1_conv0' + str(index + 1))
+            elif layer_num == 'w/o':
+                pass
+            else:
+                raise ValueError('Unknown last layer match method !!!')
+            # Finish block.
+            return y
+        # ----------------------------- end of up-block -----------------------------
+
         # Declare the loss holder (list).
         CEloss_tensors = []
 
@@ -586,98 +731,16 @@ class DqnAgent:
         SEG_name = name_space + '/SEG'
         with tf.variable_scope(SEG_name):
             # Just the traditional structure. Gradually build the block is okay.
-            if up_structure in ['raw', 'raw-U', 'conv-U', 'res-U']:
+            if up_structure == 'U-Net':
+                # Build the up-sample branch until "half-size".
                 US_tensor = FE_tensor
                 for idx in range(len(layer_units) // scale_exp):
-                    # Compute the index for corresponding down-sample tensor
-                    #   and layer units.
+                    # Compute the index for corresponding down-sample tensor and layer units.
                     cor_idx = - (idx + 1) * scale_exp - 1  # -1 for reverse. idx+1 for skip last one.
-
-                    # Scale up the feature maps. Whether use the pure de-conv
-                    #   or the "residual" de-conv.
-                    US_tensor = cus_res.transition_layer(US_tensor, kernel_numbers[cor_idx],
-                                                         scale_down=False,
-                                                         scale_factor=scale_factor,
-                                                         structure=up_method,
-                                                         feature_normalization=fe_norm,
-                                                         activation=activation,
-                                                         keep_prob=conv_kprob,
-                                                         regularizer=regularizer,
-                                                         name_space='Scale_Up0' + str(idx + 1))  # [?, 2x, 2x, 0.5c]
-
-                    # Add "Skip Connection" if specified.
-                    if up_structure == 'raw-U':
-                        # Use the raw down-sampled feature maps.
-                        skip_conn = DS_feats[cor_idx]
-                    elif up_structure == 'conv-U':
-                        # Pass through a 1x1 conv to get the skip connection features.
-                        raw_ds = DS_feats[cor_idx]
-                        skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='skip_conv0' + str(idx + 1))
-                    elif up_structure == 'res-U':
-                        # Pass through a residual layer to get the skip connection features.
-                        raw_ds = DS_feats[cor_idx]
-                        skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
-                                                           kernel_size=1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='skip_conv0' + str(idx + 1))
-                    elif up_structure == 'raw':
-                        # Do not use "Skip Connection".
-                        skip_conn = None
-                    else:
-                        raise ValueError('Unknown "Skip Connection" method !!!')
-
-                    # Now determine the features fusion method.
-                    if skip_conn is not None:
-                        if up_fuse == 'add':
-                            US_tensor = tf.add(US_tensor, skip_conn, name='skip_add0' + str(idx + 1))  # [2x, 2x, 0.5c]
-                        elif up_fuse == 'concat':
-                            US_tensor = tf.concat([US_tensor, skip_conn], axis=-1,
-                                                  name='skip_concat0' + str(idx + 1))  # [2x, 2x, c]
-                        else:
-                            raise ValueError('Unknown "Skip Feature" fusion method !!!')
-
-                    # After up-sample, pass through the residual blocks to convolution.
-                    if isinstance(upres_layers, int):
-                        layer_num = upres_layers
-                    elif upres_layers == 'same':
-                        # if idx != len(layer_units)-1:
-                        if idx != len(layer_units) // scale_exp - 1:
-                            layer_num = layer_units[cor_idx] - 1
-                        else:
-                            # The last layer is special. Coz the corresponding layer
-                            #   is max pooling, and it don't use any convolution.
-                            layer_num = conf_up.get('last_match', 3)
-                    else:
-                        raise ValueError('Unknown up-sample block layers !!!')
-                    # Specify the layer for residual block. Note that, we may use 1x1 conv
-                    #   if @{layer_num} is a string.
-                    if isinstance(layer_num, int) and layer_num > 0:
-                        US_tensor = cus_res.residual_block(US_tensor, US_tensor.shape[-1], layer_num,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='UpResidual_conv0' + str(idx + 1))
-                    elif layer_num == '1x1conv':
-                        US_tensor = cus_layers.base_conv2d(US_tensor, US_tensor.shape[-1], 1, 1,
-                                                           feature_normalization=fe_norm,
-                                                           activation=activation,
-                                                           keep_prob=conv_kprob,
-                                                           regularizer=regularizer,
-                                                           name_space='Up1x1_conv0' + str(idx + 1))
-                    elif layer_num == 'w/o':
-                        pass
-                    else:
-                        raise ValueError('Unknown last layer match method !!!')
-
+                    # Scale up the feature maps. That is, gradually add up-sample blocks.
+                    US_tensor = up_block(US_tensor, scale=scale_factor,
+                                         index=idx, ds_idx=cor_idx,
+                                         thres_id=len(layer_units) // scale_exp - 1)
                     # Pass through the scores block if enable "Fuse Score".
                     if fuse_score:
                         score_tensor = gen_scores(US_tensor, score_chan, idx + 1)
@@ -691,7 +754,6 @@ class DqnAgent:
 
                 # For conveniently usage.
                 half_UST = US_tensor  # [?, half, half, OC]
-
                 # Scale up to the original size.
                 org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
                                                    feature_normalization=fe_norm,
@@ -741,6 +803,87 @@ class DqnAgent:
                 # Rename to get the SEG tensor (before Softmax).
                 SEG_tensor = tf.identity(SMs_tensor, name='SEG_tensor')     # [?, h, w, cls]
 
+            # Each layer will be used to generate result. Gradually or skip to build blocks.
+            elif up_structure in ['FPN-pW', 'FPN-fW', 'FPN-S']:
+                # Build the up-sample branch until "half-size".
+                FPN_tensors = []
+                FPN_tensors.append(FE_tensor)
+                for bl_idx in range(len(layer_units) // scale_exp):
+                    BL_tensor = FPN_tensors[-1]
+                    for la_idx in range(scale_exp):
+                        # Compute the index for corresponding down-sample tensor and layer units.
+                        cor_idx = - bl_idx * scale_exp - (la_idx + 1) - 1  # -1 for reverse. idx+1 for skip last one.
+                        # Scale up the feature maps. That is, gradually add up-sample blocks.
+                        US_tensor = up_block(BL_tensor, scale=int(np.exp2(la_idx + 1)),
+                                             index=bl_idx * scale_exp + la_idx,
+                                             ds_idx=cor_idx,
+                                             thres_id=len(layer_units) - 1)
+                        # Add into BLOCK tensors.
+                        FPN_tensors.append(US_tensor)
+
+                # Scale up to the original size.
+                half_UST = FPN_tensors[-1]  # [?, half, half, OC]
+                org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='WS_tensor')
+                FPN_tensors.append(org_UST)
+                # Resize each feature maps of "FPN tensors" to the original size.
+                temp_T = []
+                for i, t in enumerate(FPN_tensors):
+                    t_shape = t.get_shape().as_list()[1:3]
+                    if t_shape[0] == suit_h or t_shape[1] == suit_w:
+                        org_t = t
+                    else:
+                        t_cls = cus_layers.base_conv2d(t, classification_dim, 1, 1,
+                                                       feature_normalization=fe_norm,
+                                                       activation=activation,
+                                                       keep_prob=conv_kprob,
+                                                       regularizer=regularizer,
+                                                       name_space='FPN_2cls' + str(i+1))
+                        org_t = tf.image.resize_bilinear(t_cls, [suit_h, suit_w], name='FPN_2org0' + str(i+1))
+                    temp_T.append(org_t)
+                FPN_tensors = temp_T
+
+                # Generate the weights for FPN tensors.
+                FPN_W = FPN_weights(tf.stack(FPN_tensors, axis=-1), cor_size=[suit_h, suit_w],
+                                    structure=up_structure)     # [?, h, w, cls, scales]
+                FPN_W = tf.reshape(FPN_W, [-1, suit_h, suit_w, classification_dim * len(FPN_tensors)],
+                                   name='FPN_weights_4D')   # [?, h, w, cls*scales]
+                FPN_tensors.append(FPN_W)   # for conveniently process.
+
+                # Get the "Focus Bbox" first.
+                dqn_names = self._config['DQN'].get('double_dqn', None)
+                if dqn_names is not None:
+                    stage_prefix = dqn_names[0]
+                else:
+                    stage_prefix = self._name_space
+                focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']
+                origin_h, origin_w = self._config['Base'].get('input_shape')[1:3]
+                focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, suit_h, suit_w, name='sca_FB')
+                # Fuse results (logits) of each scale into one logit.
+                def FPN_fuse(x, bbox, cor_size):
+                    temp = []
+                    for i, xi in enumerate(x):
+                        yi = net_util.pad_2up(xi, bbox, cor_size, name='FPN_pad0'+str(i+1))  # [1, h, w, cls]
+                        temp.append(yi)
+                    y = tf.stack(temp[:-1], axis=-1, name='FPN_stack')  # [1, h, w, cls, scales]
+                    w = tf.reshape(temp[-1],
+                                   [temp[-1].shape[0], cor_size[0], cor_size[1], classification_dim, len(x[:-1])],
+                                   name='FPN_weights_5D')   # [1, h, w, cls, scales]
+                    y = tf.reduce_sum(tf.multiply(y, w), axis=-1, name='FPN_logits')  # [1, h, w, cls]
+                    return y
+                # Crop and pad zero to get the FPN logits and then fuse them.
+                SEG_tensor = net_util.batch_resize_to_bbox_for_op(
+                    FPN_tensors, bbox=focus_bbox, cor_size=[suit_h, suit_w],
+                    resize_method=['crop'] * len(FPN_tensors), op_func=FPN_fuse,
+                    output_shape=org_UST.get_shape().as_list()[1:],
+                    name='SEG_tensor')  # [?, h, w, cls]
+                # Independently return the segmentation logits, so that we can flexibly deal with it.
+                SEG_logits = SEG_tensor
+
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
@@ -781,15 +924,15 @@ class DqnAgent:
         conf_base = self._config['Base']
         input_shape = conf_base.get('input_shape')
         classification_dim = conf_base.get('classification_dimension')
+        # Get the shape of "Segmentation" branch. Actually is "Suit" size.
+        up_h = conf_base.get('suit_height')
+        up_w = conf_base.get('suit_width')
 
         # --------------------------------- "Result Fusion" part. ------------------------------------
         # Get fusion method.
         conf_cus = self._config['Custom']
         fusion_method = conf_cus.get('result_fusion', 'prob')
-
-        # Get the shape of "Segmentation" branch. Actually is "Suit" size.
-        up_h = conf_base.get('suit_height')
-        up_w = conf_base.get('suit_width')
+        logit_type = conf_cus.get('result_tensor', 'complete')
 
         # Get the "Focus Bounding-box" holder.
         conf_dqn = self._config['DQN']
@@ -810,46 +953,28 @@ class DqnAgent:
             focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, up_h, up_w, name='sca_FB')
 
             # Declare the padding function used to pad the region-tensor to the original up-sample size.
-            def pad_2up(x, bbox):
-                # Get data.
+            def restore_2up(x, bbox, cor_size):
                 y = x[0]  # [1, h, w, c]
-                oy1 = bbox[0]
-                ox1 = bbox[1]
-                oy2 = bbox[2]
-                ox2 = bbox[3]
-                # Compute pad size.
-                py_up = tf.minimum(oy1, oy2) - 0.0
-                py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')   # Up
-                py_bot = 1.0 - tf.maximum(oy1, oy2)
-                py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')     # Bottom
-                px_left = tf.minimum(ox1, ox2) - 0.0
-                px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')   # Left
-                px_right = 1.0 - tf.maximum(ox1, ox2)
-                px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')     # Right
-                # Add rectify value to the "right" and "bottom" coz there's
-                #   deviation in the round operation.
-                iy_h = tf.reduce_sum(tf.reduce_mean(tf.ones_like(y, dtype=tf.int32), axis=(0, 2, 3)))   # height of y
-                iy_w = tf.reduce_sum(tf.reduce_mean(tf.ones_like(y, dtype=tf.int32), axis=(0, 1, 3)))   # width of y
-                py_diff = up_h - iy_h - py_up - py_bot
-                px_diff = up_w - iy_w - px_left - px_right
-                py_bot += py_diff
-                px_right += px_diff
-                # Generate pad vector.
-                pads = [[0, 0],
-                        [py_up, py_bot],
-                        [px_left, px_right],
-                        [0, 0]]
-                # Pad the tensor.
-                y = tf.pad(y, pads)
-                y = tf.reshape(y, [1, up_h, up_w, y.shape[-1]])
+                y = net_util.pad_2up(y, bbox, cor_size, name='Restore_2up')
                 return y
 
-            # Bi-linear resize and pad zero to get the region tensor.
-            REGION_tensor = net_util.batch_resize_to_bbox_for_op(
-                [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
-                resize_method=['bilinear'], op_func=pad_2up,
-                output_shape=SEG_tensor.get_shape().as_list()[1:],
-                name='Region_tensor')   # [?, h, w, cls]
+            # Different transition method according to the "Logit Tensor Type".
+            if logit_type in ['bbox-bi', 'bbox-crop']:
+                # Bi-resize when the logit tensor is "bbox-bi" type.
+                if logit_type == 'bbox-crop':
+                    resize_methods = ['crop']
+                else:
+                    resize_methods = ['bilinear']
+                # Resize and pad zero to get the region tensor.
+                REGION_tensor = net_util.batch_resize_to_bbox_for_op(
+                    [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
+                    resize_method=resize_methods, op_func=restore_2up,
+                    output_shape=SEG_tensor.get_shape().as_list()[1:],
+                    name='Region_tensor')   # [?, h, w, cls]
+            elif logit_type == 'complete':
+                REGION_tensor = tf.identity(SEG_tensor, name='Region_tensor')
+            else:
+                raise ValueError('Unknown segmentation logit type !!!')
 
             # Fusion according to different method. (Including declare the "Complete Result")
             if fusion_method == 'logit':
@@ -920,7 +1045,7 @@ class DqnAgent:
 
             # Print some information.
             print('### Finish "Result Fusion" (name scope: {}). '
-                  'The output shape: {}, the justified shape: {}'.format(
+                  'The raw input shape: {}, the justified shape: {}'.format(
                 name_space, SEG_tensor.shape, SEG_output.shape))
 
             # Return the segmentation result and the fusion value for next iteration.
@@ -1013,15 +1138,18 @@ class DqnAgent:
         # Get configuration.
         conf_base = self._config['Base']
         conf_train = self._config['Training']
+        conf_cus = self._config['Custom']
 
         # Get detailed parameters.
         input_shape = conf_base.get('input_shape')
         suit_h = conf_base.get('suit_height')
         suit_w = conf_base.get('suit_width')
         classification_dim = conf_base.get('classification_dimension')
-        supv_method = conf_train.get('segmentation_supervision', 'dilate')
         score_factor = conf_train.get('score_loss_factor', 1.0)
         sample_share = conf_train.get('sample_share', False)
+        crop_method = conf_cus.get('size_matcher', 'crop')
+        logit_type = conf_cus.get('result_tensor', 'complete')
+        supv_method = conf_cus.get('segmentation_supervision', 'dilate')
 
         # Get the stage prefix for conveniently inferring inputs holders.
         conf_dqn = self._config['DQN']
@@ -1045,8 +1173,6 @@ class DqnAgent:
                 # Temporarily expand a dimension for conveniently processing.
                 GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')   # [?, h, w, 1]
                 # Match the size.
-                conf_cus = self._config['Custom']
-                crop_method = conf_cus.get('size_matcher', 'crop')
                 if crop_method == 'crop':
                     # Crop to target size.
                     GT_label = tf.image.resize_image_with_crop_or_pad(GT_label, suit_h, suit_w)
@@ -1066,18 +1192,20 @@ class DqnAgent:
             if len(GT_label.shape) != 4:
                 GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')   # [?, h, w, 1]
 
-            # Different operation procedure according to the "Supervision Method".
-            if supv_method == 'dilate':
-                # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
-                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
-                GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
-                                                    method='nearest',
-                                                    name='focus_label')     # [?, h, w, 1]
-            elif supv_method == 'erode':
-                # Don't need special process for label here.
-                pass
-            else:
-                raise ValueError('Unknown segmentation supervision method !!!')
+            # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
+            if logit_type == 'bbox-bi':
+                # Different operation procedure according to the "Supervision Method".
+                if supv_method == 'dilate':
+                    # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
+                    bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                    GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
+                                                        method='nearest',
+                                                        name='focus_label')     # [?, h, w, 1]
+                elif supv_method == 'erode':
+                    # Don't need special process for label here.
+                    pass
+                else:
+                    raise ValueError('Unknown segmentation supervision method !!!')
 
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
@@ -1099,65 +1227,92 @@ class DqnAgent:
                     tf.expand_dims(sample_4SEG, axis=-1), axis=-1), axis=-1)    # [?, 1, 1, 1]
                 clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')    # [?, h, w, cls]
 
-            # Different loss operation procedure according to the "Supervision Method".
-            # Dilate the label.
-            if supv_method == 'dilate':
+            # Different loss calculation according to the "Segmentation Logits Type".
+            #   1) logits for "Bbox" region.
+            if logit_type in ['bbox-bi', 'bbox-crop']:
+                # Different loss operation procedure according to the "Supervision Method".
+                # --> Dilate the label.
+                if supv_method == 'dilate':
+                    # The "bbox-crop" result tensor should use "Erode" supervision method.
+                    if logit_type == 'bbox-crop':
+                        raise NotImplementedError('The "dilate" supervision method for "bbox-crop"'
+                                                  ' result type is not implemented !!!')
+                    # Recover label to the original dimension.
+                    GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
+                    GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
+                    # Reduce dimension of clazz weights.
+                    clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
+                    # The single segmentation loss.
+                    fix_loss = tf.losses.sparse_softmax_cross_entropy(
+                        labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
+                    # Recursively calculate the loss.
+                    additional_loss = 0.
+                    for idx, logits in enumerate(CEloss_tensors):
+                        additional_loss += tf.losses.sparse_softmax_cross_entropy(
+                            labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
+                # --> "Erode" the segmentation tensor.
+                elif supv_method == 'erode':
+                    # Declare the region loss function.
+                    def region_loss(x, bbox, cor_size):
+                        # Get candidates.
+                        lab, logit, w = x
+                        # Recover label to the original dimension and dtype.
+                        lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
+                        lab = tf.cast(lab, 'int32')     # [1, h, w]
+                        # Reduce dimension of clazz weights.
+                        w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
+                        # Cross-Entropy loss.
+                        y = tf.losses.sparse_softmax_cross_entropy(labels=lab, logits=logit, weights=w)
+                        return y
+                    # Decide the corresponding size for "Focus Bounding-box".
+                    if suit_h != input_shape[1] or suit_w != input_shape[2]:
+                        cor_size = [suit_h, suit_w]
+                    else:
+                        cor_size = input_shape[1:3]
+                    # Decide the tensor resize methods tuple for loss calculation.
+                    if logit_type == 'bbox-crop':
+                        resize_methods = ['crop', 'crop', 'crop']
+                    else:
+                        resize_methods = ['crop', 'bilinear', 'crop']
+                    # The single segmentation loss.
+                    fix_loss = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_logits, clazz_weights],
+                                                                    bbox=focus_bbox, cor_size=cor_size,
+                                                                    resize_method=resize_methods,
+                                                                    op_func=region_loss,
+                                                                    output_shape=None,
+                                                                    name='FIX_loss')
+                    # Recursively calculate the loss.
+                    additional_loss = 0.
+                    for idx, logits in enumerate(CEloss_tensors):
+                        additional_loss += net_util.batch_resize_to_bbox_for_op(
+                            [GT_label, logits, clazz_weights],
+                            bbox=focus_bbox, cor_size=cor_size,
+                            resize_method=resize_methods,
+                            op_func=region_loss, output_shape=None,
+                            name='addition_loss0'+str(idx+1)
+                        )
+                # Invalid value.
+                else:
+                    raise ValueError('Unknown segmentation supervision method !!!')
+
+            # 2) use the complete logits.
+            elif logit_type == 'complete':
                 # Recover label to the original dimension.
                 GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
                 GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
                 # Reduce dimension of clazz weights.
                 clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
-
                 # The single segmentation loss.
                 fix_loss = tf.losses.sparse_softmax_cross_entropy(
                     labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-
                 # Recursively calculate the loss.
                 additional_loss = 0.
                 for idx, logits in enumerate(CEloss_tensors):
                     additional_loss += tf.losses.sparse_softmax_cross_entropy(
                         labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
-            # "Erode" the segmentation tensor.
-            elif supv_method == 'erode':
-                # Declare the region loss function.
-                def region_loss(x, bbox):
-                    # Get candidates.
-                    lab, logit, w = x
-                    # Recover label to the original dimension and dtype.
-                    lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
-                    lab = tf.cast(lab, 'int32')     # [1, h, w]
-                    # Reduce dimension of clazz weights.
-                    w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
-                    # Cross-Entropy loss.
-                    y = tf.losses.sparse_softmax_cross_entropy(labels=lab, logits=logit, weights=w)
-                    return y
-                # Decide the corresponding size for "Focus Bounding-box".
-                if suit_h != input_shape[1] or suit_w != input_shape[2]:
-                    cor_size = [suit_h, suit_w]
-                else:
-                    cor_size = input_shape[1:3]
 
-                # The single segmentation loss.
-                fix_loss = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_logits, clazz_weights],
-                                                                bbox=focus_bbox, cor_size=cor_size,
-                                                                resize_method=['crop', 'bilinear', 'crop'],
-                                                                op_func=region_loss,
-                                                                output_shape=None,
-                                                                name='FIX_loss')
-
-                # Recursively calculate the loss.
-                additional_loss = 0.
-                for idx, logits in enumerate(CEloss_tensors):
-                    additional_loss += net_util.batch_resize_to_bbox_for_op(
-                        [GT_label, logits, clazz_weights],
-                        bbox=focus_bbox, cor_size=cor_size,
-                        resize_method=['crop', 'bilinear', 'crop'],
-                        op_func=region_loss, output_shape=None,
-                        name='addition_loss0'+str(idx+1)
-                    )
-            # Invalid value.
             else:
-                raise ValueError('Unknown segmentation supervision method !!!')
+                raise ValueError('Unknown segmentation logits type !!!')
 
             # Add the two parts as the final classification loss.
             SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')

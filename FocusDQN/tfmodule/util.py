@@ -178,7 +178,7 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
                 raise ValueError('Unknown resize method !!!')
             candidates.append(cand)
         # Custom operation.
-        sub_y = op_func(candidates, bbox[idx])
+        sub_y = op_func(candidates, bbox[idx], cor_size)
         # Check validity.
         if len(y.shape) != len(sub_y.shape) or y.shape[1:] != sub_y.shape[1:]:
             raise ValueError('Invalid sub_y shape ({}), must be same as the y ({}) !!!'
@@ -219,6 +219,62 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
         loop_vars=[index, y],
         name=name)
     # Get the final batch processed tensor.
+    return y
+
+
+def pad_2up(x, bbox, cor_size, name, padding_values=0):
+    r'''
+        Padding the tensor of "Bounding-box" region size (with '0') to the given up-sample shape.
+
+    Parameters:
+        x: The tensor waits for batch process.
+        bbox: The bounding-box tensor, indicates the bbox size.
+        cor_size: The corresponding size of the bounding-box.
+        padding_values: The padding values for fix holes.
+        name: The operation (output tensor) name.
+
+    Return:
+        The tensor after bbox-resize and custom operation, whose shape is output_shape.
+    '''
+    # Check validity.
+    if not isinstance(x, tf.Tensor) or len(x.shape) != 4:
+        raise TypeError('The x must be 4-D tensor !!!')
+    if not isinstance(bbox, tf.Tensor) or len(bbox.shape) != 1 or bbox.shape[0] != 4:
+        raise TypeError('The bbox must be [4,] Tensor !!!')
+    if not isinstance(cor_size, list) or len(cor_size) != 2:
+        raise TypeError('The cor_size must be 2-element list !!!')
+    # Get the up-sample height and width.
+    up_h, up_w = cor_size
+    # Get four boundary coord in "Normalized" form.
+    oy1 = bbox[0]
+    ox1 = bbox[1]
+    oy2 = bbox[2]
+    ox2 = bbox[3]
+    # Compute pad size.
+    py_up = tf.minimum(oy1, oy2) - 0.0
+    py_up = tf.cast(tf.round(tf.to_float(up_h) * py_up), 'int32')   # Up
+    py_bot = 1.0 - tf.maximum(oy1, oy2)
+    py_bot = tf.cast(tf.round(tf.to_float(up_h) * py_bot), 'int32')     # Bottom
+    px_left = tf.minimum(ox1, ox2) - 0.0
+    px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')   # Left
+    px_right = 1.0 - tf.maximum(ox1, ox2)
+    px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')     # Right
+    # Add rectify value to the "right" and "bottom" coz there's
+    #   deviation in the round operation.
+    iy_h = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(0, 2, 3)))   # height of y
+    iy_w = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(0, 1, 3)))   # width of y
+    py_diff = up_h - iy_h - py_up - py_bot
+    px_diff = up_w - iy_w - px_left - px_right
+    py_bot += py_diff
+    px_right += px_diff
+    # Generate pad vector.
+    pads = [[0, 0],
+            [py_up, py_bot],
+            [px_left, px_right],
+            [0, 0]]
+    # Pad the tensor.
+    y = tf.pad(x, pads, constant_values=padding_values)
+    y = tf.reshape(y, [y.shape[0], up_h, up_w, y.shape[-1]], name=name)
     return y
 
 
