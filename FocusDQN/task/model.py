@@ -4,6 +4,7 @@ import numpy as np
 import tfmodule.layer as cus_layers
 import tfmodule.residual as cus_res
 import tfmodule.util as net_util
+import tfmodule.losses as cus_loss
 import tfmodule.metrics as cus_metric
 
 
@@ -1121,8 +1122,10 @@ class DqnAgent:
 
         # Calculate the segmentation loss.
         SEG_loss = self.__upsample_loss(SEG_logits, CEloss_tensors, name_space=self._name_space)
+        # Calculate the reward for current candidates actions.
+        DQN_rewards = self.__reward_calculation(name_space=self._name_space)
         # Calculate the DQN loss.
-        DQN_loss = self.__reinforcement_loss(DQN_output, name_space=self._name_space)
+        DQN_loss = self.__reinforcement_loss(DQN_output, DQN_rewards, name_space=self._name_space)
 
         # Add the two parts as the whole loss for model.
         conf_train = self._config['Training']
@@ -1172,6 +1175,8 @@ class DqnAgent:
         net_util.package_tensor(self._losses, SEG_loss)
         net_util.package_tensor(self._losses, DQN_loss)
         net_util.package_tensor(self._losses, NET_loss)
+        # Package the reward tensors into dictionary.
+        net_util.package_tensor(self._losses, DQN_rewards)
 
         # Generate the summaries for visualization.
         self.__gen_summary(name_space=self._name_space)
@@ -1188,7 +1193,7 @@ class DqnAgent:
 
     def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
         r'''
-            Generate (Cross-Entropy) loss for the "Segmentation" branch.
+            Generate (Cross-Entropy or DICE) loss for the "Segmentation" branch.
         '''
 
         # Get configuration.
@@ -1202,7 +1207,6 @@ class DqnAgent:
         suit_w = conf_base.get('suit_width')
         classification_dim = conf_base.get('classification_dimension')
         score_factor = conf_train.get('score_loss_factor', 1.0)
-        sample_share = conf_train.get('sample_share', False)
         crop_method = conf_cus.get('size_matcher', 'crop')
         logit_type = conf_cus.get('result_tensor', 'complete')
         supv_method = conf_cus.get('segmentation_supervision', 'dilate')
@@ -1215,20 +1219,24 @@ class DqnAgent:
             stage_prefix = dqn_names[0]
         else:
             stage_prefix = self._name_space
+        # Get the "Focus Bounding-box" used to crop "Focus" region in label.
+        focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
 
-        # ---------------------- Definition of UN cross-entropy loss ------------------------
+        # ---------------------- Definition of UN loss (cross-entropy or dice) ------------------------
         LOSS_name = name_space + '/SegLoss'
         with tf.variable_scope(LOSS_name):
+            # The clazz weights used to deal with the "Class imbalance".
+            clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
+                                                         name='clazz_weights')  # [?, cls]
+
             # Placeholder of ground truth segmentation.
             GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
                                                     name='GT_label')  # [?, h, w]
-            # Get the "Focus Bounding-box" used to crop "Focus" region in label.
-            focus_bbox = self.__mediates[stage_prefix+'/Scale_FoBbox']
             # Also need to crop label if size do not match. Meanwhile re-assign
             #   the coordinates of "Focus Bounding-box".
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
                 # Temporarily expand a dimension for conveniently processing.
-                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')   # [?, h, w, 1]
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')  # [?, h, w, 1]
                 # Match the size.
                 if crop_method == 'crop':
                     # Crop to target size.
@@ -1240,7 +1248,7 @@ class DqnAgent:
                     raise ValueError('Unknown size match method !!!')
             # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
             if len(GT_label.shape) != 4:
-                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')   # [?, h, w, 1]
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')  # [?, h, w, 1]
 
             # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
             if logit_type == 'bbox-bi':
@@ -1257,9 +1265,7 @@ class DqnAgent:
                 else:
                     raise ValueError('Unknown segmentation supervision method !!!')
 
-            # The class weights is used to deal with the "Sample Imbalance" problem.
-            clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
-                                                         name='clazz_weights')  # [?, cls]
+            # Different process to clazz weights and loss func.
             if loss_type == 'CE':
                 cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
                                      classification_dim, name='one_hot_label')    # [?, h, w, cls]
@@ -1274,24 +1280,9 @@ class DqnAgent:
                 clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_logits),
                                             name='rect_weights')  # [?, h, w, cls]
                 # Determine the loss function we used to calculate loss for segmentation.
-                loss_func = cus_metric.DICE
+                loss_func = cus_loss.dice_loss
             else:
                 raise ValueError('Unknown segmentation loss type !!!')
-
-
-
-
-
-            # # Multiply the mask (stage flag) to filter the losses (samples) that don't
-            # #   belongs to "Segmentation" branch if not enable "Sample Share".
-            # # Here we can multiply it with class weights instead of the final loss.
-            # if not sample_share:
-            #     # Generate filter mask.
-            #     sample_4SEG = tf.to_float(self._inputs[stage_prefix+'/Segment_Stage'], name='sample_4SEG')  # [?]
-            #     # Filter.
-            #     sample_4SEG = tf.expand_dims(tf.expand_dims(
-            #         tf.expand_dims(sample_4SEG, axis=-1), axis=-1), axis=-1)    # [?, 1, 1, 1]
-            #     clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')    # [?, h, w, cls]
 
             # Different loss calculation according to the "Segmentation Logits Type".
             #   1) logits for "Bbox" region.
@@ -1329,7 +1320,7 @@ class DqnAgent:
                         # Reduce dimension of clazz weights.
                         if loss_type == 'CE':
                             w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
-                        # Cross-Entropy loss.
+                        # Calculate loss.
                         y = loss_func(labels=lab, logits=logit, weights=w)
                         return y
                     # Decide the corresponding size for "Focus Bounding-box".
@@ -1393,7 +1384,138 @@ class DqnAgent:
             return SEG_loss
 
 
-    def __reinforcement_loss(self, DQN_output, name_space):
+    def __reward_calculation(self, name_space):
+        r'''
+            Calculate the rewards for all actions for conveniently use. It will be
+                used in both "Inference" and "Training" operation.
+        '''
+
+        # Get configuration.
+        conf_base = self._config['Base']
+        conf_dqn = self._config['DQN']
+
+        # Get detailed parameters.
+        input_shape = conf_base.get('input_shape')[1:3]
+        clazz_dim = conf_base.get('classification_dimension')
+        reward_form = conf_dqn.get('reward_form', 'SDR-DICE')
+        err_punish = conf_dqn.get('err_punish', -3.0)
+        terminal_dice = conf_dqn.get('terminal_dice_threshold', 0.85)
+        terminal_recall = conf_dqn.get('terminal_recall_threshold', 0.85)
+        terminal_value = conf_dqn.get('terminal_reward', 3.0)
+
+        # Get the stage prefix for conveniently inferring inputs holders.
+        dqn_names = conf_dqn.get('double_dqn', None)
+        if dqn_names is not None:
+            stage_prefix = dqn_names[0]
+        else:
+            stage_prefix = self._name_space
+
+        # Get the holders.
+        focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']     # focus bbox
+        clazz_weights = self._losses[self._name_space + '/clazz_weights']   # [?, cls]
+        GT_label = self._losses[self._name_space + '/GT_label']     # [?, h, w]
+        SEG_result = self._outputs[self._name_space + '/SEG_output']    # [?, h, w]
+
+        # ---------------------- Definition of UN cross-entropy loss ------------------------
+        LOSS_name = name_space + '/RewardCal'
+        with tf.variable_scope(LOSS_name):
+            # Translate to "one hot" form.
+            GT_label = tf.one_hot(GT_label, depth=clazz_dim, name='one_hot_label')  # [?, h, w, cls]
+            SEG_result = tf.one_hot(SEG_result, depth=clazz_dim, name='one_hot_pred')  # [?, h, w, cls]
+            # Filter class weights.
+            clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+                                           name='expa_CW')  # [?, 1, 1, cls]
+            clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_result),
+                                        name='rect_weights')  # [?, h, w, cls]
+            # Declare the reward function.
+            def remain_value(x, bbox, cor_size):
+                lab, pred, w = x
+                dice = cus_metric.DICE(labels=lab, predictions=pred, weights=w)  # [1]
+                # Use reverse form.
+                y = 1. - dice   # [1]
+                return y
+
+            # Calculate value for current "Focus Bbox".
+            current_value = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_result, clazz_weights],
+                                                                 bbox=focus_bbox, cor_size=input_shape,
+                                                                 resize_method=['crop', 'crop', 'crop'],
+                                                                 op_func=remain_value,
+                                                                 output_shape=[],
+                                                                 name='Cur_Value')  # [?]
+
+            # ---------------------- Start compute each candidates ------------------------
+            # The flag vector indicates whether the input candidate bounding-box is "Bbox-Error".
+            BBOX_err = net_util.placeholder_wrapper(self._losses, tf.bool, [None, self._action_dim - 1],
+                                                    name='BBOX_err')    # [?, acts-1]
+            # The candidates bounding-box (anchors) for next time-step.
+            candidates_bbox = net_util.placeholder_wrapper(self._losses, tf.float32, [None, self._action_dim - 1, 4],
+                                                           name='Candidates_Bbox')  # [?, acts-1, 4]
+
+            # Expand to add one dimension.
+            indt_5d = tf.ones([1, self._action_dim - 1, 1, 1, 1])
+            cand_label = tf.expand_dims(GT_label, axis=1) * indt_5d     # [?, acts-1, h, w, cls]
+            cand_result = tf.expand_dims(SEG_result, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
+            cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
+            # Translate to 4-D tensors.
+            oh, ow, oc = GT_label.get_shape().as_list()[1:]      # [h, w, cls]
+            cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])     # [?*a, h, w, cls]
+            cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])   # [?*a, h, w, cls]
+            cand_weights = tf.reshape(cand_weights, [-1, oh, ow, oc])     # [?*a, h, w, cls]
+            candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])    # [?*a, 4]
+
+            # Calculate value for next candidates.
+            candidates_value = net_util.batch_resize_to_bbox_for_op([cand_label, cand_result, cand_weights],
+                                                                    bbox=candidates_bbox, cor_size=input_shape,
+                                                                    resize_method=['crop', 'crop', 'crop'],
+                                                                    op_func=remain_value,
+                                                                    output_shape=[],
+                                                                    name='Cand_Value')  # [?]
+            candidates_value = tf.reshape(candidates_value, [-1, self._action_dim - 1],
+                                          name='Candidates_Value')  # [?, acts-1]
+
+            # Use the difference of remain value between "Candidates" and "Current Bbox".
+            if reward_form == 'SDR-DICE':
+                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
+                                                name='Candidates_diff')     # [?, acts-1]
+                candidates_reward = tf.sign(candidates_reward, name='Candidates_Raw')    # [?, acts-1]
+            elif reward_form == 'DR-DICE':
+                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
+                                                name='Candidates_Raw')  # [?, acts-1]
+            else:
+                raise ValueError('Unknown reward form !!!')
+
+            # Filter the error punishment.
+            candidates_reward = tf.where(BBOX_err, err_punish * tf.ones_like(candidates_reward),
+                                         candidates_reward,
+                                         name='Candidates_Reward')  # [?, acts-1]
+
+            # ---------------------- Compute reward for terminal situation ------------------------
+            # Check whether "Dice" reaches the threshold.
+            cur_dice = tf.subtract(1.0, current_value, name='Current_Dice')     # [?]
+            dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='Reach_Dice')   # [?]
+            # Check whether "Recall" reaches the threshold.
+            cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, scope='Current_Recall')  # [?]
+            recall_reach = tf.greater_equal(cur_recall, terminal_recall, name='Reach_Recall')   # [?]
+            # Determine the reward for "Terminal" action.
+            reach_thres = tf.logical_and(dice_reach, recall_reach, name='Reach_Thres')  # [?]
+            terminal_reward = tf.where(reach_thres,
+                                       terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
+                                       -terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
+                                       name='Terminal_Reward')  # [?]
+
+            # Generate final reward.
+            DQN_rewards = tf.concat([candidates_reward, tf.expand_dims(terminal_reward, axis=-1)],
+                                    axis=-1, name='final_reward')  # [?, acts]
+            DQN_rewards = tf.stop_gradient(DQN_rewards, name='DQN_Rewards')
+
+            # Print some information.
+            print('### Finish the rewards calculation of DQN candidates bbox, Shape: {}'.format(DQN_rewards.shape))
+
+            # Finish calculating reward for DQN.
+            return DQN_rewards
+
+
+    def __reinforcement_loss(self, DQN_output, DQN_rewards, name_space):
         r'''
             Generate (L2-regression) loss for "DQN (Region Selection)" branch.
         '''
@@ -1417,10 +1539,13 @@ class DqnAgent:
 
             # Only use selected Q values for DRQN. Coz in the "Future Q values" we use the max value.
             pred_q_vals = tf.reduce_sum(tf.multiply(DQN_output, pred_action), axis=-1,
-                                        name='prediction_Q_values')    # [?]
+                                        name='prediction_Q_values')     # [?]
+            # Only use the selected rewards, too.
+            pred_rewards = tf.reduce_sum(tf.multiply(DQN_rewards, pred_action), axis=-1,
+                                         name='prediction_rewards')     # [?]
 
             # The difference between prediction and target Q values.
-            q_diff = tf.subtract(target_q_vals, pred_q_vals, name='Q_diff')  # [?]
+            q_diff = tf.subtract(tf.add(target_q_vals, pred_rewards), pred_q_vals, name='Q_diff')   # [?]
 
             # Multiply the mask (stage flag) to filter the losses (samples) that don't
             #   belongs to "Segmentation" branch if not enable "Sample Share".
@@ -1482,6 +1607,8 @@ class DqnAgent:
             merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'SEG_Loss'))
             tf.summary.scalar('DQN_Loss', self._losses[name_space+'/DQN_loss'])
             merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DQN_Loss'))
+            tf.summary.scalar('Training_Reward', self._losses[name_space+'/DQN_Rewards'])
+            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Training_Reward'))
 
             # Custom define some metric to show.
             rewards = net_util.placeholder_wrapper(self._summary, tf.float32, None, name='Reward')
@@ -1498,7 +1625,7 @@ class DqnAgent:
                 merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'BRATS_'+str(b+1)))
 
             # Merge all the summaries.
-            summaries = tf.summary.merge(merge_list)
+            summaries = tf.summary.merge(merge_list, name='Summaries')
             net_util.package_tensor(self._summary, summaries)
 
             # Print some information.

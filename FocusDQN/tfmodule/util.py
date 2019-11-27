@@ -137,8 +137,8 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
     if output_shape is None:
         pass
     else:
-        if not isinstance(output_shape, list) or len(output_shape) != 3:
-            raise TypeError('The output_shape must be either None or 3-element list !!!')
+        if not isinstance(output_shape, list):
+            raise TypeError('The output_shape must be either None or list !!!')
     if not isinstance(resize_method, list):
         raise TypeError('The resize_method must be a list consists of method names !!!')
     for m in resize_method:
@@ -196,8 +196,11 @@ def batch_resize_to_bbox_for_op(x, bbox, cor_size, resize_method, op_func, outpu
     if output_shape is None:
         y = 0.
     else:
-        bt_ind = tf.reduce_mean(tf.zeros_like(x[0]), axis=(1, 2, 3), keepdims=True)    # [?, 1, 1, 1]
-        os_ind = tf.expand_dims(tf.zeros(output_shape), axis=0)     # [1, h, w, c]
+        bt_ind = tf.reduce_mean(tf.zeros_like(x[0]), axis=(1, 2, 3), keepdims=True)  # [?, 1, 1, 1]
+        if len(output_shape) == 0:
+            os_ind = tf.zeros([1,])     # [1,]
+        else:
+            os_ind = tf.expand_dims(tf.zeros(output_shape), axis=0)     # [1, h, w, c]
         dim_diff = len(output_shape) - (len(bt_ind.shape) - 1)
         if dim_diff > 0:  # match
             for _ in range(dim_diff):
