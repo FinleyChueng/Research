@@ -4,6 +4,7 @@ import numpy as np
 import tfmodule.layer as cus_layers
 import tfmodule.residual as cus_res
 import tfmodule.util as net_util
+import tfmodule.metrics as cus_metric
 
 
 
@@ -33,6 +34,9 @@ class DqnAgent:
         self._summary = {}
         # The visualization holder. (Option)
         self._visual = {}
+
+        # The mediate holders used in coding.
+        self.__mediates = {}
 
         # Determine the action dimension according to the config.
         conf_dqn = self._config['DQN']
@@ -148,15 +152,17 @@ class DqnAgent:
         input_tensor = self.__input_justify(name_space)
         # Extract feature maps.
         FE_tensor, DS_feats = self.__feature_extract(input_tensor, name_space)
-        # Select next region to deal with. (Generate the DQN output)
-        DQN_output = self.__region_selection(FE_tensor, action_dim, name_space)
         # Segment current image (patch). (Generate the segmentation branch)
         if with_segmentation:
             SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
             # Fuse the previous (complete) and current (region) segmentation result.
             SEG_output, FUSE_result = self.__result_fusion(SEG_tensor, self._name_space)
         else:
+            # No need the two holders.
             SEG_logits = CEloss_tensors = None
+        # Select next region to deal with. (Generate the DQN output)
+        SUIT_result = self.__mediates[self._name_space + '/SEG_suit_output']
+        DQN_output = self.__region_selection(FE_tensor, SUIT_result, action_dim, name_space)
 
         # Package some outputs.
         net_util.package_tensor(self._outputs, DQN_output)
@@ -263,7 +269,9 @@ class DqnAgent:
                                                  src_width=input_shape[2],
                                                  dst_height=suit_h,
                                                  dst_width=suit_w,
-                                                 name='SFB_4input')
+                                                 name='Scale_FoBbox')
+                # Package the scaled "Focus Bbox" into the mediate holders.
+                net_util.package_tensor(self.__mediates, focus_bbox)
 
             # Different fusion method for input according to input type.
             if input_type == 'region':
@@ -388,147 +396,6 @@ class DqnAgent:
             return FE_tensor, DS_feats
 
 
-    def __region_selection(self, FE_tensor, action_dim, name_space):
-        r'''
-            Region selection branch. Which is actually a DQN head.
-                It's used to select the next region for precisely processing.
-
-            The input is the deep feature maps extracted by
-                "Feature Extraction" backbone.
-        '''
-
-        # Get detailed configuration.
-        conf_base = self._config['Base']
-        conf_train = self._config['Training']
-        # Feature normalization method and activation function.
-        fe_norm = conf_base.get('feature_normalization', 'batch')
-        activation = conf_base.get('activation', 'relu')
-        # Dropout (keep probability) for convolution and fully-connect operation.
-        conv_kprob = conf_base.get('convolution_dropout', 1.0)
-        fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
-        # Regularization Related.
-        regularize_coef = conf_train.get('regularize_coef', 0.0)
-        regularizer = tf_layers.l2_regularizer(regularize_coef)
-
-        # --------------------------------- "Region Selection" (DQN) branch. ------------------------------------
-        # Get configuration for DQN.
-        conf_dqn = self._config['DQN']
-        # Get the dimension reduction method.
-        reduce_dim = conf_dqn.get('reduce_dim', 'residual')
-        # Check whether enable "Dueling Network" or not.
-        dueling_network = conf_dqn.get('dueling_network', True)
-
-        # Check for the introduction method of "Position Information".
-        conf_cus = self._config['Custom']
-        pos_method = conf_cus.get('position_info', 'map')
-
-        # Start definition.
-        DQN_name = name_space + '/DQN'
-        with tf.variable_scope(DQN_name):
-            # Scale down the feature maps according to the specific method.
-            if reduce_dim == 'conv':
-                # Use "Convolution" to reduce dimension.
-                redc_tensor = cus_layers.base_conv2d(FE_tensor, 1024, 3, 2,
-                                                     feature_normalization=fe_norm,
-                                                     activation=activation,
-                                                     keep_prob=conv_kprob,
-                                                     regularizer=regularizer,
-                                                     name_space='reduce_dim01')  # [?, 4, 4, 1024]
-                redc_tensor = cus_layers.base_conv2d(redc_tensor, 512, 3, 2,
-                                                     feature_normalization=fe_norm,
-                                                     activation=activation,
-                                                     keep_prob=conv_kprob,
-                                                     regularizer=regularizer,
-                                                     name_space='reduce_dim02')  # [?, 2, 2, 512]
-            elif reduce_dim == 'residual':
-                # Use "residual" structure to reduce dimension.
-                redc_tensor = cus_res.transition_layer(FE_tensor, 1024,
-                                                       feature_normalization=fe_norm,
-                                                       activation=activation,
-                                                       keep_prob=conv_kprob,
-                                                       regularizer=regularizer,
-                                                       name_space='reduce_dim01')  # [?, 4, 4, 1024]
-                redc_tensor = cus_res.transition_layer(redc_tensor, 512,
-                                                       feature_normalization=fe_norm,
-                                                       activation=activation,
-                                                       keep_prob=conv_kprob,
-                                                       regularizer=regularizer,
-                                                       name_space='reduce_dim02')  # [?, 2, 2, 512]
-            else:
-                raise ValueError('Unknown reduce dimension method for DQN !!!')
-
-            # Flatten the tensor to 1-D vector.
-            fdim = 1
-            for d in redc_tensor.shape[1:]:
-                fdim *= int(d)
-            flat_tensor = tf.reshape(redc_tensor, [-1, fdim], name='flatten')  # [?, OC]   default: 2048
-
-            # Fuse (concat) the position vector if use "coord"-like position information.
-            if pos_method == 'coord':
-                pos_info = self._inputs[name_space + '/position_info']
-                flat_tensor = tf.concat([flat_tensor, pos_info], axis=-1, name='fuse_pos_coord')  # [?, OC+4]
-
-            # Pass through two fully connected layers.
-            fc01_tensor = cus_layers.base_fc(flat_tensor, 1024,
-                                             feature_normalization=fe_norm,
-                                             activation=activation,
-                                             keep_prob=fc_kprob,
-                                             regularizer=regularizer,
-                                             name_space='FC01')  # [?, 1024]
-            fc02_tensor = cus_layers.base_fc(fc01_tensor, 1024,
-                                             feature_normalization=fe_norm,
-                                             activation=activation,
-                                             keep_prob=fc_kprob,
-                                             regularizer=regularizer,
-                                             name_space='FC02')  # [?, 1024]
-
-            # Build the DRQN header according to the "Dueling Network" mode or not.
-            if dueling_network:
-                # Separate the feature map produced by "FC-layer" into the "State" and "Action" branches.
-                fc02vec_shape = int(fc02_tensor.shape[-1])
-                bch_shape = fc02vec_shape // 2
-                state_bch, action_bch = tf.split(fc02_tensor,
-                                                 [bch_shape, fc02vec_shape - bch_shape],
-                                                 axis=-1,
-                                                 name='branch_split')  # [-1, h_size/2]
-                # Build the "State" branch.
-                state_tensor = cus_layers.base_fc(state_bch, 1,
-                                                  feature_normalization=fe_norm,
-                                                  activation=activation,
-                                                  keep_prob=fc_kprob,
-                                                  regularizer=regularizer,
-                                                  name_space='state_value')  # [?, 1]
-                # Build the "Action" branch.
-                action_tensor = cus_layers.base_fc(action_bch, action_dim,
-                                                   feature_normalization=fe_norm,
-                                                   activation=activation,
-                                                   keep_prob=fc_kprob,
-                                                   regularizer=regularizer,
-                                                   name_space='action_value')  # [?, act_dim]
-                # Mean the "Action" (Advance) branch.
-                norl_Adval = tf.subtract(action_tensor,
-                                         tf.reduce_mean(action_tensor, axis=-1, keepdims=True),
-                                         name='advanced_value')  # [?, act_dim]
-                # Add the "State" value and "Action" value to obtain the final output.
-                DQN_output = tf.add(state_tensor, norl_Adval, name='DQN_output')  # [?, act_dim]
-            # Not enable "Dueling" structure. Directly pass through a FC-layer.
-            else:
-                # The normal mode, do not need to split into two branches.
-                DQN_output = cus_layers.base_fc(fc02_tensor, action_dim,
-                                                feature_normalization=fe_norm,
-                                                activation=activation,
-                                                keep_prob=fc_kprob,
-                                                regularizer=regularizer,
-                                                name_space='DQN_output')  # [?, act_dim]
-
-            # Print some information.
-            print('### Finish "DQN Head" (name scope: {}). The output shape: {}'.format(
-                name_space, DQN_output.shape))
-
-            # Return the outputs of DQN, which is the result for region value.
-            return DQN_output
-
-
     def __segmentation(self, FE_tensor, DS_feats, name_space):
         r'''
             Segmentation branch. Which is actually a up-sample head.
@@ -561,6 +428,14 @@ class DqnAgent:
         # Regularization Related.
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
+
+        # Get the "Focus Bbox" first.
+        dqn_names = self._config['DQN'].get('double_dqn', None)
+        if dqn_names is not None:
+            stage_prefix = dqn_names[0]
+        else:
+            stage_prefix = self._name_space
+        focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
 
         # Declare the scores fusion block. Pass through a 1x1 conv and bilinear.
         def gen_scores(x, out_chans, name_idx):
@@ -604,6 +479,21 @@ class DqnAgent:
                 w = tf.expand_dims(tf.expand_dims(tf.expand_dims(w, axis=0), axis=0),
                                    axis=0, name='FPN_flat_w')  # [1, 1, 1, 1, scales]
                 w = tf.multiply(w, tf.ones_like(x), name='FPN_weights')     # [?, h, w, cls, scales]
+            elif structure == 'FPN-bbox':
+                p = cor_size[0] // FE_tensor.get_shape().as_list()[1]
+                p = int(np.log2(p))
+                p = [1/np.exp2(r+1) for r in range(p)]
+                p.append(0.)
+                p = tf.constant([p], dtype=tf.float32)  # [1, scales]
+                bh = tf.expand_dims(focus_bbox[:, 2] - focus_bbox[:, 0], axis=-1)   # [?, 1]
+                bw = tf.expand_dims(focus_bbox[:, 3] - focus_bbox[:, 1], axis=-1)   # [?, 1]
+                ph = tf.greater_equal(bh, p)    # [?, scales]
+                pw = tf.greater_equal(bw, p)    # [?, scales]
+                pr = tf.to_int32(tf.logical_or(ph, pw))     # [?, scales]
+                w = tf.one_hot(tf.argmin(pr, axis=-1), depth=p.shape[-1])   # [?, scales]
+                w = tf.expand_dims(tf.expand_dims(tf.expand_dims(w, axis=1), axis=1),
+                                   axis=1, name='FPN_bbox_w')  # [?, 1, 1, 1, scales]
+                w = tf.multiply(w, tf.ones_like(x), name='FPN_weights')  # [?, h, w, cls, scales]
             else:
                 raise ValueError('Unknown FPN up-sample structure !!!')
             return w
@@ -804,7 +694,7 @@ class DqnAgent:
                 SEG_tensor = tf.identity(SMs_tensor, name='SEG_tensor')     # [?, h, w, cls]
 
             # Each layer will be used to generate result. Gradually or skip to build blocks.
-            elif up_structure in ['FPN-pW', 'FPN-fW', 'FPN-S']:
+            elif up_structure in ['FPN-pW', 'FPN-fW', 'FPN-S', 'FPN-bbox']:
                 # Build the up-sample branch until "half-size".
                 FPN_tensors = []
                 FPN_tensors.append(FE_tensor)
@@ -854,15 +744,6 @@ class DqnAgent:
                                    name='FPN_weights_4D')   # [?, h, w, cls*scales]
                 FPN_tensors.append(FPN_W)   # for conveniently process.
 
-                # Get the "Focus Bbox" first.
-                dqn_names = self._config['DQN'].get('double_dqn', None)
-                if dqn_names is not None:
-                    stage_prefix = dqn_names[0]
-                else:
-                    stage_prefix = self._name_space
-                focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']
-                origin_h, origin_w = self._config['Base'].get('input_shape')[1:3]
-                focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, suit_h, suit_w, name='sca_FB')
                 # Fuse results (logits) of each scale into one logit.
                 def FPN_fuse(x, bbox, cor_size):
                     temp = []
@@ -923,6 +804,8 @@ class DqnAgent:
         # Get basic configuration.
         conf_base = self._config['Base']
         input_shape = conf_base.get('input_shape')
+        origin_h = input_shape[1]
+        origin_w = input_shape[2]
         classification_dim = conf_base.get('classification_dimension')
         # Get the shape of "Segmentation" branch. Actually is "Suit" size.
         up_h = conf_base.get('suit_height')
@@ -941,17 +824,11 @@ class DqnAgent:
             stage_prefix = dqn_names[0]
         else:
             stage_prefix = self._name_space
-        focus_bbox = self._inputs[stage_prefix+'/Focus_Bbox']
+        focus_bbox = self.__mediates[stage_prefix+'/Scale_FoBbox']
 
         # Start definition.
         RF_name = name_space + '/ResFuse'
         with tf.variable_scope(RF_name):
-            # Get original size for image.
-            origin_h = input_shape[1]
-            origin_w = input_shape[2]
-            # Scale the "Focus Bounding-box".
-            focus_bbox = net_util.scale_bbox(focus_bbox, origin_h, origin_w, up_h, up_w, name='sca_FB')
-
             # Declare the padding function used to pad the region-tensor to the original up-sample size.
             def restore_2up(x, bbox, cor_size):
                 y = x[0]  # [1, h, w, c]
@@ -1022,6 +899,9 @@ class DqnAgent:
             else:
                 raise ValueError('Unknown result fusion method !!!')
 
+            # Package the suitable segmentation result in the mediate holders for lately usage.
+            net_util.package_tensor(self.__mediates, SEG_output)    # [?, sh, sw]
+
             # Recover the segmentation output (suit) size to the original size if don't matched.
             if up_h != origin_h or up_w != origin_w:
                 # Temporarily expand the dimension for conveniently processing.
@@ -1050,6 +930,182 @@ class DqnAgent:
 
             # Return the segmentation result and the fusion value for next iteration.
             return SEG_output, FUSE_result
+
+
+    def __region_selection(self, FE_tensor, SUIT_result, action_dim, name_space):
+        r'''
+            Region selection branch. Which is actually a DQN head.
+                It's used to select the next region for precisely processing.
+
+            The input is the deep feature maps extracted by
+                "Feature Extraction" backbone.
+        '''
+
+        # Get detailed configuration.
+        conf_base = self._config['Base']
+        conf_train = self._config['Training']
+        # Suitable height and width.
+        suit_h = conf_base.get('suit_height')
+        suit_w = conf_base.get('suit_width')
+        # Feature normalization method and activation function.
+        fe_norm = conf_base.get('feature_normalization', 'batch')
+        activation = conf_base.get('activation', 'relu')
+        # Dropout (keep probability) for convolution and fully-connect operation.
+        conv_kprob = conf_base.get('convolution_dropout', 1.0)
+        fc_kprob = conf_base.get('fully_connect_dropout', 0.5)
+        # Regularization Related.
+        regularize_coef = conf_train.get('regularize_coef', 0.0)
+        regularizer = tf_layers.l2_regularizer(regularize_coef)
+
+        # --------------------------------- "Region Selection" (DQN) branch. ------------------------------------
+        # Get configuration for DQN.
+        conf_dqn = self._config['DQN']
+        # Get segmentation fusion method.
+        seg_fuse = conf_dqn.get('fuse_segmentation', 'add')
+        # Get the dimension reduction method.
+        reduce_dim = conf_dqn.get('reduce_dim', 'residual')
+        # Get the action history length.
+        his_len = conf_dqn.get('actions_history', 10)
+        # Check whether enable "Dueling Network" or not.
+        dueling_network = conf_dqn.get('dueling_network', True)
+
+        # Check for the introduction method of "Position Information".
+        conf_cus = self._config['Custom']
+        pos_method = conf_cus.get('position_info', 'map')
+
+        # Start definition.
+        DQN_name = name_space + '/DQN'
+        with tf.variable_scope(DQN_name):
+            # Reshape the FUSE_result as a part of DQN input.
+            FE_h, FE_w, FE_c = FE_tensor.get_shape().as_list()[1:]  # [fe_h, fe_w, fe_c]
+            FE_prop = (suit_h // FE_h) * (suit_w // FE_w)
+            DQN_in = tf.reshape(SUIT_result, [-1, FE_h, FE_w, FE_prop],
+                                name='suit_res_4DQN')   # [?, fe_h, fe_w, prop^2]
+            DQN_in = cus_layers.base_conv2d(tf.to_float(DQN_in), FE_c, 1, 1,
+                                            feature_normalization=fe_norm,
+                                            activation=activation,
+                                            keep_prob=conv_kprob,
+                                            regularizer=regularizer,
+                                            name_space='suit_res_conv1x1')  # [?, fe_h, fe_w, fe_c]
+            if seg_fuse == 'add':
+                DQN_in = tf.add(FE_tensor, DQN_in, name='Fuse_IN')  # [?, fe_h, fe_w, fe_c]
+            elif seg_fuse == 'concat':
+                DQN_in = tf.concat([FE_tensor, DQN_in], axis=-1, name='Fuse_IN')    # [?, fe_h, fe_w, 2 * fe_c]
+            else:
+                raise ValueError('Unknown segmentation fusion method for DQN !!!')
+
+            # Scale down the feature maps according to the specific method.
+            if reduce_dim == 'conv':
+                # Use "Convolution" to reduce dimension.
+                redc_tensor = cus_layers.base_conv2d(DQN_in, 1024, 3, 2,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='reduce_dim01')  # [?, 4, 4, 1024]
+                redc_tensor = cus_layers.base_conv2d(redc_tensor, 512, 3, 2,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='reduce_dim02')  # [?, 2, 2, 512]
+            elif reduce_dim == 'residual':
+                # Use "residual" structure to reduce dimension.
+                redc_tensor = cus_res.transition_layer(DQN_in, 1024,
+                                                       feature_normalization=fe_norm,
+                                                       activation=activation,
+                                                       keep_prob=conv_kprob,
+                                                       regularizer=regularizer,
+                                                       name_space='reduce_dim01')  # [?, 4, 4, 1024]
+                redc_tensor = cus_res.transition_layer(redc_tensor, 512,
+                                                       feature_normalization=fe_norm,
+                                                       activation=activation,
+                                                       keep_prob=conv_kprob,
+                                                       regularizer=regularizer,
+                                                       name_space='reduce_dim02')  # [?, 2, 2, 512]
+            else:
+                raise ValueError('Unknown reduce dimension method for DQN !!!')
+
+            # Flatten the tensor to 1-D vector.
+            fdim = 1
+            for d in redc_tensor.shape[1:]:
+                fdim *= int(d)
+            flat_tensor = tf.reshape(redc_tensor, [-1, fdim], name='flatten')  # [?, OC]   default: 2048
+
+            # Fuse the actions history to the DQN input if enabled.
+            if his_len > 0:
+                # The input actions history holder.
+                acts_history = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, his_len],
+                                                            name='actions_history')  # [?, his_len]
+                flat_tensor = tf.concat([flat_tensor, acts_history], axis=-1, name='fuse_pos_coord')  # [?, OC+his_len]
+            else:
+                # For conveniently coding. Do nothing.
+                _1 = net_util.placeholder_wrapper(self._inputs, tf.bool, [None,], name='actions_history')  # [?,]
+
+            # Fuse (concat) the position vector if use "coord"-like position information.
+            if pos_method == 'coord':
+                pos_info = self._inputs[name_space + '/position_info']
+                flat_tensor = tf.concat([flat_tensor, pos_info], axis=-1, name='fuse_pos_coord')  # [?, OC+4]
+
+            # Pass through two fully connected layers.
+            fc01_tensor = cus_layers.base_fc(flat_tensor, 1024,
+                                             feature_normalization=fe_norm,
+                                             activation=activation,
+                                             keep_prob=fc_kprob,
+                                             regularizer=regularizer,
+                                             name_space='FC01')  # [?, 1024]
+            fc02_tensor = cus_layers.base_fc(fc01_tensor, 1024,
+                                             feature_normalization=fe_norm,
+                                             activation=activation,
+                                             keep_prob=fc_kprob,
+                                             regularizer=regularizer,
+                                             name_space='FC02')  # [?, 1024]
+
+            # Build the DRQN header according to the "Dueling Network" mode or not.
+            if dueling_network:
+                # Separate the feature map produced by "FC-layer" into the "State" and "Action" branches.
+                fc02vec_shape = int(fc02_tensor.shape[-1])
+                bch_shape = fc02vec_shape // 2
+                state_bch, action_bch = tf.split(fc02_tensor,
+                                                 [bch_shape, fc02vec_shape - bch_shape],
+                                                 axis=-1,
+                                                 name='branch_split')  # [-1, h_size/2]
+                # Build the "State" branch.
+                state_tensor = cus_layers.base_fc(state_bch, 1,
+                                                  feature_normalization=fe_norm,
+                                                  activation=activation,
+                                                  keep_prob=fc_kprob,
+                                                  regularizer=regularizer,
+                                                  name_space='state_value')  # [?, 1]
+                # Build the "Action" branch.
+                action_tensor = cus_layers.base_fc(action_bch, action_dim,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=fc_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='action_value')  # [?, act_dim]
+                # Mean the "Action" (Advance) branch.
+                norl_Adval = tf.subtract(action_tensor,
+                                         tf.reduce_mean(action_tensor, axis=-1, keepdims=True),
+                                         name='advanced_value')  # [?, act_dim]
+                # Add the "State" value and "Action" value to obtain the final output.
+                DQN_output = tf.add(state_tensor, norl_Adval, name='DQN_output')  # [?, act_dim]
+            # Not enable "Dueling" structure. Directly pass through a FC-layer.
+            else:
+                # The normal mode, do not need to split into two branches.
+                DQN_output = cus_layers.base_fc(fc02_tensor, action_dim,
+                                                feature_normalization=fe_norm,
+                                                activation=activation,
+                                                keep_prob=fc_kprob,
+                                                regularizer=regularizer,
+                                                name_space='DQN_output')  # [?, act_dim]
+
+            # Print some information.
+            print('### Finish "DQN Head" (name scope: {}). The output shape: {}'.format(
+                name_space, DQN_output.shape))
+
+            # Return the outputs of DQN, which is the result for region value.
+            return DQN_output
 
 
     def _loss_summary(self, DQN_output, SEG_logits, CEloss_tensors):
@@ -1150,6 +1206,7 @@ class DqnAgent:
         crop_method = conf_cus.get('size_matcher', 'crop')
         logit_type = conf_cus.get('result_tensor', 'complete')
         supv_method = conf_cus.get('segmentation_supervision', 'dilate')
+        loss_type = conf_cus.get('segmentation_loss', 'DICE')
 
         # Get the stage prefix for conveniently inferring inputs holders.
         conf_dqn = self._config['DQN']
@@ -1166,7 +1223,7 @@ class DqnAgent:
             GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
                                                     name='GT_label')  # [?, h, w]
             # Get the "Focus Bounding-box" used to crop "Focus" region in label.
-            focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']
+            focus_bbox = self.__mediates[stage_prefix+'/Scale_FoBbox']
             # Also need to crop label if size do not match. Meanwhile re-assign
             #   the coordinates of "Focus Bounding-box".
             if suit_h != input_shape[1] or suit_w != input_shape[2]:
@@ -1181,13 +1238,6 @@ class DqnAgent:
                     GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
                 else:
                     raise ValueError('Unknown size match method !!!')
-                # Scale the "Focus Bounding-box".
-                focus_bbox = net_util.scale_bbox(focus_bbox,
-                                                 src_height=input_shape[1],
-                                                 src_width=input_shape[2],
-                                                 dst_height=suit_h,
-                                                 dst_width=suit_w,
-                                                 name='SFB_4input')
             # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
             if len(GT_label.shape) != 4:
                 GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')   # [?, h, w, 1]
@@ -1210,22 +1260,38 @@ class DqnAgent:
             # The class weights is used to deal with the "Sample Imbalance" problem.
             clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
                                                          name='clazz_weights')  # [?, cls]
-            cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
-                                 classification_dim, name='one_hot_label')    # [?, h, w, cls]
-            clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-                                           name='expa_CW')      # [?, 1, 1, cls]
-            clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
+            if loss_type == 'CE':
+                cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
+                                     classification_dim, name='one_hot_label')    # [?, h, w, cls]
+                clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+                                               name='expa_CW')      # [?, 1, 1, cls]
+                clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
+                # Determine the loss function we used to calculate loss for segmentation.
+                loss_func = tf.losses.sparse_softmax_cross_entropy
+            elif loss_type == 'DICE':
+                clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+                                               name='expa_CW')  # [?, 1, 1, cls]
+                clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_logits),
+                                            name='rect_weights')  # [?, h, w, cls]
+                # Determine the loss function we used to calculate loss for segmentation.
+                loss_func = cus_metric.DICE
+            else:
+                raise ValueError('Unknown segmentation loss type !!!')
 
-            # Multiply the mask (stage flag) to filter the losses (samples) that don't
-            #   belongs to "Segmentation" branch if not enable "Sample Share".
-            # Here we can multiply it with class weights instead of the final loss.
-            if not sample_share:
-                # Generate filter mask.
-                sample_4SEG = tf.to_float(self._inputs[stage_prefix+'/Segment_Stage'], name='sample_4SEG')  # [?]
-                # Filter.
-                sample_4SEG = tf.expand_dims(tf.expand_dims(
-                    tf.expand_dims(sample_4SEG, axis=-1), axis=-1), axis=-1)    # [?, 1, 1, 1]
-                clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')    # [?, h, w, cls]
+
+
+
+
+            # # Multiply the mask (stage flag) to filter the losses (samples) that don't
+            # #   belongs to "Segmentation" branch if not enable "Sample Share".
+            # # Here we can multiply it with class weights instead of the final loss.
+            # if not sample_share:
+            #     # Generate filter mask.
+            #     sample_4SEG = tf.to_float(self._inputs[stage_prefix+'/Segment_Stage'], name='sample_4SEG')  # [?]
+            #     # Filter.
+            #     sample_4SEG = tf.expand_dims(tf.expand_dims(
+            #         tf.expand_dims(sample_4SEG, axis=-1), axis=-1), axis=-1)    # [?, 1, 1, 1]
+            #     clazz_weights = tf.multiply(clazz_weights, sample_4SEG, name='Filtered_weights')    # [?, h, w, cls]
 
             # Different loss calculation according to the "Segmentation Logits Type".
             #   1) logits for "Bbox" region.
@@ -1241,14 +1307,15 @@ class DqnAgent:
                     GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
                     GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
                     # Reduce dimension of clazz weights.
-                    clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
+                    if loss_type == 'CE':
+                        clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
                     # The single segmentation loss.
-                    fix_loss = tf.losses.sparse_softmax_cross_entropy(
+                    fix_loss = loss_func(
                         labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
                     # Recursively calculate the loss.
                     additional_loss = 0.
                     for idx, logits in enumerate(CEloss_tensors):
-                        additional_loss += tf.losses.sparse_softmax_cross_entropy(
+                        additional_loss += loss_func(
                             labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
                 # --> "Erode" the segmentation tensor.
                 elif supv_method == 'erode':
@@ -1260,9 +1327,10 @@ class DqnAgent:
                         lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
                         lab = tf.cast(lab, 'int32')     # [1, h, w]
                         # Reduce dimension of clazz weights.
-                        w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
+                        if loss_type == 'CE':
+                            w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
                         # Cross-Entropy loss.
-                        y = tf.losses.sparse_softmax_cross_entropy(labels=lab, logits=logit, weights=w)
+                        y = loss_func(labels=lab, logits=logit, weights=w)
                         return y
                     # Decide the corresponding size for "Focus Bounding-box".
                     if suit_h != input_shape[1] or suit_w != input_shape[2]:
@@ -1301,14 +1369,15 @@ class DqnAgent:
                 GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
                 GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
                 # Reduce dimension of clazz weights.
-                clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
+                if loss_type == 'CE':
+                    clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
                 # The single segmentation loss.
-                fix_loss = tf.losses.sparse_softmax_cross_entropy(
+                fix_loss = loss_func(
                     labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
                 # Recursively calculate the loss.
                 additional_loss = 0.
                 for idx, logits in enumerate(CEloss_tensors):
-                    additional_loss += tf.losses.sparse_softmax_cross_entropy(
+                    additional_loss += loss_func(
                         labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
 
             else:
