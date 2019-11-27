@@ -411,8 +411,28 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 #             self._l.append(le)
 #         self._idx = 0
 #
-#     def train_func(self, x):
-#         img, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
+#     def init_func(self, x):
+#         img, SEG_prev, position_info, focus_bbox, COMP_result = x
+#
+#         segmentation = SEG_prev.copy()
+#         y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
+#         x_min = max(0, min(239, int(round(240 * focus_bbox[1]))))
+#         y_max = max(1, min(240, int(round(240 * focus_bbox[2]))))
+#         x_max = max(1, min(240, int(round(240 * focus_bbox[3]))))
+#         print(y_min, y_max, x_min, x_max)
+#         y1 = np.random.randint(y_min, y_max)
+#         x1 = np.random.randint(x_min, x_max)
+#         y2 = np.random.randint(y_min, y_max)
+#         x2 = np.random.randint(x_min, x_max)
+#         y1, y2 = min(y1, y2), max(y1, y2)
+#         x1, x2 = min(x1, x2), max(x1, x2)
+#         c = np.random.randint(0, 5)
+#         segmentation[y1: y2, x1: x2] = c
+#
+#         return segmentation, np.zeros_like(COMP_result)
+#
+#     def train_func(self, x, flag):
+#         img, SEG_prev, position_info, focus_bbox, act_his, COMP_result, _7, _8, _9 = x
 #
 #         segmentation = SEG_prev.copy()
 #         y_min = max(0, min(239, int(round(240 * focus_bbox[0]))))
@@ -440,18 +460,21 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 #             # action = np.random.randint(17)
 #             action = np.random.randint(9)
 #
-#         return segmentation, COMP_res, action
+#         reward = np.random.normal(size=9)
+#
+#         if flag:
+#             return segmentation, COMP_res, action, reward
+#         else:
+#             return segmentation, COMP_res, action
 #
 # t = T()
 # for _ in range(3):
-#     stage = True
-#     env.reset()
+#     env.reset(t.init_func)
 #     for _0 in range(25):
-#         _1, _2, _3, over, _4, _5 = env.step(t.train_func, stage)
-#         if not stage and over:
+#         _1, _2, over, _4, _5, _6, _7 = env.step(t.train_func)
+#         if over:
 #             break
-#         stage = not stage
-#     env.render('gif')
+#     env.render('video')
 
 
 # # ---------------------------------------------------------------------

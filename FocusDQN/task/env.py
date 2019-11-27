@@ -1,5 +1,5 @@
 import gc
-import util.evaluation as eva
+import collections
 from util.visualization import *
 from core.data_structure import *
 from dataset.adapter.base import *
@@ -112,7 +112,9 @@ class FocusEnv:
         # --------------------- Declare some input data placeholder. ---------------------
         self._image = None  # Current processing image.
         self._label = None  # Label for current image.
-        self._SEG_stage = None  # Flag indicating whether is "Segmentation" stage or not.
+
+        # The "Action history".
+        self._ACTION_his = None
 
         # The focus bounding-box. (y1, x1, y2, x2)
         self._focus_bbox = None
@@ -163,10 +165,13 @@ class FocusEnv:
         return
 
 
-    def reset(self):
+    def reset(self, segment_func=None):
         r'''
             Reset the environment. Mainly to reset the related parameters,
                 and switch to next image-label pair.
+
+            ** Note that, it will be initialized according to whether
+                enable the "Optimize Initial Bbox" or not.
         '''
 
         # Check the validity of execution logic.
@@ -184,6 +189,11 @@ class FocusEnv:
         clazz_dim = conf_base.get('classification_dimension')
         conf_cus = self._config['Custom']
         CR_method = conf_cus.get('result_fusion', 'prob')
+        pos_method = conf_cus.get('position_info', 'map')
+        conf_dqn = self._config['DQN']
+        his_len = conf_dqn.get('actions_history', 10)
+        initFB_optimize = conf_dqn.get('initial_bbox_optimize', True)
+        initFB_pad = conf_dqn.get('initial_bbox_padding', 20)
 
         # Reset the "Previous Segmentation".
         self._SEG_prev = np.zeros([image_height, image_width], dtype=np.int64)
@@ -199,6 +209,9 @@ class FocusEnv:
         # Reset the "Focus Bounding-box".
         self._focus_bbox = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float32)   # (y1, x1, y2, x2)
 
+        # Reset the "Action History".
+        self._ACTION_his = collections.deque([-1,] * his_len)
+
         # Reset the "Previous Relative Directions".
         self._RelDir_prev = ['left-up']     # add default outermost direction.
 
@@ -207,7 +220,6 @@ class FocusEnv:
 
         # Reset the process flag.
         self._finished = False
-        self._FB_opted = False  # "Focus Bbox" not optimized.
 
         # -------------------------- Switch to next image-label pair. ---------------------------
         # Get the next image-label pair according to the phrase.
@@ -227,11 +239,48 @@ class FocusEnv:
         self._image = img
         self._label = label
 
+        # Record the process.
+        if self._anim_recorder is not None:
+            self._anim_recorder.reload((img.copy(), label.copy() if label is not None else None))
+
+        # -------------------------- Optimize Part. ---------------------------
+        # Optimize the initial "Focus Bbox" if specified.
+        if initFB_optimize and segment_func is not None:
+            # Record the very beginning frame.
+            if self._anim_recorder is not None:
+                # "Segment" phrase.
+                self._anim_recorder.record(
+                    (self._focus_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
+            # The position information. Declaration according to config.
+            if pos_method == 'map':
+                pos_info = np.ones([image_height, image_width], dtype=np.int64)
+            elif pos_method == 'coord':
+                pos_info = self._focus_bbox.copy()
+            elif pos_method == 'sight':
+                pos_info = self._focus_bbox.copy()
+            else:
+                raise ValueError('Unknown position information fusion method !!!')
+            # Get the initial segmentation.
+            segmentation, COMP_res = segment_func((self._image.copy(),
+                                                   self._SEG_prev.copy(),
+                                                   pos_info,
+                                                   self._focus_bbox.copy(),
+                                                   self._COMP_result.copy()))
+            # Assign the "Focus Bbox", "Current Segmentation" and "Complete info" holders.
+            #   What's more, append the "Relative Direction" history (for wide range).
+            if not (segmentation == 0).all():
+                init_region = np.where(segmentation != 0)
+                init_y1 = max(0, min(init_region[0]) - initFB_pad) / image_height
+                init_x1 = max(0, min(init_region[1]) - initFB_pad) / image_width
+                init_y2 = min(image_height, max(init_region[0]) + initFB_pad) / image_height
+                init_x2 = min(image_width, max(init_region[1]) + initFB_pad) / image_width
+                self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+                self._SEG_prev = segmentation
+                self._COMP_result = COMP_res
+                self._RelDir_prev.append('right-bottom')
+
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
-            # Record the process.
-            if self._anim_recorder is not None:
-                self._anim_recorder.reload((img.copy(), label.copy()))
             # Clazz weights.
             conf_train = self._config['Training']
             weights = conf_train.get('clazz_weights', None)
@@ -240,14 +289,11 @@ class FocusEnv:
             # Return train samples.
             return img.copy(), label.copy(), weights.copy(), data_arg
         else:
-            # Record the process.
-            if self._anim_recorder is not None:
-                self._anim_recorder.reload((img.copy(), label.copy() if label is not None else None))
             # Return the label used to compute metric when in "Validate" phrase.
             return label.copy() if label is not None else None
 
 
-    def step(self, op_func, SEG_stage):
+    def step(self, op_func):
         r'''
             Step (interact with) the environment. Here coz we build
                 the two-stage alternative model, so this function will
@@ -268,24 +314,28 @@ class FocusEnv:
                 3) train_func: Containing the both two of "Segment" and "Focus"
                 function. Only used in "Training" phrase.
                 -----------------------------
-            SEG_stage: Indicating whether is "Segment" or "Focus" stage.
 
         Return:
-            The tuple of (SEG_prev, cur_bbox, position_info, action, reward, over,
-                SEG_cur, focus_bbox, next_posinfo, info) when in "Train" phrase.
+            The tuple of (state, action, terminal, anchors, err, next_state, info)
+                when in "Train" phrase.
+            state: (SEG_prev, cur_bbox, position_info, acts_prev)
+            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur)
             ---------------------------------------------------------------
             SEG_prev: The previous segmentation result.
             cur_bbox: The current bbox of image.
             position_info: The position information for current time-step.
+            acts_prev: The current actions history.
             action: The action executed of current time-step.
-            reward: The reward of current action.
-            over: Flag that indicates whether current image is finished.
+            terminal: Flag that indicates whether current image is finished.
+            anchors: The anchors for current bbox.
+            BBOX_errs: The "BBOX erros" vector for current anchors.
             SEG_cur: Current segmentation result.
             focus_bbox: Next focus bbox of image.
             next_posinfo: The fake next position information.
+            acts_cur: The next actions history.
             info: Extra information.(Optional, default is type.None)
             ---------------------------------------------------------------
-            The tuple of (over, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
+            The tuple of (terminal, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
                 ** Note that, the reward is None when in "Test" phrase, and the
                     SEG_cur will be used to write result in "Test" phrase.
         '''
@@ -293,8 +343,6 @@ class FocusEnv:
         # Check validity.
         if not callable(op_func):
             raise TypeError('The op_func must be a function !!!')
-        if not isinstance(SEG_stage, bool):
-            raise TypeError('The SEG_stage must be a boolean !!!')
 
         # Check the validity of execution logic.
         if self._finished:
@@ -308,11 +356,10 @@ class FocusEnv:
         input_shape = conf_base.get('input_shape')
         image_height, image_width = input_shape[1:3]
         conf_dqn = self._config['DQN']
-        initFB_optimize = conf_dqn.get('initial_bbox_optimize', True)
+        step_threshold = conf_dqn.get('step_threshold', 10)
+        his_len = conf_dqn.get('actions_history', 10)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
-        conf_train = self._config['Training']
-        sample_share = conf_train.get('sample_share', False)
 
         # The position information generation function, for convenient usage.
         def gen_position_info(focus_bbox):
@@ -333,150 +380,95 @@ class FocusEnv:
                 raise ValueError('Unknown position information fusion method !!!')
             return pos_info
 
-        # Declare the position information here.
-        position_info = gen_position_info(self._focus_bbox)
-
-        # Visualiztion related.
-        vis_bbox = self._focus_bbox.copy()
-        vis_reward = None
-
-        # Old "Focus Bounding-box", which will be used as part of
-        #   experience for "Focus" branch.
+        # The current state.
         cur_bbox = self._focus_bbox.copy()
-        # Old "Previous Segmentation", which will be used as part
-        #   of sample for both "Segment" and "Focus" branch.
         SEG_prev = self._SEG_prev.copy()
-
-        # The "Focus Bbox" holder, coz we need even "fake" focus bbox generated
-        #   when in "Segment" phrase.
-        focus_bbox = np.zeros_like(self._focus_bbox)
-        # The "Next Segmentation", which will be used as part
-        #   of experience for "Focus" branch.
-        SEG_cur = np.zeros_like(self._SEG_prev)
-        # The fake "Next position information", which will be used in both
-        #   "Segment" and "Focus" branch.
-        next_posinfo = np.zeros_like(position_info)
+        position_info = gen_position_info(self._focus_bbox)
+        acts_prev = np.asarray(self._ACTION_his.copy())
 
         # -------------------------------- Core Part -----------------------------
-        # Different procedure according to phrase. "Train" phrase.
-        if self._phrase == 'Train':
-            # Execute train function.
-            segmentation, COMP_res, action = op_func((self._image.copy(),
-                                                      self._SEG_prev.copy(),
-                                                      position_info,
-                                                      SEG_stage,
-                                                      self._focus_bbox.copy(),
-                                                      self._COMP_result.copy()))
-            # Execution to get the next state (bbox), reward, terminal flag.
-            RelDirc_his = self._RelDir_prev.copy() if SEG_stage else self._RelDir_prev
-            dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), RelDirc_his)
-
-            # Bound the initial segmentation region as initial "Focus Bbox".
-            #   Just for precise and fast "Focus".
-            if initFB_optimize and not self._FB_opted and SEG_stage and not ((segmentation == 0).all()):
-                init_region = np.where(segmentation != 0)
-                init_y1 = min(init_region[0]) / image_height
-                init_x1 = min(init_region[1]) / image_width
-                init_y2 = max(init_region[0]) / image_height
-                init_x2 = max(init_region[1]) / image_width
-                self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-                vis_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
-                self._FB_opted = True  # means optimized
-
-            # Real "Segment", fake "Focus".
-            if SEG_stage:
-                # To generate the next state for "Focus" if enable "Sample Share".
-                if sample_share:
-                    #   1) the destination bbox in time for "Segment" phrase.
-                    #   2) the current segmentation result for "DQN" training.
-                    #   3) the fake next position information for both two branch.
-                    focus_bbox = dst_bbox.copy()
-                    next_posinfo = gen_position_info(focus_bbox)
-                    SEG_cur, _2, _3 = op_func((self._image.copy(),
-                                               self._SEG_prev.copy(),
-                                               next_posinfo,
-                                               SEG_stage,
-                                               focus_bbox,
-                                               self._COMP_result.copy()))
-                # Iteratively re-assign the "Segmentation" result and Complete info.
-                self._SEG_prev = segmentation
-                self._COMP_result = COMP_res
-                # Update the visual information.
-                vis_reward = info = None  # fake, for conveniently coding.
-                over = False  # "Segment" stage, not over.
-            # Fake "Segment", real "Focus".
-            else:
-                # Iteratively re-assign the current "Focus Bbox".
-                self._focus_bbox = np.asarray(dst_bbox)
-                self._time_step += 1
-                # Use the "Real Next Focus Bbox" when it's over. Meanwhile
-                #   update the next position information.
-                if over:
-                    focus_bbox = self._focus_bbox.copy()
-                    next_posinfo = gen_position_info(focus_bbox)
-                # Update the visual information.
-                vis_reward = reward
-
-        # "Validate" or "Test".
+        # Generate anchors.
+        conf_dqn = self._config['DQN']
+        anchor_scale = conf_dqn.get('anchors_scale', 2)
+        if self._act_dim == 9:
+            # "Restrict" mode.
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 9,
+                                    arg=self._RelDir_prev[-1])   # the newest relative direction.
+        elif self._act_dim == 17:
+            # "Whole Candidates" mode.
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 17)
         else:
-            # "Segment" stage.
-            if SEG_stage:
-                # calculate first.
-                segmentation, COMP_res = op_func((self._image.copy(),
-                                                  self._SEG_prev.copy(),
-                                                  position_info,
-                                                  SEG_stage,
-                                                  self._focus_bbox.copy(),
-                                                  self._COMP_result.copy()))
-                # bound initial "Focus Bbox", for rapidly and precisely processing.
-                if initFB_optimize and not self._FB_opted and not ((segmentation == 0).all()):
-                    init_region = np.where(segmentation != 0)
-                    init_y1 = min(init_region[0]) / image_height
-                    init_x1 = min(init_region[1]) / image_width
-                    init_y2 = max(init_region[0]) / image_height
-                    init_x2 = max(init_region[1]) / image_width
-                    self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-                    vis_bbox = self._focus_bbox.copy()  # re-assign for initial situation.
-                    self._FB_opted = True  # means optimized
-                # iteratively assign.
-                self._SEG_prev = segmentation
-                self._COMP_result = COMP_res
-                action = reward = info = None   # fake, for conveniently coding.
-                SEG_cur = segmentation.copy()   # real, used to compute metric in "Validate" phrase, and write result.
-                over = False    # "Segment" stage, not over.
-            # "Focus" stage.
-            else:
-                action = op_func((self._image.copy(),
-                                  self._SEG_prev.copy(),
-                                  position_info,
-                                  SEG_stage,
-                                  self._focus_bbox.copy()))
-                dst_bbox, reward, over, info = self._exec_4ActRew(action, self._focus_bbox.copy(), self._RelDir_prev)
-                self._focus_bbox = np.asarray(dst_bbox)
-                self._time_step += 1
-            # Update visual info.
-            vis_reward = reward
+            raise Exception('Unknown action dimension, there is no logic with respect to '
+                            'current act_dim, please check your code !!!')
+
+        # Get the "Bbox Error" vector for all the candidates (anchors).
+        BBOX_errs, infos = self._check_candidates(anchors)
+
+        # Execute the operation fucntion to conduct "Segment" and "Focus".
+        if self._label is not None:
+            segmentation, COMP_res, action, reward = op_func((self._image.copy(),
+                                                              SEG_prev.copy(),
+                                                              position_info.copy(),
+                                                              cur_bbox.copy(),
+                                                              acts_prev.copy(),
+                                                              self._COMP_result.copy(),
+                                                              anchors.copy(),
+                                                              BBOX_errs.copy(),
+                                                              self._label.copy()), True)
+            reward = reward[action]
+        else:
+            segmentation, COMP_res, action = op_func((self._image.copy(),
+                                                      SEG_prev.copy(),
+                                                      position_info.copy(),
+                                                      cur_bbox.copy(),
+                                                      acts_prev.copy(),
+                                                      self._COMP_result.copy()), False)
+            reward = None
+
+        # Push forward the environment.
+        dst_bbox, terminal, info = self._push_forward(action,
+                                                      candidates=anchors,
+                                                      BBOX_errs=BBOX_errs,
+                                                      step_thres=step_threshold,
+                                                      infos=infos)
+        # Append the current action into "Action History".
+        self._ACTION_his.append(action)
+        if len(self._ACTION_his) > his_len:
+            self._ACTION_his.popleft()
+        # Iteratively re-assign the "Segmentation" result, "Complete info" and "Focus Bbox".
+        self._SEG_prev = segmentation
+        self._COMP_result = COMP_res
+        self._focus_bbox = np.asarray(dst_bbox)
         # -------------------------------- Core Part -----------------------------
 
         # Record the process.
         if self._anim_recorder is not None:
-            # fo_bbox = self._focus_bbox.copy() if (cur_bbox != self._focus_bbox).any() else None
-            fo_bbox = self._focus_bbox.copy() if not SEG_stage else None
-            self._anim_recorder.record((vis_bbox.copy(), fo_bbox, vis_reward, self._SEG_prev.copy(), info))    # Need copy !!!
+            # "Segment" phrase.
+            self._anim_recorder.record(
+                (cur_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
+            # "Focus" phrase.
+            self._anim_recorder.record(
+                (cur_bbox.copy(), self._focus_bbox.copy(), reward, self._SEG_prev.copy(), info))  # Need copy !!!
 
-        # Reset the process flag. Only the over of "Focus" stage means real terminate.
-        if not SEG_stage and over:
+        # Reset the process flag when current process terminate.
+        if terminal:
             self._finished = True
+
+        # Generate next state.
+        SEG_cur = self._SEG_prev.copy()
+        focus_bbox = self._focus_bbox.copy()
+        next_posinfo = gen_position_info(self._focus_bbox)
+        acts_cur = np.asarray(self._ACTION_his.copy())
 
         # Return sample when in "Train" phrase.
         if self._phrase == 'Train':
-            return (SEG_prev, cur_bbox, position_info), \
-                   action, reward, over, \
-                   (SEG_cur, focus_bbox, next_posinfo), \
+            return (SEG_prev, cur_bbox, position_info, acts_prev), \
+                   action, terminal, anchors.copy(), BBOX_errs.copy(), \
+                   (SEG_cur, focus_bbox, next_posinfo, acts_cur), \
                    info
         else:
             # Return terminal flag (most important), and other information.
-            return over, (SEG_cur, reward, info)
+            return terminal, (SEG_cur, reward, info)
 
 
     def render(self, anim_type):
@@ -489,9 +481,6 @@ class FocusEnv:
         else:
             raise Exception('The processing of current image is not yet finish, '
                             'can not @Method{render} !!!')
-        # # Get config.
-        # conf_other = self._config['Others']
-        # anim_type = conf_other.get('animation_type', 'gif')
 
         # Save the process into filesystem.
         if self._anim_recorder is not None:
@@ -502,128 +491,7 @@ class FocusEnv:
 
 
 
-    def _exec_4ActRew(self, action, bbox, RelDirc_his):
-        r'''
-            Execute the given action, and compute corresponding reward.
-
-            ** Note that, it will not affect the current "Focus Bounding-box",
-                but to return a new bbox-coordinates.
-        '''
-
-        # Check validity.
-        if not isinstance(action, (int, np.int, np.int32, np.int64)):
-            raise TypeError('The action must be an integer !!!')
-        action = int(action)
-        if action not in range(self._act_dim):
-            raise ValueError('The action must be in range(0, {}) !!!'.format(self._act_dim))
-        if not isinstance(bbox, np.ndarray) or bbox.ndim != 1 or bbox.shape[0] != 4:
-            raise ValueError('The bbox must be a 4-elements numpy array '
-                             'just like (y1, x1, y2, x2) !!!')
-
-        # Get detailed config.
-        conf_base = self._config['Base']
-        clazz_dim = conf_base.get('classification_dimension')
-        conf_dqn = self._config['DQN']
-        anchor_scale = conf_dqn.get('anchors_scale', 2)
-        reward_metric = conf_dqn.get('reward_metric', 'Dice-M')
-        terminate_threshold = conf_dqn.get('terminal_threshold', 0.8)
-        step_threshold = conf_dqn.get('step_threshold', 10)
-
-        # Out-of-Boundary (focus out too much) error.
-        OOB_err = False
-        # Terminal flag.
-        terminal = False
-
-        # Execute the given action. Different procedure according to action quantity.
-        if self._act_dim == 9:
-            # "Restrict" mode.
-            anchors = self.__anchors(bbox, anchor_scale, 9,
-                                     arg=RelDirc_his[-1])   # the newest relative direction.
-            # --> select children.
-            if action <= 3:
-                # push the relative direction. -- focus in.
-                rel_dirc = self._RELATIVE_DIRECTION[action]     # coz just the same order.
-                RelDirc_his.append(rel_dirc)
-            # --> select parent.
-            elif action == 4:
-                # pop out the relative direction. -- focus out.
-                RelDirc_his.pop()
-                # check if it's the outermost level.
-                if len(RelDirc_his) == 0:
-                    OOB_err = True
-            # --> select peers.
-            elif action <= 7:
-                # translate the current (newest) relative direction.  -- focus peer.
-                cur_Rdirc = RelDirc_his.pop()
-                # metaphysics formulation.
-                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
-                NRD_idx = action - 4
-                if NRD_idx - CRD_idx <= 0:
-                    NRD_idx -= 1
-                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
-                # pop out and push new relative direction.
-                RelDirc_his.append(next_Rdirc)
-            # --> stop, terminal.
-            else:
-                terminal = True
-
-        elif self._act_dim == 17:
-            # "Whole Candidates" mode.
-            anchors = self.__anchors(bbox, anchor_scale, 17)
-            # Fake relative direction for "Out-of-Boundary" error check.
-            fake_RD = self._RELATIVE_DIRECTION[0]
-            # --> select children. -- focus in. push
-            if action <= 3:
-                RelDirc_his.append(fake_RD)
-            # --> select parent. -- focus out. pop
-            elif action <= 7:
-                # check if it's the outermost level.
-                if len(RelDirc_his) == 0:
-                    OOB_err = True
-                else:
-                    RelDirc_his.pop()
-            # --> select peers. -- do nothing ...
-            elif action <= 15:
-                pass
-            # --> stop, terminal.
-            else:
-                terminal = True
-
-        else:
-            raise Exception('Unknown action dimension, there is no logic with respect to '
-                            'current act_dim, please check your code !!!')
-
-        # Compute the reward for given action if the label is not None.
-        if self._label is not None:
-            cal_rewards = self.__rewards(self._SEG_prev.copy(), self._label.copy(),
-                                         category=clazz_dim, anchors=anchors,
-                                         OOB_err=OOB_err, terminal=terminal,
-                                         ter_thres=terminate_threshold,
-                                         metric_type=reward_metric)
-            if isinstance(cal_rewards, list):
-                reward = cal_rewards[action]
-            else:
-                reward = cal_rewards
-        else:
-            reward = None
-
-        # Judge whether game over or not.
-        over, info = self.__game_over(anchors[action] if action != self._act_dim - 1 else None,
-                                      OOB_err, terminal,
-                                      time_step=self._time_step,
-                                      step_thres=step_threshold)
-
-        # Get the destination bbox.
-        if not over:
-            dst_bbox = anchors[action]
-        else:
-            dst_bbox = self._FAKE_BBOX
-
-        # Return the 1)destination bbox, 2)reward, 3)over flag and 4)information.
-        return dst_bbox, reward, over, info
-
-
-    def __anchors(self, bbox, scale, adim, arg=None):
+    def _anchors(self, bbox, scale, adim, arg=None):
         r'''
             Generate the anchors for current bounding-box with the given scale.
                 What's more, it can restrict some anchors if given additional
@@ -792,71 +660,119 @@ class FocusEnv:
             raise ValueError('Unknown adim, this adim\'s anchors don\'t support now !!!')
 
 
-    def __rewards(self, pred, label, category, anchors, OOB_err, terminal, ter_thres, metric_type):
+    def _check_candidates(self, candidates):
         r'''
-            Calculate the rewards for each situation. Including:
-                1) The remaining value of given anchors.
-                2) The terminal moment.
-                3) The Out-of-Boundary error.
+            Check the validity of all the candidates bounding-box.
         '''
 
-        # Reward (punishment) for "Out-of-Boundary" error.
-        if OOB_err:
-            return 0.0
-
-        # Reward for "Terminal" action.
-        if terminal:
-            if metric_type == 'Dice-M':
-                v = eva.mean_DICE_metric(pred, label, category, ignore_BG=True)
-            elif metric_type == 'Dice-P':
-                v = eva.prop_DICE_metric(pred, label, category, ignore_BG=True)
-            else:
-                raise ValueError('Unknown metric type !!!')
-            return 3.0 if v >= ter_thres else -3.0
-
-        # Rewards for each "Anchor".
-        cor_h, cor_w = label.shape
-        rewards = []
-        for bbox in anchors:
-            # boundary.
-            y1, x1, y2, x2 = bbox
-            up = int(round(y1 * cor_h))
-            left = int(round(x1 * cor_w))
-            bottom = int(round(y2 * cor_h))
-            right = int(round(x2 * cor_w))
-            # calculate.
-            region_pred = pred[up: bottom, left: right]
-            region_lab = label[up: bottom, left: right]
-            if metric_type == 'Dice-M':
-                v = eva.mean_DICE_metric(region_pred, region_lab, category, ignore_BG=True)
-            elif metric_type == 'Dice-P':
-                v = eva.prop_DICE_metric(region_pred, region_lab, category, ignore_BG=True)
-            else:
-                raise ValueError('Unknown metric type !!!')
-            # use the remaining value of "Dice" metric as reward.
-            v = 1.0 - v
-            # package.
-            rewards.append(v)
-
-        # Return all rewards for anchors.
-        return rewards
-
-
-    def __game_over(self, candidate, OOB_err, terminal, time_step, step_thres):
-        r'''
-            Judge whether current processing is over according to each flag.
-        '''
-        if OOB_err:
-            return True, 'Out-of-Boundary !'
-        if terminal:
-            return True, 'Terminal !'
-        if time_step >= step_thres:
-            return True, 'Reach Threshold !'
-        if candidate is not None:
-            y1, x1, y2, x2 = candidate
+        # "Bounding-box error" vector.
+        BBOX_err = [False, ] * (self._act_dim - 1)
+        info = [None, ] * (self._act_dim - 1)
+        # Check the validity of each candidate.
+        for idx, cand in enumerate(candidates):
+            y1, x1, y2, x2 = cand
             if (y2 - y1) == 0.0 or (x2 - x1) == 0.0:
-                return True, 'Zero-scale Bbox !'
-        return False, None
+                BBOX_err[idx] = True
+                info[idx] = 'Zero-scale Bbox !'
+        # Check if it's the outermost level.
+        RelDir_his = self._RelDir_prev.copy()
+        RelDir_his.pop()
+        if len(RelDir_his) == 0:
+            for _idx in range(self._act_dim - 1):
+                BBOX_err[_idx] = True
+                info[_idx] = 'Out-of-Boundary !'
+
+        # Return the "Bbox Error" vector, and info vector.
+        return BBOX_err, info
+
+
+    def _push_forward(self, action, candidates, BBOX_errs, step_thres, infos):
+        r'''
+            Push forward the environment according to the given action.
+                Mainly to get the destination bounding-box and terminal flag.
+        '''
+
+        # Check validity.
+        if not isinstance(action, (int, np.int, np.int32, np.int64)):
+            raise TypeError('The action must be an integer !!!')
+        action = int(action)
+        if action not in range(self._act_dim):
+            raise ValueError('The action must be in range(0, {}) !!!'.format(self._act_dim))
+
+        # Terminal flag.
+        terminal = False
+
+        # Execute the given action. Different procedure according to action quantity.
+        if self._act_dim == 9:
+            # --> select children.
+            if action <= 3:
+                # push the relative direction. -- focus in.
+                rel_dirc = self._RELATIVE_DIRECTION[action]  # coz just the same order.
+                self._RelDir_prev.append(rel_dirc)
+            # --> select parent.
+            elif action == 4:
+                # pop out the relative direction. -- focus out.
+                self._RelDir_prev.pop()
+            # --> select peers.
+            elif action <= 7:
+                # translate the current (newest) relative direction.  -- focus peer.
+                cur_Rdirc = self._RelDir_prev.pop()
+                # metaphysics formulation.
+                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
+                NRD_idx = action - 4
+                if NRD_idx - CRD_idx <= 0:
+                    NRD_idx -= 1
+                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
+                # pop out and push new relative direction.
+                self._RelDir_prev.append(next_Rdirc)
+            # --> stop, terminal.
+            else:
+                terminal = True
+        # "Normal" mode.
+        elif self._act_dim == 17:
+            # Fake relative direction for "Out-of-Boundary" error check.
+            fake_RD = self._RELATIVE_DIRECTION[0]
+            # --> select children. -- focus in. push
+            if action <= 3:
+                self._RelDir_prev.append(fake_RD)
+            # --> select parent. -- focus out. pop
+            elif action <= 7:
+                # check if it's the outermost level.
+                self._RelDir_prev.pop()
+            # --> select peers. -- do nothing ...
+            elif action <= 15:
+                pass
+            # --> stop, terminal.
+            else:
+                terminal = True
+        # Else.
+        else:
+            raise Exception('Unknown action dimension, there is no logic with respect to '
+                            'current act_dim, please check your code !!!')
+
+        # Check whether selected the invalid candidate.
+        if not terminal:
+            terminal = BBOX_errs[action]
+            info = infos[action]
+        else:
+            info = 'Terminal !'
+
+        # Get the selected bounding-box.
+        if not terminal:
+            dst_bbox = candidates[action]
+        else:
+            dst_bbox = self._FAKE_BBOX
+
+        # Increase the time-step.
+        self._time_step += 1
+        # Check whether reaches the time-step threshold.
+        if self._time_step > step_thres:
+            terminal = True
+            info = 'Reach Threshold !'
+
+        # Return the destination bbox, the terminal flag and info.
+        return dst_bbox, terminal, info
+
 
 
     def _verify_data(self, adapter, category):
