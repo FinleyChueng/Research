@@ -845,7 +845,7 @@ class DeepQNetwork(DQN):
             s1 = self._summary[self._name_space + '/Reward']
             s2 = self._summary[self._name_space + '/DICE']
             s3 = self._summary[self._name_space + '/BRATS_metric']
-            out_summary = self._summary[self._name_space + '/MergeSummary']
+            out_summary = self._summary[self._name_space + '/Summaries']
             # Execute "Validate".
             reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
             # Compute the summary value and add into statistic graph.

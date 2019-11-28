@@ -50,7 +50,7 @@ def DICE(labels, predictions, weights=None, scope=None, category_indep=True, ign
 
 
 
-def recall(labels, predictions, weights=None, scope=None):
+def recall(labels, predictions, weights=None, scope=None, category_indep=True, ignore_BG=False):
     r'''
         Calculate the DICE metric for given predictions. We reduce it
             for each sample of a batch.
@@ -68,19 +68,29 @@ def recall(labels, predictions, weights=None, scope=None):
     shape_invar = (lab_shape != pred_shape).any() and (pred_shape != weight_shape).any()
     if shape_invar:
         raise TypeError('The labels, predictions and weights must be of same shape !!!')
+    # Prepare
+    if ignore_BG:
+        labels = labels[:, :, :, 1:]  # [?, h, w, cls-1]
+        predictions = predictions[:, :, :, 1:]  # [?, h, w, cls-1]
+        if weights is not None:
+            weights = weights[:, :, :, 1:]  # [?, h, w, cls-1]
     # Calculate
     intersection = tf.multiply(labels, predictions)  # [?, h, w, cls]
     ground_truth = labels
     if weights is not None:
         intersection = tf.multiply(intersection, weights)  # [?, h, w, cls]
         ground_truth = tf.multiply(ground_truth, weights)     # [?, h, w, cls]
-    intersection = tf.reduce_sum(intersection, axis=(1, 2, 3))  # [?]
-    ground_truth = tf.reduce_sum(ground_truth, axis=(1, 2, 3))  # [?]
-    recall = tf.divide(intersection, ground_truth)  # [?]
+    indep_axis = (1, 2) if category_indep else (1, 2, 3)
+    intersection = tf.reduce_sum(intersection, axis=indep_axis)  # [?] or [?, cls]
+    ground_truth = tf.reduce_sum(ground_truth, axis=indep_axis)  # [?] or [?, cls]
+    recall = tf.divide(intersection, ground_truth)  # [?] or [?, cls]
     recall = tf.where(tf.not_equal(ground_truth, 0),
                       recall,
                       tf.ones_like(recall) * 1.,
-                      name='batch_recall')    # [?]
+                      name='batch_recall')    # [?] or [?, cls]
+    # Specify
+    if category_indep:
+        recall = tf.reduce_mean(recall, axis=-1)  # [?]
     recall = tf.stop_gradient(recall, name=scope)   # [?]
     # Finish.
     return recall

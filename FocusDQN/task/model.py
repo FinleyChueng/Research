@@ -1505,7 +1505,7 @@ class DqnAgent:
 
             # ---------------------- Compute reward for terminal situation ------------------------
             # Check whether "Dice" reaches the threshold.
-            cur_dice = tf.subtract(1.0, current_value, name='Current_Dice')     # [?]
+            cur_dice = cus_metric.DICE(GT_label, SEG_result, clazz_weights, scope='Current_Dice')   # [?]
             dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='Reach_Dice')   # [?]
             # Check whether "Recall" reaches the threshold.
             cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, scope='Current_Recall')  # [?]
