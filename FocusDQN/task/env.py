@@ -92,6 +92,9 @@ class FocusEnv:
         else:
             self._act_dim = 17
 
+        # Clazz weights (for segmentation).
+        self._clazz_weights = None
+
         # Animation recorder.
         self._anim_recorder = None
         conf_other = self._config['Others']
@@ -238,6 +241,9 @@ class FocusEnv:
         # Assign the image and label holder.
         self._image = img
         self._label = label
+        # Get clazz weights from configuration here.
+        conf_train = self._config['Training']
+        self._clazz_weights = conf_train.get('clazz_weights', None)
 
         # Record the process.
         if self._anim_recorder is not None:
@@ -281,13 +287,11 @@ class FocusEnv:
 
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
-            # Clazz weights.
-            conf_train = self._config['Training']
-            weights = conf_train.get('clazz_weights', None)
-            if weights is None:  # do not config
-                weights = clazz_weights
+            # Reset lazz weights if needed.
+            if self._clazz_weights is None:  # do not config
+                self._clazz_weights = clazz_weights
             # Return train samples.
-            return img.copy(), label.copy(), weights.copy(), data_arg
+            return img.copy(), label.copy(), self._clazz_weights.copy(), data_arg
         else:
             # Return the label used to compute metric when in "Validate" phrase.
             return label.copy() if label is not None else None
@@ -318,13 +322,14 @@ class FocusEnv:
         Return:
             The tuple of (state, action, terminal, anchors, err, next_state, info)
                 when in "Train" phrase.
-            state: (SEG_prev, cur_bbox, position_info, acts_prev)
-            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur)
+            state: (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev)
+            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur)
             ---------------------------------------------------------------
             SEG_prev: The previous segmentation result.
             cur_bbox: The current bbox of image.
             position_info: The position information for current time-step.
             acts_prev: The current actions history.
+            comp_prev: The current "Complete Result".
             action: The action executed of current time-step.
             terminal: Flag that indicates whether current image is finished.
             anchors: The anchors for current bbox.
@@ -333,6 +338,7 @@ class FocusEnv:
             focus_bbox: Next focus bbox of image.
             next_posinfo: The fake next position information.
             acts_cur: The next actions history.
+            comp_cur: The next "Complete Result".
             info: Extra information.(Optional, default is type.None)
             ---------------------------------------------------------------
             The tuple of (terminal, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
@@ -385,6 +391,7 @@ class FocusEnv:
         SEG_prev = self._SEG_prev.copy()
         position_info = gen_position_info(self._focus_bbox)
         acts_prev = np.asarray(self._ACTION_his.copy())
+        comp_prev = self._COMP_result.copy()
 
         # -------------------------------- Core Part -----------------------------
         # Generate anchors.
@@ -411,10 +418,13 @@ class FocusEnv:
                                                               position_info.copy(),
                                                               cur_bbox.copy(),
                                                               acts_prev.copy(),
-                                                              self._COMP_result.copy(),
+                                                              comp_prev.copy(),
                                                               anchors.copy(),
                                                               BBOX_errs.copy(),
-                                                              self._label.copy()), True)
+                                                              self._label.copy(),
+                                                              self._clazz_weights.copy()),
+                                                             with_explore=self._phrase == 'Train',
+                                                             with_reward=True)
             reward = reward[action]
         else:
             segmentation, COMP_res, action = op_func((self._image.copy(),
@@ -422,7 +432,9 @@ class FocusEnv:
                                                       position_info.copy(),
                                                       cur_bbox.copy(),
                                                       acts_prev.copy(),
-                                                      self._COMP_result.copy()), False)
+                                                      comp_prev.copy()),
+                                                     with_explore=False,
+                                                     with_reward=False)
             reward = None
 
         # Push forward the environment.
@@ -459,13 +471,14 @@ class FocusEnv:
         focus_bbox = self._focus_bbox.copy()
         next_posinfo = gen_position_info(self._focus_bbox)
         acts_cur = np.asarray(self._ACTION_his.copy())
+        comp_cur = self._COMP_result.copy()
 
         # Return sample when in "Train" phrase.
         if self._phrase == 'Train':
-            return (SEG_prev, cur_bbox, position_info, acts_prev), \
+            return (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev), \
                    action, terminal, anchors.copy(), BBOX_errs.copy(), \
-                   (SEG_cur, focus_bbox, next_posinfo, acts_cur), \
-                   info
+                   (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur), \
+                   reward, info
         else:
             # Return terminal flag (most important), and other information.
             return terminal, (SEG_cur, reward, info)

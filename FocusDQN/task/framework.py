@@ -63,8 +63,8 @@ class DeepQNetwork(DQN):
             replay_memory = PrioritizedPool(replay_memories)
         self._replay_memory = replay_memory
 
-        # Declare the normal storage for segmentation sample.
-        self._sample_storage = collections.deque()
+        # # Declare the normal storage for segmentation sample.
+        # self._sample_storage = collections.deque()
 
         # session
         self._sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
@@ -295,13 +295,11 @@ class DeepQNetwork(DQN):
                 it_reward = []
 
                 # Reset the environment.
-                label = self._env.reset()
+                label = self._env.reset(self._segment_func)
                 # Iteratively process.
                 for step in range(9999999999):  # 9999999999: max step per epoch
-                    # "Segment" phrase.
-                    _1, (segmentation, _3, _4) = self._env.step(self._segment, SEG_stage=True)
-                    # "Focus" phrase.
-                    terminal, (_2, reward, info) = self._env.step(self._action, SEG_stage=False)
+                    # Push forward the environment.
+                    terminal, (segmentation, reward, info) = self._env.step(self._core_func)
 
                     # Update metric info.
                     if is_validate:
@@ -366,13 +364,6 @@ class DeepQNetwork(DQN):
         params_dir = conf_others.get('net_params')
         if params_dir is not None:
             if not params_dir.endswith('/'): params_dir += '/'
-            # var_list = tf.trainable_variables()
-            # g_list = tf.global_variables()
-            # for v in g_list:
-            #     if 'global_step' in v.name:
-            #         var_list.append(v)
-            #         break
-            # self._saver = tf.train.Saver(var_list=var_list)
             self._saver = tf.train.Saver()
             checkpoint_state = tf.train.get_checkpoint_state(params_dir)
             if checkpoint_state and checkpoint_state.model_checkpoint_path:
@@ -422,16 +413,14 @@ class DeepQNetwork(DQN):
         x1 = self._inputs[org_name + '/image']
         x2 = self._inputs[org_name + '/prev_result']
         x3 = self._inputs[org_name + '/position_info']
-        x4 = self._inputs[org_name + '/Segment_Stage']
-        x5 = self._inputs[org_name + '/Focus_Bbox']
+        x4 = self._inputs[org_name + '/Focus_Bbox']
         # Get loss input part.
         l1 = self._losses[self._name_space + '/GT_label']
         l2 = self._losses[self._name_space + '/clazz_weights']
         # Get loss value holder.
         sloss = self._losses[self._name_space + '/SEG_loss']
 
-        # Fake data. (Focus bbox, SEG stage)
-        SEG_stages = [True,] * batch_size
+        # Fake data. (Focus bbox, SEG )
         focus_bboxes = np.asarray([[0.0, 0.0, 1.0, 1.0]])   # [[y1, x1, y2, x2]]
         focus_bboxes = focus_bboxes * np.ones((batch_size, 4))
         SEG_prevs = np.zeros((batch_size, input_shape[0], input_shape[1]))
@@ -439,13 +428,13 @@ class DeepQNetwork(DQN):
             position_infos = np.ones((batch_size, input_shape[0], input_shape[1]))
         elif pos_method == 'coord':
             position_infos = focus_bboxes.copy()
-        elif pos_method == 'sight':
-            position_infos = focus_bboxes.copy()
+        elif pos_method == 'w/o':
+            position_infos = None
         else:
             raise ValueError('Unknown position information fusion method !!!')
 
         # The sub-function used to "Validate". Meanwhile define some holders and data.
-        x6 = self._inputs[self._name_space + '/Complete_Result']
+        x5 = self._inputs[self._name_space + '/Complete_Result']
         o1 = self._outputs[self._name_space + '/SEG_output']
         if CR_method == 'logit' or CR_method == 'prob':
             COMP_results = np.zeros((batch_size, suit_h, suit_w, clazz_dim), dtype=np.float32)
@@ -468,9 +457,8 @@ class DeepQNetwork(DQN):
                         x1: val_imgs[:la_l],
                         x2: SEG_prevs[:la_l],
                         x3: position_infos[:la_l],
-                        x4: SEG_stages[:la_l],
-                        x5: focus_bboxes[:la_l],
-                        x6: COMP_results[:la_l]
+                        x4: focus_bboxes[:la_l],
+                        x5: COMP_results[:la_l]
                     }
                     preds = self._sess.run(o1, feed_dict=feed_dict)
                     pred_3d.extend(preds)
@@ -498,6 +486,9 @@ class DeepQNetwork(DQN):
 
         # Start to train.
         for ite in range(start_pos // batch_size, max_iteration // batch_size + 1):
+            # Visual info.
+            st_time = time.time()
+
             # Prepare the input batch.
             images, labels, weights, _4 = self._data_adapter.next_image_pair('Train', batch_size=batch_size)
             if clazz_weights is not None:
@@ -511,8 +502,7 @@ class DeepQNetwork(DQN):
                 x1: images[:last_len],
                 x2: SEG_prevs[:last_len],
                 x3: position_infos[:last_len],
-                x4: SEG_stages[:last_len],
-                x5: focus_bboxes[:last_len],
+                x4: focus_bboxes[:last_len],
                 # Loss part.
                 l1: labels[:last_len],
                 l2: weights[:last_len]
@@ -522,7 +512,7 @@ class DeepQNetwork(DQN):
             _, v1_cost = self._sess.run([self._pre_op, sloss], feed_dict=feed_dict)
 
             # Print some info. --------------------------------------------
-            self._logger.info("Iter {} --> SEG loss: {} ".format(ite, v1_cost))
+            self._logger.info("Iter {} --> SEG loss: {}, cost time: {} ".format(ite, v1_cost, time.time() - st_time))
             # ------------------------------------------------------------
 
             # Get the pretrain step lately used to determine whether to save model or not.
@@ -533,7 +523,7 @@ class DeepQNetwork(DQN):
                 s1 = self._summary[self._name_space + '/Reward']
                 s2 = self._summary[self._name_space + '/DICE']
                 s3 = self._summary[self._name_space + '/BRATS_metric']
-                out_summary = self._summary[self._name_space + '/MergeSummary']
+                out_summary = self._summary[self._name_space + '/Summaries']
                 # Execute "Validate".
                 reward_list = 0
                 DICE_list, BRATS_list = seg_validate(2)
@@ -570,28 +560,23 @@ class DeepQNetwork(DQN):
         batch_size = conf_train.get('batch_size', 32)
         replay_iter = conf_train.get('replay_iter', 1)
 
-        # Declare the store function for "Sample/Experience Store".
-        def store_2mem(exp, SEG_stage):
+        # Declare the store function for "Experience Store".
+        def store_2mem(exp):
             r'''
                 experience likes below:
-                (sample_meta, SEG_stage, SEG_prev, cur_bbox, position_info,
-                    action, reward, terminal, SEG_cur, focus_bbox, next_posinfo)
+                (sample_meta, (SEG_prev, cur_bbox, position_info, acts_prev), \
+                    action, terminal, anchors.copy(), BBOX_errs.copy(), \
+                    (SEG_cur, focus_bbox, next_posinfo, acts_cur))
             '''
-            # Add to sample storage.
-            if SEG_stage:
-                self._sample_storage.append(exp)
-                if len(self._sample_storage) > memory_size:
-                    self._sample_storage.popleft()
+            # Store the experience in "Replay Memory".
+            if prioritized_replay:
+                # using the "Prioritized Replay".
+                self._replay_memory.store(exp)
             else:
-                # store the experience in "Replay Memory".
-                if prioritized_replay:
-                    # using the "Prioritized Replay".
-                    self._replay_memory.store(exp)
-                else:
-                    self._replay_memory.append(exp)
-                    # remove element (experience) if exceeds max size.
-                    if len(self._replay_memory) > memory_size:
-                        self._replay_memory.popleft()
+                self._replay_memory.append(exp)
+                # remove element (experience) if exceeds max size.
+                if len(self._replay_memory) > memory_size:
+                    self._replay_memory.popleft()
             # Finish.
             return
 
@@ -615,7 +600,7 @@ class DeepQNetwork(DQN):
 
             # ------------------- Start single iteration. -------------------
             # Reset the environment.
-            image, label, clazz_weights, (mha_idx, inst_idx) = self._env.reset()
+            image, label, clazz_weights, (mha_idx, inst_idx) = self._env.reset(self._segment_func)
 
             # Determine the store type.
             if store_type == 'light':
@@ -626,101 +611,48 @@ class DeepQNetwork(DQN):
                 raise ValueError('Unknown sample store type !!!')
 
             # ---------------------------- Core Part ----------------------------
-            # Pre-execute one step.
-            (S_SEG_prev, S_cur_bbox, S_position_info), \
-                S_action, S_reward, S_terminal, \
-                (S_SEG_cur, S_focus_bbox, S_next_posinfo), \
-                S_info = self._env.step(self._func_4train, SEG_stage=True)
-            store_2mem((sample_meta, True, S_SEG_prev, S_cur_bbox, S_position_info,
-                        S_action, S_reward, S_terminal, S_SEG_cur, S_focus_bbox, S_next_posinfo),
-                       SEG_stage=True)
-            # The "Focus".
-            (F_SEG_prev, F_cur_bbox, F_position_info), \
-                F_action, F_reward, F_terminal, \
-                (F_SEG_cur, F_focus_bbox, F_next_posinfo), \
-                F_info = self._env.step(self._func_4train, SEG_stage=False)
-            #  --> update visual.
-            turn_rewards += F_reward
-            # The terminal flag only works when in "Focus" phrase.
-            if F_terminal:
-                # Store all the elements if terminate in one step.
-                store_2mem((sample_meta, False, F_SEG_prev, F_cur_bbox, F_position_info,
-                            F_action, F_reward, F_terminal, F_SEG_cur, F_focus_bbox, F_next_posinfo),
-                           SEG_stage=False)
-                # Show some info. --------------------------------------------
-                self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
-                                   "cost time: {}".format(
-                    turn, 1, turn_rewards, self._epsilon, time.time() - start_time))
-                # ------------------------------------------------------------
+            # 9999999999: max step per iteration.
+            for step in range(9999999999):
+                # Push forward the environment.
+                (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev), \
+                    action, terminal, anchors, BBOX_errs, \
+                    (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur), \
+                    reward, info = self._env.step(self._core_func)
 
-            # Start iteration if not terminal in the very beginning.
-            else:
-                # Record the "Previous State" for "Focus" (DQN)
-                F_SEG_PREV = F_SEG_prev.copy()
-                F_CUR_BBOX = F_cur_bbox.copy()
-                F_POS_INFO = F_position_info.copy()
+                # Store the sample into "Segment" storage.
+                store_2mem((sample_meta, (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev),
+                            action, terminal, anchors, BBOX_errs,
+                            (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur), reward))
 
-                # 9999999999: max step per iteration.
-                for step in range(9999999999):
-                    # Execute the "Segment" phrase.
-                    (S_SEG_prev, S_cur_bbox, S_position_info), \
-                        S_action, S_reward, S_terminal, \
-                        (S_SEG_cur, S_focus_bbox, S_next_posinfo), \
-                        S_info = self._env.step(self._func_4train, SEG_stage=True)
-                    # Store the sample into "Segment" storage.
-                    store_2mem((sample_meta, True, S_SEG_prev, S_cur_bbox, S_position_info,
-                                S_action, S_reward, S_terminal, S_SEG_cur, S_focus_bbox, S_next_posinfo),
-                               SEG_stage=True)
+                # Current processing is terminated.
+                if terminal:
+                    # Show some info. --------------------------------------------
+                    self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
+                                       "cost time: {}".format(
+                        turn, step, turn_rewards, self._epsilon, time.time() - start_time))
+                    # ------------------------------------------------------------
+                    break
 
-                    # Execute the "Focus" phrase.
-                    (F_SEG_prev, F_cur_bbox, F_position_info), \
-                        F_action, F_reward, F_terminal, \
-                        (F_SEG_cur, F_focus_bbox, F_next_posinfo), \
-                        F_info = self._env.step(self._func_4train, SEG_stage=False)
-                    # Store the experience into "Focus" replay memory.
-                    store_2mem((sample_meta, False, F_SEG_PREV, F_CUR_BBOX, F_POS_INFO,
-                                F_action, F_reward, F_terminal, F_SEG_prev, F_cur_bbox, F_position_info),
-                               SEG_stage=False)
-
-                    # The terminal flag only works when in "Focus" phrase.
-                    if F_terminal:
-                        # Store the all elements (Cur - Next) if it's terminate now.
-                        #   Note that, it's the last experience, so we have to add it.
-                        store_2mem((sample_meta, False, F_SEG_prev, F_cur_bbox, F_position_info,
-                                    F_action, F_reward, F_terminal, F_SEG_cur, F_focus_bbox, F_next_posinfo),
-                                   SEG_stage=False)
-                        # Show some info. --------------------------------------------
-                        self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
-                                           "cost time: {}".format(
-                            turn, step, turn_rewards, self._epsilon, time.time() - start_time))
-                        # ------------------------------------------------------------
-                        break
-
-                    # Switch to next state (SEG_prev, cur_bbox, pos_info) for "Focus" phrase.
-                    F_SEG_PREV = F_SEG_prev.copy()
-                    F_CUR_BBOX = F_cur_bbox.copy()
-                    F_POS_INFO = F_position_info.copy()
-
-                    # Update some info for visual.
-                    turn_rewards += F_reward
+                # Update some info for visual.
+                turn_rewards += reward
             # ---------------------------- End of core part ----------------------------
 
             # Finish the process of current image. Render.
             self._env.render(None)
 
             # Check whether to training or not.
-            exec_train = (len(self._sample_storage) >= (batch_size // 2)) and \
-                         (len(self._replay_memory) >= (batch_size - batch_size // 2)) and \
+            exec_train = (len(self._replay_memory) >= batch_size) and \
                          (turn % replay_iter == 0)
             # Start training the DQN agent.
             if exec_train:
                 # Metric used to see the training time.
                 train_time = time.time()
                 # Really training the DQN agent.
-                v1_cost, v2_cost, v3_cost = self.__do_train()
+                v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train()
                 # Debug. ------------------------------------------------------
-                self._logger.info("Train iter {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, Training time: {}".format(
-                    turn // replay_iter, v1_cost, v2_cost, v3_cost, time.time() - train_time)
+                self._logger.info("Iter {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
+                                  "Reward Bias: {}, Training time: {}".format(
+                    turn, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
                 )
                 # -------------------------------------------------------------
 
@@ -737,8 +669,9 @@ class DeepQNetwork(DQN):
             The function is used to really execute the one-iteration training for whole model.
 
             ** Note that, The experience (the element of memory storage) consists of:
-                (sample_meta, SEG_stage, SEG_prev, cur_bbox, position_info, action, reward, terminal,
-                    SEG_cur, focus_bbox, next_posinfo)
+                (sample_meta, (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev),
+                    action, terminal, anchors, BBOX_errs,
+                    (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur), reward)
         '''
 
         # Get config.
@@ -749,30 +682,37 @@ class DeepQNetwork(DQN):
         double_q = conf_dqn.get('double_dqn', None)
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
         gamma = conf_dqn.get('discount_factor', 0.9)
-        fake_weight = conf_dqn.get('fake_exp_priority', 0.25)
 
         conf_others = self._config['Others']
-        # memory_size = conf_others.get('replay_memories')
         store_type = conf_others.get('sample_type', 'light')
         save_steps = conf_others.get('save_steps', 100)
         validate_steps = conf_others.get('validate_steps', 500)
         params_dir = conf_others.get('net_params')
 
         # ------------------------------- Data Preparation ------------------------
-        # The input batch holders.
+        # The input batch holders. -- sample meta
         images = []
         labels = []
         clazz_weights = []
-        SEG_stages = []
+        # state
         SEG_prevs = []
         cur_bboxes = []
         position_infos = []
+        acts_prevs = []
+        comp_prevs = []
+        # dqn
         actions = []
-        rewards = []
         terminals = []
+        anchors = []
+        BBOX_errs = []
+        # next state
         SEG_curs = []
         focus_bboxes = []
         next_pos_infos = []
+        acts_cur = []
+        comp_cur = []
+        # The previous reward.
+        VIS_reward = []
 
         # The function used to allocate each element to its corresponding batch.
         def allocate_2batches(data_batch):
@@ -784,45 +724,52 @@ class DeepQNetwork(DQN):
                     img, lab, weights = sample[0]
                 else:
                     raise ValueError('Unknown sample store type !!!')
-                # Add to each batch.
+                # Data meta.
                 images.append(img)
                 labels.append(lab)
                 clazz_weights.append(weights)
-                SEG_stages.append(sample[1])
-                SEG_prevs.append(sample[2])
-                cur_bboxes.append(sample[3])
-                position_infos.append(sample[4])
-                actions.append(sample[5])
-                rewards.append(sample[6])
-                terminals.append(sample[7])
-                SEG_curs.append(sample[8])
-                focus_bboxes.append(sample[9])
-                next_pos_infos.append(sample[10])
+                # state.
+                s11, s12, s13, s14, s15 = sample[1]
+                SEG_prevs.append(s11)
+                cur_bboxes.append(s12)
+                position_infos.append(s13)
+                acts_prevs.append(s14)
+                comp_prevs.append(s15)
+                # dqn.
+                actions.append(sample[2])
+                terminals.append(sample[3])
+                anchors.append(sample[4])
+                BBOX_errs.append(sample[5])
+                # next state.
+                s61, s62, s63, s64, s65 = sample[6]
+                SEG_curs.append(s61)
+                focus_bboxes.append(s62)
+                next_pos_infos.append(s63)
+                acts_cur.append(s64)
+                comp_cur.append(s65)
+                # previous reward.
+                VIS_reward.append(sample[7])
             return
-
-        # Randomly select a mini batch (uniform replay) for "Segmentation" branch.
-        mini_batch = random.sample(self._sample_storage, batch_size//2)
-        allocate_2batches(mini_batch)
 
         # Prioritized or randomly select a mini batch for "Focus" (DQN) branch.
         if prioritized_replay:
             # Prioritized replay. So the we will get three batches: tree_idx, mini_batches, ISWeights.
-            tree_idx, exp_batch, ISWeights = self._replay_memory.sample(batch_size - batch_size//2)
+            tree_idx, exp_batch, ISWeights = self._replay_memory.sample(batch_size)
         else:
             # Randomly select experience batch (uniform replay)
-            exp_batch = random.sample(self._replay_memory, batch_size - batch_size//2)
+            exp_batch = random.sample(self._replay_memory, batch_size)
         allocate_2batches(exp_batch)
 
         # Calculate the target Q values.
-        #   1) get next Q values, so here we pass through (SEG_curs, focus_bboxes, next_pos_infos)
-        #   2) iteratively add "reward" or "reward + next q val" as the target Q values.
+        #   1) get next Q values, so here we pass through (SEG_curs, focus_bboxes, next_pos_infos, acts_cur, comp_cur)
+        #   2) iteratively add "0." or "next-q-val" as the target Q values.
         target_q_values = []
-        next_q_values = self.__next_Qvalues((images, SEG_curs, next_pos_infos, SEG_stages, focus_bboxes))
-        for t, r, nqv in zip(terminals, rewards, next_q_values):
+        next_q_values = self.__next_Qvalues((images, SEG_curs, next_pos_infos, focus_bboxes, acts_cur, comp_cur))
+        for t, nqv in zip(terminals, next_q_values):
             if t:
-                target_q_values.append(r)
+                target_q_values.append(0.)
             else:
-                target_q_values.append(r + gamma * nqv)     # Discounted future reward
+                target_q_values.append(gamma * nqv)     # Discounted future reward
 
         # ------------------------------- Train Model ------------------------
         # Get origin input part.
@@ -833,31 +780,39 @@ class DeepQNetwork(DQN):
         x1 = self._inputs[org_name + '/image']
         x2 = self._inputs[org_name + '/prev_result']
         x3 = self._inputs[org_name + '/position_info']
-        x4 = self._inputs[org_name + '/Segment_Stage']
-        x5 = self._inputs[org_name + '/Focus_Bbox']
+        x4 = self._inputs[org_name + '/Focus_Bbox']
+        x5 = self._inputs[org_name + '/actions_history']
+        x6 = self._inputs[self._name_space + '/Complete_Result']
         # Get loss input part.
         l1 = self._losses[self._name_space + '/GT_label']
         l2 = self._losses[self._name_space + '/clazz_weights']
         l3 = self._losses[self._name_space + '/prediction_actions']
         l4 = self._losses[self._name_space + '/target_Q_values']
+        l5 = self._losses[self._name_space + '/Candidates_Bbox']
+        l6 = self._losses[self._name_space + '/BBOX_err']
         # Get loss value holder.
         sloss = self._losses[self._name_space + '/SEG_loss']
         dloss = self._losses[self._name_space + '/DQN_loss']
         nloss = self._losses[self._name_space + '/NET_loss']
+        dreward = self._losses[self._name_space + '/DQN_Rewards']
 
         # Generate the basic feed dictionary lately used for training the whole model.
         feed_dict = {
+            # Segmentation part.
+            x6: comp_prevs,
             # Origin input part.
             x1: images,
             x2: SEG_prevs,
             x3: position_infos,
-            x4: SEG_stages,
-            x5: cur_bboxes,
+            x4: cur_bboxes,
+            x5: acts_prevs,
             # Loss part.
             l1: labels,
             l2: clazz_weights,
             l3: actions,
-            l4: target_q_values
+            l4: target_q_values,
+            l5: anchors,
+            l6: BBOX_errs
         }
 
         # Do train.
@@ -866,23 +821,20 @@ class DeepQNetwork(DQN):
             #   priority for experience.
             ISw = self._losses[self._name_space + '/IS_weights']
             exp_pri = self._losses[self._name_space + '/EXP_priority']
-            # Extend the weights with fake sample weights.
-            FAKE_W = [fake_weight] * len(mini_batch)
-            FAKE_W.extend(ISWeights)
-            ISWeights = FAKE_W
             # Add to feed dictionary.
             feed_dict[ISw] = ISWeights
             # Execute the training operation.
-            _, exp_priority, v1_cost, v2_cost, v3_cost = self._sess.run(
-                [self._train_op, exp_pri, nloss, sloss, dloss], feed_dict=feed_dict)
-            # Truncate the values to get the real experience priority.
-            exp_priority = exp_priority[len(mini_batch):]
+            _, exp_priority, v1_cost, v2_cost, v3_cost, v4_rew = self._sess.run(
+                [self._train_op, exp_pri, nloss, sloss, dloss, dreward], feed_dict=feed_dict)
             # Update probability for leafs.
             self._replay_memory.batch_update(tree_idx, exp_priority)  # update priority
         else:
             # Simply feed the dictionary to the selected operation is OK.
-            _, v1_cost, v2_cost, v3_cost = self._sess.run(
-                [self._train_op, nloss, sloss, dloss], feed_dict=feed_dict)
+            _, v1_cost, v2_cost, v3_cost, v4_rew = self._sess.run(
+                [self._train_op, nloss, sloss, dloss, dreward], feed_dict=feed_dict)
+
+        # Compute the bias of "Training-Reward" and "Previous-Reward".
+        bias_reward = np.mean(v4_rew) - np.mean(VIS_reward)
 
         # ------------------------------- Save Model Parameters ------------------------
         # Get the global step lately used to determine whether to save model or not.
@@ -911,31 +863,35 @@ class DeepQNetwork(DQN):
             self._model.notify_copy2_DDQN(self._sess, only_head=False)
 
         # Finish one turn train. Return the cost value.
-        return v1_cost, v2_cost, v3_cost
+        return v1_cost, v2_cost, v3_cost, bias_reward
 
 
-    def _func_4train(self, x):
+    def _core_func(self, x, with_explore, with_reward):
         r'''
             Use model to generate the segmentation result for current region.
             What's more, it will use the Q values generated by DQN to select action
                 or random select actions according to the epsilon value (which
                 indicates it's "Exploitation" or "Exploration" phrase).
 
-            ** Note that, this function should be called in "Validate" or "Test" phrase.
+            ** Note that, this function will be called in all phrase. It's the
+                core function. The return elements depends on input.
 
         ----------------------------------------------------------------
         Parameters:
-            x: The current observation of environment. It consists of:
-                (image, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_res)
+            x: The current observation of environment.
+                When with rewards, it consists of:
+                    (image, SEG_prev, position_info, focus_bbox, acts_prev, COMP_res,
+                    anchors, BBOX_errs, label)
+                Otherwise:
+                    (image, SEG_prev, position_info, focus_bbox, acts_prev, COMP_res)
+            with_explore: The flag indicates whether enable the "E-greedy Exploration" or not.
+            with_reward: The flag that indicating whether compute rewards or not.
         ----------------------------------------------------------------
         Return:
             The (whole-view) segmentation result, and the complete result value
                 (for next segmentation of iteration).
-            What's more, return the action.
+            What's more, return the action. (And rewards if given)
         '''
-
-        # Get each input data.
-        image, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
 
         # Determine the stage prefix.
         conf_dqn = self._config['DQN']
@@ -948,23 +904,52 @@ class DeepQNetwork(DQN):
         x1 = self._inputs[stage_prefix + '/image']
         x2 = self._inputs[stage_prefix + '/prev_result']
         x3 = self._inputs[stage_prefix + '/position_info']
-        x4 = self._inputs[stage_prefix + '/Segment_Stage']
-        x5 = self._inputs[stage_prefix + '/Focus_Bbox']
+        x4 = self._inputs[stage_prefix + '/Focus_Bbox']
+        x5 = self._inputs[stage_prefix + '/actions_history']
         x6 = self._inputs[self._name_space + '/Complete_Result']
+        # Get reward calculation part.
+        l1 = self._losses[self._name_space + '/Candidates_Bbox']
+        l2 = self._losses[self._name_space + '/BBOX_err']
+        l3 = self._losses[self._name_space + '/GT_label']
+        l4 = self._losses[self._name_space + '/clazz_weights']
         # Get segmentation output holder of model.
         y1 = self._outputs[self._name_space + '/SEG_output']
         y2 = self._outputs[self._name_space + '/FUSE_result']
         y3 = self._outputs[stage_prefix + '/DQN_output']
+        y4 = self._losses[self._name_space + '/DQN_Rewards']
 
-        # Generate the segmentation result for current region (focus bbox).
-        segmentation, COMP_res, q_val = self._sess.run([y1, y2, y3], feed_dict={
-            x1: [image],
-            x2: [SEG_prev],
-            x3: [position_info],
-            x4: [SEG_stage],
-            x5: [focus_bbox],
-            x6: [COMP_result]
-        })
+        # Different execution logic according to the flag.
+        if with_reward:
+            # Get each input elements.
+            image, SEG_prev, position_info, focus_bbox, acts_prev, \
+                COMP_result, anchors, BBOX_errs, label, clazz_weights = x
+            # Generate the segmentation result for current region (focus bbox).
+            segmentation, COMP_res, q_val, rewards = self._sess.run([y1, y2, y3, y4], feed_dict={
+                # Input part.
+                x1: [image],
+                x2: [SEG_prev],
+                x3: [position_info],
+                x4: [focus_bbox],
+                x5: [acts_prev],
+                x6: [COMP_result],
+                # Reward part.
+                l1: [anchors],
+                l2: [BBOX_errs],
+                l3: [label],
+                l4: [clazz_weights]
+            })
+        else:
+            # Get input elements.
+            image, SEG_prev, position_info, focus_bbox, acts_prev, COMP_result = x
+            # Generate the segmentation result for current region (focus bbox).
+            segmentation, COMP_res, q_val = self._sess.run([y1, y2, y3], feed_dict={
+                x1: [image],
+                x2: [SEG_prev],
+                x3: [position_info],
+                x4: [focus_bbox],
+                x5: [acts_prev],
+                x6: [COMP_result],
+            })
 
         # Get the segmentation and complete value result.
         segmentation = segmentation[0]
@@ -973,13 +958,18 @@ class DeepQNetwork(DQN):
         # Select action according to the output of "Deep Q Network".
         action = np.argmax(q_val, axis=-1)  # scalar
         # e-greedy action policy.
-        action = self.__egreedy_action(action, self._epsilon)
+        if with_explore:
+            action = self.__egreedy_action(action, self._epsilon)
 
-        # Return both segmentation result and DQN result.
-        return segmentation, COMP_res, action
+        # Return both segmentation result and DQN result. What's more, return reward if given.
+        if with_reward:
+            rewards = rewards[0]
+            return segmentation, COMP_res, action, rewards
+        else:
+            return segmentation, COMP_res, action
 
 
-    def _segment(self, x):
+    def _segment_func(self, x):
         r'''
             Use model to generate the segmentation result for current region.
 
@@ -996,7 +986,7 @@ class DeepQNetwork(DQN):
         '''
 
         # Get each input data.
-        image, SEG_prev, position_info, SEG_stage, focus_bbox, COMP_result = x
+        image, SEG_prev, position_info, focus_bbox, COMP_result = x
 
         # Determine the stage prefix.
         conf_dqn = self._config['DQN']
@@ -1009,9 +999,8 @@ class DeepQNetwork(DQN):
         x1 = self._inputs[stage_prefix + '/image']
         x2 = self._inputs[stage_prefix + '/prev_result']
         x3 = self._inputs[stage_prefix + '/position_info']
-        x4 = self._inputs[stage_prefix + '/Segment_Stage']
-        x5 = self._inputs[stage_prefix + '/Focus_Bbox']
-        x6 = self._inputs[self._name_space + '/Complete_Result']
+        x4 = self._inputs[stage_prefix + '/Focus_Bbox']
+        x5 = self._inputs[self._name_space + '/Complete_Result']
         # Get segmentation output holder of model.
         y1 = self._outputs[self._name_space + '/SEG_output']
         y2 = self._outputs[self._name_space + '/FUSE_result']
@@ -1021,63 +1010,13 @@ class DeepQNetwork(DQN):
             x1: [image],
             x2: [SEG_prev],
             x3: [position_info],
-            x4: [SEG_stage],
-            x5: [focus_bbox],
-            x6: [COMP_result]
+            x4: [focus_bbox],
+            x5: [COMP_result]
         })
         # Get the segmentation and complete value result.
         segmentation = segmentation[0]
         COMP_res = COMP_res[0]
         return segmentation, COMP_res
-
-
-    def _action(self, x):
-        r'''
-            Let DQN select action for current state, that is,
-                select the action with max Q value.
-
-            ** Note that, this function should be called in "Validate" or "Test" phrase.
-
-        ----------------------------------------------------------------
-        Parameters:
-            x: The current observation of environment. It consists of:
-                (image, SEG_prev, position_info, SEG_stage, focus_bbox)
-        ----------------------------------------------------------------
-        Return:
-            The action index with max Q value.
-        '''
-
-        # Get each input data.
-        image, SEG_prev, position_info, SEG_stage, focus_bbox = x
-
-        # Determine the stage prefix.
-        conf_dqn = self._config['DQN']
-        double_q = conf_dqn.get('double_dqn', None)
-        if double_q is None:
-            stage_prefix = self._name_space
-        else:
-            stage_prefix = double_q[0]
-        # Get each input holder of model.
-        x1 = self._inputs[stage_prefix + '/image']
-        x2 = self._inputs[stage_prefix + '/prev_result']
-        x3 = self._inputs[stage_prefix + '/position_info']
-        x4 = self._inputs[stage_prefix + '/Segment_Stage']
-        x5 = self._inputs[stage_prefix + '/Focus_Bbox']
-        # Get DQN output holder of model.
-        y = self._outputs[stage_prefix + '/DQN_output']
-
-        # Calculate the Q values of each action within current state.
-        q_val = self._sess.run(y, feed_dict={
-            x1: [image],
-            x2: [SEG_prev],
-            x3: [position_info],
-            x4: [SEG_stage],
-            x5: [focus_bbox]
-        })[0]
-
-        # Select action according to the output of "Deep Q Network".
-        action = np.argmax(q_val, axis=-1)  # scalar
-        return action
 
 
     def __explore_policy(self, distribution='uniform'):
@@ -1117,7 +1056,7 @@ class DeepQNetwork(DQN):
         '''
 
         # Get each input data.
-        images, SEG_prevs, position_infos, SEG_stages, focus_bboxes = x
+        images, SEG_prevs, position_infos, focus_bboxes, acts_prevs, comp_prevs = x
 
         # Determine the stage prefix.
         conf_dqn = self._config['DQN']
@@ -1131,8 +1070,9 @@ class DeepQNetwork(DQN):
         x1 = self._inputs[org_name + '/image']
         x2 = self._inputs[org_name + '/prev_result']
         x3 = self._inputs[org_name + '/position_info']
-        x4 = self._inputs[org_name + '/Segment_Stage']
-        x5 = self._inputs[org_name + '/Focus_Bbox']
+        x4 = self._inputs[org_name + '/Focus_Bbox']
+        x5 = self._inputs[org_name + '/actions_history']
+        x6 = self._inputs[self._name_space + '/Complete_Result']
         # Get DQN output holder of model.
         y_org = self._outputs[org_name + '/DQN_output']
 
@@ -1143,8 +1083,9 @@ class DeepQNetwork(DQN):
                 x1: images,
                 x2: SEG_prevs,
                 x3: position_infos,
-                x4: SEG_stages,
-                x5: focus_bboxes
+                x4: focus_bboxes,
+                x5: acts_prevs,
+                x6: comp_prevs
             })  # [batch, act_dim]
             # Use the max values of actions as next Q value.
             next_q_values = np.max(q_vals, axis=-1)     # [batch]
@@ -1153,25 +1094,27 @@ class DeepQNetwork(DQN):
             l1 = self._losses[tar_name + '/image']
             l2 = self._losses[tar_name + '/prev_result']
             l3 = self._losses[tar_name + '/position_info']
-            l4 = self._losses[tar_name + '/Segment_Stage']
-            l5 = self._losses[tar_name + '/Focus_Bbox']
+            l4 = self._losses[tar_name + '/Focus_Bbox']
+            l5 = self._losses[tar_name + '/actions_history']
             # Get DQN output holder of model.
             y_tar = self._losses[tar_name + '/DQN_output']
             # "Double DQN" mode, use the actions selected by "target" model
             #   to filter (get) the next Q values from "origin" model.
             org_qvals, tar_qvals = self._sess.run([y_org, y_tar], feed_dict={
+                # segmentation part.
+                x6: comp_prevs,
                 # origin part
                 x1: images,
                 x2: SEG_prevs,
                 x3: position_infos,
-                x4: SEG_stages,
-                x5: focus_bboxes,
+                x4: focus_bboxes,
+                x5: acts_prevs,
                 # target part
                 l1: images,
                 l2: SEG_prevs,
                 l3: position_infos,
-                l4: SEG_stages,
-                l5: focus_bboxes
+                l4: focus_bboxes,
+                l5: acts_prevs
             })
             # Generate the action from "target" and get Q values from "origin".
             tar_acts = np.argmax(tar_qvals, axis=-1)    # [batch]

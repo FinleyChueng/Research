@@ -227,10 +227,10 @@ class DqnAgent:
             def region_fuzzy(x, bbox, name):
                 rs = [-1,]
                 rs.extend(x.get_shape().as_list()[1:])
-                def gause_fuzzy():
-                    _h, _w = x.get_shape().as_list()[1:3]
+                def gause_fuzzy(_inp1, _inp2):
+                    _h, _w = _inp1.shape[1:3]
                     _y = []
-                    for _x1, _x2 in zip(x, bbox):
+                    for _x1, _x2 in zip(_inp1, _inp2):
                         _y1 = cv2.GaussianBlur(_x1, (9, 9), 0)  # [h, w, c]
                         _cy1, _cx1, _cy2, _cx2 = _x2
                         _cy1 = int(round(_cy1 * _h))
