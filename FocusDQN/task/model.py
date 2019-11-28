@@ -217,6 +217,26 @@ class DqnAgent:
             # The bounding-box indicating whether to focus on.
             focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
 
+            # Declare the function used to generate the "Focus Map".
+            def focus_map(bbox, cor_size, name):
+                h, w = cor_size
+                def _gen_map(_inp1):
+                    _y = []
+                    for _x1 in _inp1:
+                        _cy1, _cx1, _cy2, _cx2 = _x1
+                        _cy1 = int(round(_cy1 * h))
+                        _cx1 = int(round(_cx1 * w))
+                        _cy2 = int(round(_cy2 * h))
+                        _cx2 = int(round(_cx2 * w))
+                        _m = np.zeros((h, w, 1), dtype=np.bool)
+                        _m[_cy1: _cy2, _cx1: _cx2, :] = True  # [h, w, 1]
+                        _y.append(_m)
+                    _y = np.asarray(_y)
+                    return _y
+                y, = tf.py_func(_gen_map, inp=[bbox], Tout=[tf.bool])
+                y = tf.reshape(y, [-1, h, w, 1], name=name)  # [?, h, w, 1]
+                return y
+
             # Declare the function used to crop the specific bbox region of input tensor.
             def region_crop(x, bbox, size, name):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))
@@ -224,26 +244,18 @@ class DqnAgent:
                 return y
 
             # Declare the function used to fuzzy the region outside the "Focus Bbox".
-            def region_fuzzy(x, bbox, name):
+            def region_fuzzy(x, map, name):
                 rs = [-1,]
                 rs.extend(x.get_shape().as_list()[1:])
-                def gause_fuzzy(_inp1, _inp2):
-                    _h, _w = _inp1.shape[1:3]
+                def _gause_fuzzy(_inp1, _inp2):
                     _y = []
                     for _x1, _x2 in zip(_inp1, _inp2):
                         _y1 = cv2.GaussianBlur(_x1, (9, 9), 0)  # [h, w, c]
-                        _cy1, _cx1, _cy2, _cx2 = _x2
-                        _cy1 = int(round(_cy1 * _h))
-                        _cx1 = int(round(_cx1 * _w))
-                        _cy2 = int(round(_cy2 * _h))
-                        _cx2 = int(round(_cx2 * _w))
-                        _m = np.zeros((_h, _w, 1), dtype=np.bool)
-                        _m[_cy1: _cy2, _cx1: _cx2, :] = True    # [h, w, c]
-                        _yi = np.where(_m, _x1, _y1)    # [h, w, c]
+                        _yi = np.where(_x2, _x1, _y1)    # [h, w, c]
                         _y.append(_yi)
                     _y = np.asarray(_y)
                     return _y
-                y, = tf.py_func(gause_fuzzy, inp=[x, bbox], Tout=[tf.float32])
+                y, = tf.py_func(_gause_fuzzy, inp=[x, map], Tout=[tf.float32])
                 y = tf.reshape(y, rs, name=name)    # [?, h, w, c]
                 return y
 
@@ -290,8 +302,17 @@ class DqnAgent:
                                                  dst_height=suit_h,
                                                  dst_width=suit_w,
                                                  name='Scale_FoBbox')
-                # Package the scaled "Focus Bbox" into the mediate holders.
-                net_util.package_tensor(self.__mediates, focus_bbox)
+                # Generate "Focus Map".
+                focus_map = focus_map(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
+            else:
+                # Rename the "Focus Bbox" for conveniently usage.
+                focus_bbox = tf.identity(focus_bbox, name='Scale_FoBbox')
+                # Only generate the "Focus Map".
+                focus_map = focus_map(focus_bbox, cor_size=[input_shape[1], input_shape[2]], name='Focus_Map')
+
+            # Package the "Scaled Focus Bbox", "Focus Map" into the mediate holders.
+            net_util.package_tensor(self.__mediates, focus_bbox)
+            net_util.package_tensor(self.__mediates, focus_map)
 
             # Different fusion method for input according to input type.
             if input_type == 'region':
@@ -306,7 +327,7 @@ class DqnAgent:
                 input_tensor = raw_image
             elif input_type == 'fuzzy':
                 # Fuzzy the region outside the "Focus Region".
-                input_tensor = region_fuzzy(raw_image, focus_bbox, name='Fuzzy_input')
+                input_tensor = region_fuzzy(raw_image, focus_map, name='Fuzzy_input')
             else:
                 raise ValueError('Unknown input type !!!')
 
@@ -840,6 +861,7 @@ class DqnAgent:
         else:
             stage_prefix = self._name_space
         focus_bbox = self.__mediates[stage_prefix+'/Scale_FoBbox']
+        focus_map = self.__mediates[stage_prefix+'/Focus_Map']
 
         # Start definition.
         RF_name = name_space + '/ResFuse'
@@ -875,10 +897,18 @@ class DqnAgent:
                                                                [None, up_h, up_w, classification_dim],
                                                                name='Complete_Result')  # [?, h, w, cls]
                 # Fuse the result in "Logit"-level, and generate the final segmentation result.
-                FUSE_result = tf.add(complete_result, REGION_tensor, name='RawF_result')    # [?, h, w, cls]
-                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0.0),
-                                       REGION_tensor, FUSE_result,
-                                       name='FUSE_result')  # filter the init.
+                if logit_type in ['bbox-bi', 'bbox-crop']:
+                    focus_map = tf.tile(focus_map, multiples=[1, 1, 1, classification_dim])     # [?, h, w, cls]
+                    FUSE_result = tf.divide(tf.add(complete_result, REGION_tensor), 2.0,
+                                            name='RawF_result')     # [?, h, w, cls]
+                    FUSE_result = tf.where(focus_map, FUSE_result, complete_result,
+                                           name='FUSE_result')  # [?, h, w, cls]
+                elif logit_type == 'complete':
+                    FUSE_result = tf.divide(tf.add(complete_result, REGION_tensor), 2.0,
+                                            name='FUSE_result')     # [?, h, w, cls]
+                else:
+                    raise ValueError('Unknown segmentation logit type !!!')
+                # Translate to result.
                 SEG_prob = tf.nn.softmax(FUSE_result, name='SEG_prob')  # [?, h, w, cls]
                 SEG_output = tf.argmax(SEG_prob, axis=-1, name='SEG_suit_output')    # [?, h, w]
             elif fusion_method == 'prob':
@@ -888,12 +918,18 @@ class DqnAgent:
                                                                name='Complete_Result')  # [?, h, w, cls]
                 # Fuse the result in "Probability"-level, and generate the final segmentation result.
                 region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
-                FUSE_result = tf.where(tf.equal(region_prob, 0.0), complete_result,
-                                       tf.add(region_prob, complete_result) / 2.0,
-                                       name='RawF_result')  # [?, h, w, cls]
-                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0.0),
-                                       region_prob, FUSE_result,
-                                       name='FUSE_result')  # filter the init.
+                if logit_type in ['bbox-bi', 'bbox-crop']:
+                    focus_map = tf.tile(focus_map, multiples=[1, 1, 1, classification_dim])  # [?, h, w, cls]
+                    FUSE_result = tf.divide(tf.add(complete_result, region_prob), 2.0,
+                                            name='RawF_result')     # [?, h, w, cls]
+                    FUSE_result = tf.where(focus_map, FUSE_result, complete_result,
+                                           name='FUSE_result')  # [?, h, w, cls]
+                elif logit_type == 'complete':
+                    FUSE_result = tf.divide(tf.add(complete_result, region_prob), 2.0,
+                                            name='FUSE_result')     # [?, h, w, cls]
+                else:
+                    raise ValueError('Unknown segmentation logit type !!!')
+                # Translate to result.
                 SEG_output = tf.argmax(FUSE_result, axis=-1, name='SEG_suit_output')  # [?, h, w]
             elif fusion_method == 'mask':
                 # The placeholder of "Complete Result". --> Mask.
@@ -904,11 +940,14 @@ class DqnAgent:
                 region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
                 region_mask = tf.argmax(region_prob, axis=-1, name='region_mask')   # [?, h, w]
                 # Simply strategy: Use the "Region Mask" as the ground truth expects for "Background" category.
-                FUSE_result = tf.where(tf.equal(region_mask, 0), complete_result, region_mask,
-                                       name='RawF_result')  # [?, h, w]
-                FUSE_result = tf.where(tf.equal(tf.reduce_sum(complete_result), 0),
-                                       region_mask, FUSE_result,
-                                       name='FUSE_result')  # filter the init.
+                if logit_type in ['bbox-bi', 'bbox-crop']:
+                    focus_map = focus_map[:, :, :, 0]   # [?, h, w]
+                    FUSE_result = tf.where(focus_map, region_mask, complete_result,
+                                           name='FUSE_result')  # [?, h, w]
+                elif logit_type == 'complete':
+                    FUSE_result = region_mask   # [?, h, w]
+                else:
+                    raise ValueError('Unknown segmentation logit type !!!')
                 # Fusion result is the final segmentation result.
                 SEG_output = tf.identity(FUSE_result, name='SEG_suit_output')  # [?, h, w]
             else:
