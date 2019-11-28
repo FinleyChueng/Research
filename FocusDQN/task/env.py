@@ -374,8 +374,8 @@ class FocusEnv:
                 pos_info[fy1: fy2, fx1: fx2] = 1
             elif pos_method == 'coord':
                 pos_info = focus_bbox.copy()
-            elif pos_method == 'sight':
-                pos_info = focus_bbox.copy()
+            elif pos_method == 'w/o':
+                pos_info = None
             else:
                 raise ValueError('Unknown position information fusion method !!!')
             return pos_info

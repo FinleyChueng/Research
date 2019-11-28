@@ -12,6 +12,80 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Just Test -------
 
+# from dataset.adapter.bratsAdapter import BratsAdapter
+# adapter = BratsAdapter(enable_data_enhance=False)
+# adapter.reset_position(35*155+70)
+#
+#
+# import tensorflow as tf
+# import cv2
+# import matplotlib.pyplot as plt
+#
+# def fuzzy(img, box):
+#     # dst = cv2.GaussianBlur(img, (9, 9), 0)
+#     h, w = img.shape[1:3]
+#     dst = []
+#     for e, b in zip(img, box):
+#         f = cv2.GaussianBlur(e, (9, 9), 0)  # [h, w, c]
+#         oy1, ox1, oy2, ox2 = b
+#         oy1 = int(round(oy1 * h))
+#         ox1 = int(round(ox1 * w))
+#         oy2 = int(round(oy2 * h))
+#         ox2 = int(round(ox2 * w))
+#         mask = np.zeros((h, w), dtype=np.bool)
+#         mask[oy1: oy2, ox1: ox2] = True
+#         mask = np.expand_dims(mask, axis=-1)    # [h, w, 1]
+#         r = np.where(mask, e, f)
+#         dst.append(r)
+#     dst = np.asarray(dst)
+#     print('inner fuzzy func', dst.shape)
+#     return dst
+# # src = tf.placeholder(tf.float32, [240, 240, 4])
+# src = tf.placeholder(tf.float32, [None, 240, 240, 4])
+# bbox = tf.placeholder(tf.float32, [None, 4])
+# dst, = tf.py_func(fuzzy, [src, bbox], [tf.float32])
+# h, w, c = src.get_shape().as_list()[1:]
+# dst = tf.reshape(dst, [-1, h, w, c])
+#
+# print('dst tensor', dst.shape)
+#
+# sess = tf.Session()
+# # im = adapter.next_image_pair('Train', 32)[0]
+# im = adapter.next_image_pair('Train', 1)[0]
+# # tar = sess.run(dst, feed_dict={src: im})[0]
+# # tar = sess.run(dst, feed_dict={src: [im]})[0]
+# tar = sess.run(dst, feed_dict={
+#     src: [im],
+#     bbox: [[0.6, 0.5, 0.77, 0.66]]
+#     # bbox: [[0.3, 0.6, 0.55, 0.77]]
+# })[0]
+# print(tar)
+# print(tar.ndim)
+#
+# plt.figure(1)
+# plt.subplot(121)
+# plt.imshow(im[:, :, 0], cmap='gray')
+# plt.subplot(122)
+# plt.imshow(tar[:, :, 0], cmap='gray')
+# plt.figure(2)
+# plt.subplot(121)
+# plt.imshow(im[:, :, 1], cmap='gray')
+# plt.subplot(122)
+# plt.imshow(tar[:, :, 1], cmap='gray')
+# plt.figure(3)
+# plt.subplot(121)
+# plt.imshow(im[:, :, 2], cmap='gray')
+# plt.subplot(122)
+# plt.imshow(tar[:, :, 2], cmap='gray')
+# plt.figure(4)
+# plt.subplot(121)
+# plt.imshow(im[:, :, 3], cmap='gray')
+# plt.subplot(122)
+# plt.imshow(tar[:, :, 3], cmap='gray')
+# plt.show()
+
+
+
 # import util.evaluation as eva
 #
 # p = np.zeros((240, 240), dtype=np.int64)

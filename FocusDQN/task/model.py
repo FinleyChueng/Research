@@ -1,6 +1,7 @@
 import tensorflow as tf
 import tensorflow.contrib.layers as tf_layers
 import numpy as np
+import cv2
 import tfmodule.layer as cus_layers
 import tfmodule.residual as cus_res
 import tfmodule.util as net_util
@@ -216,13 +217,34 @@ class DqnAgent:
             # The bounding-box indicating whether to focus on.
             focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
 
-            # The flag that indicates whether it's "Segment" or "Focus" stage.
-            segment_stage = net_util.placeholder_wrapper(self._inputs, tf.bool, [None, ], name='Segment_Stage')
-
             # Declare the function used to crop the specific bbox region of input tensor.
             def region_crop(x, bbox, size, name):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))
                 y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name=name + '_focus_crop')
+                return y
+
+            # Declare the function used to fuzzy the region outside the "Focus Bbox".
+            def region_fuzzy(x, bbox, name):
+                rs = [-1,]
+                rs.extend(x.get_shape().as_list()[1:])
+                def gause_fuzzy():
+                    _h, _w = x.get_shape().as_list()[1:3]
+                    _y = []
+                    for _x1, _x2 in zip(x, bbox):
+                        _y1 = cv2.GaussianBlur(_x1, (9, 9), 0)  # [h, w, c]
+                        _cy1, _cx1, _cy2, _cx2 = _x2
+                        _cy1 = int(round(_cy1 * _h))
+                        _cx1 = int(round(_cx1 * _w))
+                        _cy2 = int(round(_cy2 * _h))
+                        _cx2 = int(round(_cx2 * _w))
+                        _m = np.zeros((_h, _w, 1), dtype=np.bool)
+                        _m[_cy1: _cy2, _cx1: _cx2, :] = True    # [h, w, c]
+                        _yi = np.where(_m, _x1, _y1)    # [h, w, c]
+                        _y.append(_yi)
+                    _y = np.asarray(_y)
+                    return _y
+                y, = tf.py_func(gause_fuzzy, inp=[x, bbox], Tout=[tf.float32])
+                y = tf.reshape(y, rs, name=name)    # [?, h, w, c]
                 return y
 
             # Define the "Position Information" placeholder.
@@ -233,9 +255,6 @@ class DqnAgent:
                 # Expand additional dimension for conveniently processing.
                 pos_info = tf.expand_dims(pos_info, axis=-1, name='expa_Pinfo')  # [?, h, w, 1]
             elif pos_method == 'coord':
-                pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4],
-                                                        name=pos_name)  # [?, 4]
-            elif pos_method == 'sight':
                 pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4],
                                                         name=pos_name)  # [?, 4]
             elif pos_method == 'w/o':
@@ -276,23 +295,18 @@ class DqnAgent:
 
             # Different fusion method for input according to input type.
             if input_type == 'region':
-                # After declaring the public input part, it shall deal with the input tensor
-                #   according to the different stage (branch). That is:
-                # 1. Focus on the given region (bounding-box) if it's "Segmentation" stage.
-                # 2. Introduce the position info if it's "Region Selection" stage with the
-                #       "sight" position info.
-                input_tensor = tf.where(segment_stage,
-                                        region_crop(raw_image, focus_bbox, [suit_h, suit_w], 'SE'),
-                                        raw_image if pos_method != 'sight'
-                                        else region_crop(raw_image, pos_info, [suit_h, suit_w], 'FO'),
-                                        name='1E_foInput')
+                # Focus on the "Region Perspective".
+                input_tensor = region_crop(raw_image, focus_bbox, [suit_h, suit_w], name='region_input')
             elif input_type == 'WR':
                 # Concatenate the "Whole Perspective" with "Region Perspective".
-                input_tensor = region_crop(raw_image, focus_bbox, [suit_h, suit_w], '1E_foInput')
+                input_tensor = region_crop(raw_image, focus_bbox, [suit_h, suit_w], name='1E_foInput')
                 input_tensor = tf.concat([raw_image, input_tensor], axis=-1, name='WR_input')
             elif input_type == 'whole':
                 # Do not need do something, use raw image is okay.
                 input_tensor = raw_image
+            elif input_type == 'fuzzy':
+                # Fuzzy the region outside the "Focus Region".
+                input_tensor = region_fuzzy(raw_image, focus_bbox, name='Fuzzy_input')
             else:
                 raise ValueError('Unknown input type !!!')
 
@@ -1522,10 +1536,8 @@ class DqnAgent:
 
         # Get configuration.
         conf_dqn = self._config['DQN']
-        conf_train = self._config['Training']
         # Get detailed parameters.
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
-        sample_share = conf_train.get('sample_share', False)
 
         # ---------------------- Definition of UN cross-entropy loss ------------------------
         LOSS_name = name_space + '/DQNLoss'
@@ -1546,20 +1558,6 @@ class DqnAgent:
 
             # The difference between prediction and target Q values.
             q_diff = tf.subtract(tf.add(target_q_vals, pred_rewards), pred_q_vals, name='Q_diff')   # [?]
-
-            # Multiply the mask (stage flag) to filter the losses (samples) that don't
-            #   belongs to "Segmentation" branch if not enable "Sample Share".
-            if not sample_share:
-                # Generate filter mask.
-                dqn_names = conf_dqn.get('double_dqn', None)
-                if dqn_names is not None:
-                    stage_prefix = dqn_names[0]
-                else:
-                    stage_prefix = self._name_space
-                sample_4DQN = tf.to_float(tf.logical_not(self._inputs[stage_prefix+'/Segment_Stage']),
-                                          name='sample_4DQN')   # [?]
-                # Filter.
-                q_diff = tf.multiply(q_diff, sample_4DQN, name='Filtered_Q_diff')   # [?]
 
             # Define placeholder for IS weights if use "Prioritized Replay".
             if prioritized_replay:
