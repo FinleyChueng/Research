@@ -38,11 +38,10 @@ def dice_loss(labels, logits, scope=None, weights=None, category_indep=True, ign
     indep_axis = (1, 2) if category_indep else (1, 2, 3)
     intersection = tf.reduce_sum(intersection, axis=indep_axis)  # [?] or [?, cls]
     union = tf.reduce_sum(union, axis=indep_axis)  # [?] or [?, cls]
-    dice = tf.divide(intersection, union)   # [?] or [?, cls]
-    dice = tf.where(tf.not_equal(union, 0),
-                    dice,
-                    tf.ones_like(dice) * 1.,
-                    name='batch_dice')   # [?] or [?, cls]
+    # Add epsilon.
+    intersection = tf.add(intersection, 1e-16)  # [?] or [?, cls]
+    union = tf.add(union, 1e-16)  # [?] or [?, cls]
+    dice = tf.divide(intersection, union, name='batch_dice')   # [?] or [?, cls]
     # Specify
     if category_indep:
         dice = tf.reduce_mean(dice, axis=-1)  # [?]

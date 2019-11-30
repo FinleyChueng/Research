@@ -262,14 +262,18 @@ def pad_2up(x, bbox, cor_size, name, padding_values=0):
     px_left = tf.cast(tf.round(tf.to_float(up_w) * px_left), 'int32')   # Left
     px_right = 1.0 - tf.maximum(ox1, ox2)
     px_right = tf.cast(tf.round(tf.to_float(up_w) * px_right), 'int32')     # Right
-    # Add rectify value to the "right" and "bottom" coz there's
+    # Add rectify value to the "left/right" and "up/bottom" coz there's
     #   deviation in the round operation.
     iy_h = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(0, 2, 3)))   # height of y
     iy_w = tf.reduce_sum(tf.reduce_mean(tf.ones_like(x, dtype=tf.int32), axis=(0, 1, 3)))   # width of y
     py_diff = up_h - iy_h - py_up - py_bot
     px_diff = up_w - iy_w - px_left - px_right
-    py_bot += py_diff
-    px_right += px_diff
+    rect_bot = py_bot + py_diff
+    rect_right = px_right + px_diff
+    py_up = tf.where(tf.greater_equal(rect_bot, 0), py_up, py_up + py_diff)
+    py_bot = tf.where(tf.greater_equal(rect_bot, 0), rect_bot, py_bot)
+    px_left = tf.where(tf.greater_equal(rect_right, 0), px_left, px_left + px_diff)
+    px_right = tf.where(tf.greater_equal(rect_right, 0), rect_right, px_right)
     # Generate pad vector.
     pads = [[0, 0],
             [py_up, py_bot],

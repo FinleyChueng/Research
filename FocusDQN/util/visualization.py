@@ -356,12 +356,11 @@ class MaskVisualVMPY(MaskVisual):
         self._f = self._normalization(modalities[:, :, 3], self._normal_value)
 
         # Check the validity of origin[1].
-        if not isinstance(origin[1], np.ndarray):
-            raise TypeError('The origin[1] must be of @Type{numpy.ndarray} !!!')
+        if origin[1] is None:
+            pass
         else:
-            # Check the dimension.
-            if origin[1].ndim != 2:
-                raise Exception('The origin[1] must be a 2-D array !!!')
+            if not isinstance(origin[1], np.ndarray) or origin[1].ndim != 2:
+                raise TypeError('The origin[1] must be None or 2-D array (@Type{numpy.ndarray}) !!!')
         # Reset the label and gradient image.
         lab = origin[1]
         if lab is None:
