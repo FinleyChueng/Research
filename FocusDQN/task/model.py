@@ -157,14 +157,15 @@ class DqnAgent:
         # Segment current image (patch). (Generate the segmentation branch)
         if with_segmentation:
             SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
+            net_util.package_tensor(self.__mediates, SEG_tensor)
             # Fuse the previous (complete) and current (region) segmentation result.
             SEG_output, FUSE_result = self.__result_fusion(SEG_tensor, self._name_space)
         else:
             # No need the two holders.
             SEG_logits = CEloss_tensors = None
         # Select next region to deal with. (Generate the DQN output)
-        SUIT_result = self.__mediates[self._name_space + '/SEG_suit_output']
-        DQN_output = self.__region_selection(FE_tensor, SUIT_result, action_dim, name_space)
+        SEG_info = self.__mediates[self._name_space + '/SEG_tensor']
+        DQN_output = self.__region_selection(FE_tensor, SEG_info, action_dim, name_space)
 
         # Package some outputs.
         net_util.package_tensor(self._outputs, DQN_output)
@@ -374,6 +375,9 @@ class DqnAgent:
         # Layer number and kernel number of blocks for ResNet.
         kernel_numbers = conf_res.get('kernel_numbers')
         layer_units = conf_res.get('layer_units')
+        # Get up-sample part.
+        conf_up = self._config['UpSample']
+        up_part = conf_up.get('upsample_part', 'whole')
 
         # Start definition.
         FE_name = name_space + '/FeatExt'
@@ -423,6 +427,23 @@ class DqnAgent:
             # For conveniently usage.
             FE_tensor = block_tensor  # [?, 7, 7, ?]  default: 2048
 
+            # Use "Whole Tensors" or "Bbox-region Tensors" according to the up-sample part.
+            if up_part == 'whole':
+                FE_tensor = tf.identity(FE_tensor, name='FE_tensors')
+            elif up_part == 'crop':
+                dqn_names = self._config['DQN'].get('double_dqn', None)
+                if dqn_names is not None:
+                    stage_prefix = dqn_names[0]
+                else:
+                    stage_prefix = self._name_space
+                focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                FE_tensor = tf.image.crop_and_resize(FE_tensor, focus_bbox, bbox_ids,
+                                                     FE_tensor.get_shape().as_list()[1:3],
+                                                     name='FE_tensors')
+            else:
+                raise ValueError('Unknown up-sample part !!!')
+
             # Print some information.
             print('### Finish "Feature Extract Network" (name scope: {}). The output shape: {}'.format(
                 name_space, FE_tensor.shape))
@@ -465,7 +486,7 @@ class DqnAgent:
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
 
-        # Get the "Focus Bbox" first.
+        # Get the "Scaled Focus Bbox" here.
         dqn_names = self._config['DQN'].get('double_dqn', None)
         if dqn_names is not None:
             stage_prefix = dqn_names[0]
@@ -516,7 +537,7 @@ class DqnAgent:
                                    axis=0, name='FPN_flat_w')  # [1, 1, 1, 1, scales]
                 w = tf.multiply(w, tf.ones_like(x), name='FPN_weights')     # [?, h, w, cls, scales]
             elif structure == 'FPN-bbox':
-                p = cor_size[0] // FE_tensor.get_shape().as_list()[1]
+                p = suit_h // FE_tensor.get_shape().as_list()[1]
                 p = int(np.log2(p))
                 p = [1/np.exp2(r+1) for r in range(p)]
                 p.append(0.)
@@ -542,6 +563,7 @@ class DqnAgent:
         kernel_numbers = conf_res.get('kernel_numbers')
         layer_units = conf_res.get('layer_units')
         # Get parameters.
+        up_part = conf_up.get('upsample_part', 'whole')
         skip_method = conf_up.get('skip_connection', 'raw')
         up_structure = conf_up.get('upsample_structure', 'U-Net')
         up_method = conf_up.get('scale_up', 'ResV2')
@@ -576,13 +598,25 @@ class DqnAgent:
                                          regularizer=regularizer,
                                          name_space='Scale_Up0' + str(index + 1))  # [?, 2x, 2x, 0.5c]
 
+            # Get the corresponding down-sample part.
+            raw_ds = DS_feats[ds_idx]
+            # Crop the "Bbox region" from raw "Down-sample Tensors" if specified.
+            if up_part == 'whole':
+                pass
+            elif up_part == 'crop':
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                raw_ds = tf.image.crop_and_resize(raw_ds, focus_bbox, bbox_ids,
+                                                  raw_ds.get_shape().as_list()[1:3],
+                                                  name='up_part_crop0' + str(index + 1))
+            else:
+                raise ValueError('Unknown up-sample part !!!')
+
             # Add "Skip Connection" if specified.
             if skip_method == 'raw':
                 # Use the raw down-sampled feature maps.
-                skip_conn = DS_feats[ds_idx]
+                skip_conn = raw_ds
             elif skip_method == 'conv':
                 # Pass through a 1x1 conv to get the skip connection features.
-                raw_ds = DS_feats[ds_idx]
                 skip_conn = cus_layers.base_conv2d(raw_ds, raw_ds.shape[-1], 1, 1,
                                                    feature_normalization=fe_norm,
                                                    activation=activation,
@@ -591,7 +625,6 @@ class DqnAgent:
                                                    name_space='skip_conv0' + str(index + 1))
             elif skip_method == 'res':
                 # Pass through a residual layer to get the skip connection features.
-                raw_ds = DS_feats[ds_idx]
                 skip_conn = cus_res.residual_block(raw_ds, raw_ds.shape[-1], 1,
                                                    kernel_size=1,
                                                    feature_normalization=fe_norm,
@@ -756,48 +789,59 @@ class DqnAgent:
                                                    regularizer=regularizer,
                                                    name_space='WS_tensor')
                 FPN_tensors.append(org_UST)
-                # Resize each feature maps of "FPN tensors" to the original size.
+                # Generate the patches from feature maps of each level.
+                FPN_patch_size = (suit_h // 16, suit_w // 16)   # [14, 14]
                 temp_T = []
                 for i, t in enumerate(FPN_tensors):
-                    t_shape = t.get_shape().as_list()[1:3]
-                    if t_shape[0] == suit_h or t_shape[1] == suit_w:
-                        org_t = t
-                    else:
-                        t_cls = cus_layers.base_conv2d(t, classification_dim, 1, 1,
-                                                       feature_normalization=fe_norm,
-                                                       activation=activation,
-                                                       keep_prob=conv_kprob,
-                                                       regularizer=regularizer,
-                                                       name_space='FPN_2cls' + str(i+1))
-                        org_t = tf.image.resize_bilinear(t_cls, [suit_h, suit_w], name='FPN_2org0' + str(i+1))
+                    bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                    t_cls = tf.image.crop_and_resize(t, focus_bbox, bbox_ids, FPN_patch_size,
+                                                     name='FPN_patch_crop' + str(i + 1))    # [?, 14, 14, c]
+                    t_cls = cus_layers.base_conv2d(t_cls, 256, 1, 1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='FPN_patch_conv1' + str(i + 1))
+                    t_cls = cus_layers.base_conv2d(t_cls, 256, 1, 1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='FPN_patch_conv2' + str(i + 1))
+                    t_cls = cus_layers.base_deconv2d(t_cls, 256, 3, 2,
+                                                     feature_normalization=fe_norm,
+                                                     activation=activation,
+                                                     keep_prob=conv_kprob,
+                                                     regularizer=regularizer,
+                                                     name_space='FPN_patch_up' + str(i + 1))    # [?, 28, 28, c]
+                    org_t = cus_layers.base_conv2d(t_cls, classification_dim, 1, 1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='FPN_patch_cls' + str(i + 1))  # [?, 28, 28, cls]
                     temp_T.append(org_t)
                 FPN_tensors = temp_T
 
-                # Generate the weights for FPN tensors.
-                FPN_W = FPN_weights(tf.stack(FPN_tensors, axis=-1), cor_size=[suit_h, suit_w],
-                                    structure=up_structure)     # [?, h, w, cls, scales]
-                FPN_W = tf.reshape(FPN_W, [-1, suit_h, suit_w, classification_dim * len(FPN_tensors)],
-                                   name='FPN_weights_4D')   # [?, h, w, cls*scales]
-                FPN_tensors.append(FPN_W)   # for conveniently process.
+                # Generate the weights, and what's more weight tensors to generate FPN tensors.
+                FPN_tensors = tf.stack(FPN_tensors, axis=-1, name='FPN_stack')  # [1, h, w, cls, scales]
+                FPN_W = FPN_weights(FPN_tensors, cor_size=FPN_tensors.get_shape().as_list()[1:3],
+                                    structure=up_structure)  # [?, h, w, cls, scales]
+                FPN_tensors = tf.reduce_sum(tf.multiply(FPN_tensors, FPN_W), axis=-1,
+                                            name='FPN_logits')  # [?, h, w, cls]
 
                 # Fuse results (logits) of each scale into one logit.
-                def FPN_fuse(x, bbox, cor_size):
-                    temp = []
-                    for i, xi in enumerate(x):
-                        yi = net_util.pad_2up(xi, bbox, cor_size, name='FPN_pad0'+str(i+1))  # [1, h, w, cls]
-                        temp.append(yi)
-                    y = tf.stack(temp[:-1], axis=-1, name='FPN_stack')  # [1, h, w, cls, scales]
-                    w = tf.reshape(temp[-1],
-                                   [temp[-1].shape[0], cor_size[0], cor_size[1], classification_dim, len(x[:-1])],
-                                   name='FPN_weights_5D')   # [1, h, w, cls, scales]
-                    y = tf.reduce_sum(tf.multiply(y, w), axis=-1, name='FPN_logits')  # [1, h, w, cls]
+                def FPN_restore(x, bbox, cor_size):
+                    y, = x
+                    y = net_util.pad_2up(y, bbox, cor_size, name='FPN_pad0' + str(i + 1))
                     return y
                 # Crop and pad zero to get the FPN logits and then fuse them.
                 SEG_tensor = net_util.batch_resize_to_bbox_for_op(
-                    FPN_tensors, bbox=focus_bbox, cor_size=[suit_h, suit_w],
-                    resize_method=['crop'] * len(FPN_tensors), op_func=FPN_fuse,
+                    [FPN_tensors], bbox=focus_bbox, cor_size=[suit_h, suit_w],
+                    resize_method=['bilinear'], op_func=FPN_restore,
                     output_shape=org_UST.get_shape().as_list()[1:],
-                    name='SEG_tensor')  # [?, h, w, cls]
+                    name='SEG_padding')  # [?, h, w, cls]
+                SEG_tensor = tf.identity(SEG_tensor, name='SEG_tensor')  # [?, h, w, cls]
                 # Independently return the segmentation logits, so that we can flexibly deal with it.
                 SEG_logits = SEG_tensor
 
@@ -986,7 +1030,7 @@ class DqnAgent:
             return SEG_output, FUSE_result
 
 
-    def __region_selection(self, FE_tensor, SUIT_result, action_dim, name_space):
+    def __region_selection(self, FE_tensor, SEG_info, action_dim, name_space):
         r'''
             Region selection branch. Which is actually a DQN head.
                 It's used to select the next region for precisely processing.
@@ -1001,6 +1045,7 @@ class DqnAgent:
         # Suitable height and width.
         suit_h = conf_base.get('suit_height')
         suit_w = conf_base.get('suit_width')
+        clazz_dim = conf_base.get('classification_dimension')
         # Feature normalization method and activation function.
         fe_norm = conf_base.get('feature_normalization', 'batch')
         activation = conf_base.get('activation', 'relu')
@@ -1026,21 +1071,25 @@ class DqnAgent:
         # Check for the introduction method of "Position Information".
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
+        grad_DQN2SEG = conf_cus.get('grad_DQN2SEG', True)
 
         # Start definition.
         DQN_name = name_space + '/DQN'
         with tf.variable_scope(DQN_name):
+            # Stop gradients from DQN-to-SEG if specified.
+            if not grad_DQN2SEG:
+                SEG_info = tf.stop_gradient(SEG_info, name='grad_nop')
             # Reshape the FUSE_result as a part of DQN input.
             FE_h, FE_w, FE_c = FE_tensor.get_shape().as_list()[1:]  # [fe_h, fe_w, fe_c]
-            FE_prop = (suit_h // FE_h) * (suit_w // FE_w)
-            DQN_in = tf.reshape(SUIT_result, [-1, FE_h, FE_w, FE_prop],
-                                name='suit_res_4DQN')   # [?, fe_h, fe_w, prop^2]
+            FE_prop = (suit_h // FE_h) * (suit_w // FE_w) * clazz_dim
+            DQN_in = tf.reshape(SEG_info, [-1, FE_h, FE_w, FE_prop],
+                                name='SEG_info_4DQN')   # [?, fe_h, fe_w, prop^2]
             DQN_in = cus_layers.base_conv2d(tf.to_float(DQN_in), FE_c, 1, 1,
                                             feature_normalization=fe_norm,
                                             activation=activation,
                                             keep_prob=conv_kprob,
                                             regularizer=regularizer,
-                                            name_space='suit_res_conv1x1')  # [?, fe_h, fe_w, fe_c]
+                                            name_space='SEG_info_conv1x1')  # [?, fe_h, fe_w, fe_c]
             if seg_fuse == 'add':
                 DQN_in = tf.add(FE_tensor, DQN_in, name='Fuse_IN')  # [?, fe_h, fe_w, fe_c]
             elif seg_fuse == 'concat':
