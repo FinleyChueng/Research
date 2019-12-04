@@ -15,6 +15,8 @@ def __residual_v2(input_tensor,
                   layer_type='unit',
                   kernel_size=3,
                   scale_factor=2,
+                  use_bias=False,
+                  reuse=False,
                   regularizer=None):
     r'''
         Residual V2. It use the "Pre-activate" structure.
@@ -35,6 +37,8 @@ def __residual_v2(input_tensor,
         kernel_size: The kernel size for convolution.
         scale_factor: Determine the feature scale. It works only when
             layer type is "Down-sample" or "Up-sample".
+        use_bias: Whether to use the bias or not.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: The regularizer for weights variables.
 
     ------------------------------------------------------------------------
@@ -81,7 +85,8 @@ def __residual_v2(input_tensor,
     if input_tensor.get_shape()[-1] != output_channels or stride != 1:
         # Map method.
         short_cut = tf_conv_func(preact, output_channels, 1, stride, 'same',
-                                 use_bias=False,
+                                 use_bias=use_bias,
+                                 reuse=reuse,
                                  kernel_regularizer=regularizer,
                                  name=name_space + '/mapdim')   # The parameters keep same as base conv.
     else:
@@ -94,7 +99,8 @@ def __residual_v2(input_tensor,
         #   The kernel size and its procedure likes below:
         #   (0.25*OC, 1, 1) -> (0.25*OC, 3, 1) -> (out_chan, 1, 1)
         conv2d = tf.layers.conv2d(preact, int(0.25 * output_channels), 1, 1, 'same',
-                                  use_bias=False,
+                                  use_bias=use_bias,
+                                  reuse=reuse,
                                   kernel_regularizer=regularizer,
                                   name=name_space + '/conv_1')
         conv2d = cus_conv_func(conv2d, int(0.25 * output_channels), kernel_size, stride,
@@ -102,18 +108,24 @@ def __residual_v2(input_tensor,
                                activation=activation,
                                keep_prob=keep_prob,
                                feature_normalization=feature_normalization,
+                               use_bias=use_bias,
+                               reuse=reuse,
                                regularizer=regularizer)
-        conv2d = tf_layer.base_conv2d(conv2d, output_channels, 1, 1, name_space=name_space + '/conv_3',
+        conv2d = tf_layer.base_conv2d(conv2d, output_channels, 1, 1,
+                                      name_space=name_space + '/conv_3',
                                       activation=activation,
                                       keep_prob=keep_prob,
                                       feature_normalization=feature_normalization,
+                                      use_bias=use_bias,
+                                      reuse=reuse,
                                       regularizer=regularizer)
     else:
         # Pass through the "Plain" Structure.
         #   The kernel size and its procedure likes below:
         #   (out_chan, 3, 2) -> (out_chan, 3, 1)
         conv2d = tf_conv_func(preact, output_channels, kernel_size, stride, 'same',
-                              use_bias=False,
+                              use_bias=use_bias,
+                              reuse=reuse,
                               kernel_regularizer=regularizer,
                               name=name_space + '/conv_1')
         conv2d = tf_layer.base_conv2d(conv2d, output_channels, kernel_size, 1,
@@ -121,6 +133,8 @@ def __residual_v2(input_tensor,
                                       activation=activation,
                                       keep_prob=keep_prob,
                                       feature_normalization=feature_normalization,
+                                      use_bias=use_bias,
+                                      reuse=reuse,
                                       regularizer=regularizer)
 
     # Finally Add the conv features and the shortcut outputs.
@@ -137,6 +151,8 @@ def __residual_v1(input_tensor,
                   layer_type='unit',
                   kernel_size=3,
                   scale_factor=2,
+                  use_bias=False,
+                  reuse=False,
                   regularizer=None):
     r'''
         Residual V1. It use the common activation structure.
@@ -151,7 +167,14 @@ def __residual_v1(input_tensor,
         activation: The activation function.
         keep_prob: Whether to enable the "Dropout" or not.
         name_space: The name space.
+        bottleneck: Whether to use the "Bottleneck" structure or not.
+        layer_type: Determine the layer's usage. Default is "Unit",
+            "Down-sample", "Up-sample" is under options.
         kernel_size: The kernel size for convolution.
+        scale_factor: Determine the feature scale. It works only when
+            layer type is "Down-sample" or "Up-sample".
+        use_bias: Whether to use the bias or not.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: The regularizer for weights variables.
 
     ------------------------------------------------------------------------
@@ -195,6 +218,8 @@ def __residual_v1(input_tensor,
                                   activation=activation,
                                   keep_prob=keep_prob,
                                   feature_normalization=feature_normalization,
+                                  use_bias=use_bias,
+                                  reuse=reuse,
                                   regularizer=regularizer)
     else:
         # Introduce the shortcut, which is directly the inputs.
@@ -211,6 +236,8 @@ def __residual_v1(input_tensor,
                                       activation=activation,
                                       keep_prob=keep_prob,
                                       feature_normalization=feature_normalization,
+                                      use_bias=use_bias,
+                                      reuse=reuse,
                                       regularizer=regularizer)
         conv2d = cus_conv_func(conv2d, int(0.25 * output_channels), kernel_size, stride,
                                name_space=name_space + '/conv_2',
@@ -218,11 +245,14 @@ def __residual_v1(input_tensor,
                                activation=activation,
                                keep_prob=keep_prob,
                                feature_normalization=feature_normalization,
+                               use_bias=use_bias,
+                               reuse=reuse,
                                regularizer=regularizer)
         # Coz ResNetV1. The procedure likes below:
         #   conv -> feature normalize -> addition -> ReLU
         conv2d = tf.layers.conv2d(conv2d, output_channels, 1, 1, 'same',
-                                  use_bias=False,
+                                  use_bias=use_bias,
+                                  reuse=reuse,
                                   kernel_regularizer=regularizer,
                                   name=name_space + '/conv_3_conv')   # The parameters keep same as base conv.
         conv2d = tf_norl.feature_normalize(conv2d, feature_normalization,
@@ -240,11 +270,14 @@ def __residual_v1(input_tensor,
                                activation=activation,
                                keep_prob=keep_prob,
                                feature_normalization=feature_normalization,
+                               use_bias=use_bias,
+                               reuse=reuse,
                                regularizer=regularizer)
         # Coz ResNetV1. The procedure likes below:
         #   conv -> feature normalize -> addition -> ReLU
         conv2d = tf_conv_func(conv2d, output_channels, kernel_size, 1, 'same',
-                              use_bias=False,
+                              use_bias=use_bias,
+                              reuse=reuse,
                               kernel_regularizer=regularizer,
                               name=name_space + '/conv_2_conv')  # The parameters keep same as base conv.
         conv2d = tf_norl.feature_normalize(conv2d, feature_normalization,
@@ -267,6 +300,8 @@ def residual_block(input_tensor,
                    name_space,
                    bottleneck=True,
                    kernel_size=3,
+                   use_bias=False,
+                   reuse=False,
                    regularizer=None,
                    structure='V2'):
     r'''
@@ -286,6 +321,8 @@ def residual_block(input_tensor,
         name_space: The name space.
         bottleneck: Whether use the "Bottle" or "Plain" structure.
         kernel_size: The kernel size for convolution.
+        use_bias: Whether to use the bias or not.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: The regularizer for weights variables.
         structure: Indicating the version of residual structure.
 
@@ -316,6 +353,8 @@ def residual_block(input_tensor,
                           keep_prob=keep_prob,
                           name_space=name_space + '_' + str(l+1),
                           kernel_size=kernel_size,
+                          use_bias=use_bias,
+                          reuse=reuse,
                           regularizer=regularizer)
 
     # Finish the construction of residual block, and return the output of residual block.
@@ -331,6 +370,8 @@ def transition_layer(input_tensor,
                      name_space,
                      scale_down=True,
                      scale_factor=2,
+                     use_bias=False,
+                     reuse=False,
                      regularizer=None,
                      structure='ResV2'):
     r'''
@@ -346,6 +387,8 @@ def transition_layer(input_tensor,
         name_space: The name space.
         scale_down: The flag indicating whether is "Down-sample" phrase or not.
         scale_factor: The scale factore for feature maps.
+        use_bias: Whether to use the bias or not.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: The regularizer for weights variables.
         structure: Indicating the detailed transition down method.
 
@@ -391,6 +434,8 @@ def transition_layer(input_tensor,
                                 feature_normalization=feature_normalization,
                                 activation=activation,
                                 keep_prob=keep_prob,
+                                use_bias=use_bias,
+                                reuse=reuse,
                                 regularizer=regularizer,
                                 name_space=name_space)
         # Return the residual transition tensor.
@@ -401,7 +446,14 @@ def transition_layer(input_tensor,
         if structure == 'MP':
             # Rectify the dimension
             if input_tensor.get_shape()[-1] != output_channels:
-                trans_tensor = tf_layer.base_conv2d(input_tensor, output_channels, 1, scale_factor, name_space)
+                trans_tensor = tf_layer.base_conv2d(input_tensor, output_channels, 1, scale_factor,
+                                                    name_space=name_space + '/MP_rec_dim',
+                                                    feature_normalization=feature_normalization,
+                                                    activation=activation,
+                                                    keep_prob=keep_prob,
+                                                    use_bias=use_bias,
+                                                    reuse=reuse,
+                                                    regularizer=regularizer)
             else:
                 trans_tensor = input_tensor
             # Use max pooling.
@@ -411,7 +463,14 @@ def transition_layer(input_tensor,
             raise ValueError('Unknown transition down method !!!')
     else:
         if structure == 'PURE':
-            trans_tensor = tf_layer.base_deconv2d(input_tensor, output_channels, 3, scale_factor, name_space)
+            trans_tensor = tf_layer.base_deconv2d(input_tensor, output_channels, 3, scale_factor,
+                                                  name_space=name_space + '/Pure_deconv',
+                                                  feature_normalization=feature_normalization,
+                                                  activation=activation,
+                                                  keep_prob=keep_prob,
+                                                  use_bias=use_bias,
+                                                  reuse=reuse,
+                                                  regularizer=regularizer)
         else:
             raise ValueError('Unknown transition up method !!!')
 

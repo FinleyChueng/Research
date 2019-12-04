@@ -1,5 +1,4 @@
 import gc
-import collections
 from util.visualization import *
 from core.data_structure import *
 from dataset.adapter.base import *
@@ -116,8 +115,11 @@ class FocusEnv:
         self._image = None  # Current processing image.
         self._label = None  # Label for current image.
 
-        # The "Action history".
+        # The "Action History".
         self._ACTION_his = None
+
+        # The "Bbox History".
+        self._BBOX_his = None
 
         # The focus bounding-box. (y1, x1, y2, x2)
         self._focus_bbox = None
@@ -158,6 +160,14 @@ class FocusEnv:
         return self._act_dim
 
 
+    @property
+    def Fake_Bbox(self):
+        r'''
+            The fake "Bounding-Box" used in environment.
+        '''
+        return self._FAKE_BBOX.copy()
+
+
     def switch_phrase(self, p):
         r'''
             Switch to target phrase.
@@ -195,6 +205,7 @@ class FocusEnv:
         pos_method = conf_cus.get('position_info', 'map')
         conf_dqn = self._config['DQN']
         his_len = conf_dqn.get('actions_history', 10)
+        step_thres = conf_dqn.get('step_threshold', 10)
         initFB_optimize = conf_dqn.get('initial_bbox_optimize', True)
         initFB_pad = conf_dqn.get('initial_bbox_padding', 20)
 
@@ -214,6 +225,9 @@ class FocusEnv:
 
         # Reset the "Action History".
         self._ACTION_his = collections.deque([-1,] * his_len)
+
+        # Reset the "Bbox History".
+        self._BBOX_his = collections.deque([self._FAKE_BBOX] * step_thres)
 
         # Reset the "Previous Relative Directions".
         self._RelDir_prev = ['left-up']     # add default outermost direction.
@@ -252,11 +266,6 @@ class FocusEnv:
         # -------------------------- Optimize Part. ---------------------------
         # Optimize the initial "Focus Bbox" if specified.
         if initFB_optimize and segment_func is not None:
-            # Record the very beginning frame.
-            if self._anim_recorder is not None:
-                # "Segment" phrase.
-                self._anim_recorder.record(
-                    (self._focus_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
             # The position information. Declaration according to config.
             if pos_method == 'map':
                 pos_info = np.ones([image_height, image_width], dtype=np.int64)
@@ -271,19 +280,32 @@ class FocusEnv:
                                                    self._SEG_prev.copy(),
                                                    pos_info,
                                                    self._focus_bbox.copy(),
+                                                   self._BBOX_his.copy(),
+                                                   self._time_step,
                                                    self._COMP_result.copy()))
-            # Assign the "Focus Bbox", "Current Segmentation" and "Complete info" holders.
-            #   What's more, append the "Relative Direction" history (for wide range).
+            # Only operate when the segmentation is not pure "Background".
             if not (segmentation == 0).all():
+                # Record the very beginning frame.
+                if self._anim_recorder is not None:
+                    # "Segment" phrase.
+                    self._anim_recorder.record(
+                        (self._focus_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
+                # Assign the "Focus Bbox".
                 init_region = np.where(segmentation != 0)
                 init_y1 = max(0, min(init_region[0]) - initFB_pad) / image_height
                 init_x1 = max(0, min(init_region[1]) - initFB_pad) / image_width
                 init_y2 = min(image_height, max(init_region[0]) + initFB_pad) / image_height
                 init_x2 = min(image_width, max(init_region[1]) + initFB_pad) / image_width
                 self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+                # Assign the "Current Segmentation" and "Complete info" holders.
                 self._SEG_prev = segmentation
                 self._COMP_result = COMP_res
+                # Append the "Relative Direction" history (for wide range).
                 self._RelDir_prev.append('right-bottom')
+                # Increase the time-step, and record the current bbox to the history.
+                self._time_step += 1
+                self._BBOX_his.append(self._focus_bbox.copy())
+                self._BBOX_his.popleft()
 
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
@@ -322,13 +344,15 @@ class FocusEnv:
         Return:
             The tuple of (state, action, terminal, anchors, err, next_state, info)
                 when in "Train" phrase.
-            state: (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev)
-            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur)
+            state: (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev)
+            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur)
             ---------------------------------------------------------------
             SEG_prev: The previous segmentation result.
             cur_bbox: The current bbox of image.
             position_info: The position information for current time-step.
             acts_prev: The current actions history.
+            bboxes_prev: The current bboxes history.
+            his_plen: The valid length of current history.
             comp_prev: The current "Complete Result".
             action: The action executed of current time-step.
             terminal: Flag that indicates whether current image is finished.
@@ -338,6 +362,8 @@ class FocusEnv:
             focus_bbox: Next focus bbox of image.
             next_posinfo: The fake next position information.
             acts_cur: The next actions history.
+            bboxes_cur: The next bboxes history.
+            his_clen: The valid length of next history.
             comp_cur: The next "Complete Result".
             info: Extra information.(Optional, default is type.None)
             ---------------------------------------------------------------
@@ -363,7 +389,6 @@ class FocusEnv:
         image_height, image_width = input_shape[1:3]
         conf_dqn = self._config['DQN']
         step_threshold = conf_dqn.get('step_threshold', 10)
-        his_len = conf_dqn.get('actions_history', 10)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
 
@@ -391,6 +416,8 @@ class FocusEnv:
         SEG_prev = self._SEG_prev.copy()
         position_info = gen_position_info(self._focus_bbox)
         acts_prev = np.asarray(self._ACTION_his.copy())
+        bboxes_prev = np.asarray(self._BBOX_his.copy())
+        his_plen = self._time_step
         comp_prev = self._COMP_result.copy()
 
         # -------------------------------- Core Part -----------------------------
@@ -418,6 +445,8 @@ class FocusEnv:
                                                               position_info.copy(),
                                                               cur_bbox.copy(),
                                                               acts_prev.copy(),
+                                                              bboxes_prev.copy(),
+                                                              his_plen,
                                                               comp_prev.copy(),
                                                               anchors.copy(),
                                                               BBOX_errs.copy(),
@@ -432,6 +461,8 @@ class FocusEnv:
                                                       position_info.copy(),
                                                       cur_bbox.copy(),
                                                       acts_prev.copy(),
+                                                      bboxes_prev.copy(),
+                                                      his_plen,
                                                       comp_prev.copy()),
                                                      with_explore=False,
                                                      with_reward=False)
@@ -445,8 +476,10 @@ class FocusEnv:
                                                       infos=infos)
         # Append the current action into "Action History".
         self._ACTION_his.append(action)
-        if len(self._ACTION_his) > his_len:
-            self._ACTION_his.popleft()
+        self._ACTION_his.popleft()
+        # Append the current bbox into "Bbox History".
+        self._BBOX_his.append(dst_bbox.copy())
+        self._BBOX_his.popleft()
         # Iteratively re-assign the "Segmentation" result, "Complete info" and "Focus Bbox".
         self._SEG_prev = segmentation
         self._COMP_result = COMP_res
@@ -471,13 +504,15 @@ class FocusEnv:
         focus_bbox = self._focus_bbox.copy()
         next_posinfo = gen_position_info(self._focus_bbox)
         acts_cur = np.asarray(self._ACTION_his.copy())
+        bboxes_cur = np.asarray(self._BBOX_his.copy())
+        his_clen = self._time_step
         comp_cur = self._COMP_result.copy()
 
         # Return sample when in "Train" phrase.
         if self._phrase == 'Train':
-            return (SEG_prev, cur_bbox, position_info, acts_prev, comp_prev), \
+            return (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev), \
                    action, terminal, anchors.copy(), BBOX_errs.copy(), \
-                   (SEG_cur, focus_bbox, next_posinfo, acts_cur, comp_cur), \
+                   (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur), \
                    reward, info
         else:
             # Return terminal flag (most important), and other information.
@@ -779,7 +814,7 @@ class FocusEnv:
         # Increase the time-step.
         self._time_step += 1
         # Check whether reaches the time-step threshold.
-        if self._time_step > step_thres:
+        if self._time_step >= step_thres:
             terminal = True
             info = 'Reach Threshold !'
 

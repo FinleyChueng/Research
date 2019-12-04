@@ -55,6 +55,7 @@ def base_conv2d(input_tensor,
                 pre_activate=True,
                 activation='relu',
                 use_bias=False,
+                reuse=False,
                 regularizer=None,
                 keep_prob=1.0,
                 feature_normalization='instance',
@@ -78,6 +79,7 @@ def base_conv2d(input_tensor,
         pre_activate: Whether enable "Pre-activate" or not.
         activation: The activation function.
         use_bias: Whether use bias or not for convolution.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: Whether to add regularization to convolution or not.
         keep_prob: Whether enable the "Dropout" or not.
         feature_normalization: The feature normalization method.
@@ -109,6 +111,7 @@ def base_conv2d(input_tensor,
     def convolution_2d(x):
         y = tf.layers.conv2d(x, output_channels, kernel_size, stride, 'same',
                              use_bias=use_bias,
+                             reuse=reuse,
                              kernel_regularizer=regularizer,
                              name=name_space + '/conv')
         return y
@@ -211,6 +214,7 @@ def base_deconv2d(input_tensor,
                   pre_activate=True,
                   activation='relu',
                   use_bias=False,
+                  reuse=False,
                   regularizer=None,
                   keep_prob=1.0,
                   feature_normalization='instance',
@@ -234,6 +238,7 @@ def base_deconv2d(input_tensor,
         pre_activate: Whether enable "Pre-activate" or not.
         activation: The activation function.
         use_bias: Whether use bias or not for convolution.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: Whether to add regularization to convolution or not.
         keep_prob: Whether enable the "Dropout" or not.
         feature_normalization: The feature normalization method.
@@ -265,6 +270,7 @@ def base_deconv2d(input_tensor,
     def deconvolution_2d(x):
         y = tf.layers.conv2d_transpose(x, output_channels, kernel_size, stride, 'same',
                                        use_bias=use_bias,
+                                       reuse=reuse,
                                        kernel_regularizer=regularizer,
                                        name=name_space + '/deconv')
         return y

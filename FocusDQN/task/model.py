@@ -191,17 +191,18 @@ class DqnAgent:
 
         # Get detailed configuration.
         conf_base = self._config['Base']
+        conf_cus = self._config['Custom']
+        conf_dqn = self._config['DQN']
         # Input shape.
         input_shape = conf_base.get('input_shape')
-
-        # --------------------------------- "Input Justification" part. ------------------------------------
-        # Get configuration for justification.
-        conf_cus = self._config['Custom']
         # Determine the input type.
         input_type = conf_cus.get('input_type', 'whole')
         # Determine the introduction method of "Position Information".
         pos_method = conf_cus.get('position_info', 'map')
+        # Determine the max length of "History Information".
+        his_thres = conf_dqn.get('step_threshold', 10)
 
+        # --------------------------------- "Input Justification" part. ------------------------------------
         # Start definition.
         IJ_name = name_space + '/InputJustify'
         with tf.variable_scope(IJ_name):
@@ -218,8 +219,16 @@ class DqnAgent:
             # The bounding-box indicating whether to focus on.
             focus_bbox = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4], name='Focus_Bbox')
 
+            # The "Bbox History" used to introduce "Past Local Information".
+            bbox_his = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, his_thres, 4],
+                                                    name='Bbox_History')
+
+            # The "Valid Length" used to indicating the whether elements of "Bbox History" should be
+            #   considered in current state.
+            his_len = net_util.placeholder_wrapper(self._inputs, tf.int32, [None,], name='History_Length')
+
             # Declare the function used to generate the "Focus Map".
-            def focus_map(bbox, cor_size, name):
+            def gen_focus(bbox, cor_size, name):
                 h, w = cor_size
                 def _gen_map(_inp1):
                     _y = []
@@ -304,16 +313,22 @@ class DqnAgent:
                                                  dst_width=suit_w,
                                                  name='Scale_FoBbox')
                 # Generate "Focus Map".
-                focus_map = focus_map(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
+                focus_map = gen_focus(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
             else:
                 # Rename the "Focus Bbox" for conveniently usage.
                 focus_bbox = tf.identity(focus_bbox, name='Scale_FoBbox')
                 # Only generate the "Focus Map".
-                focus_map = focus_map(focus_bbox, cor_size=[input_shape[1], input_shape[2]], name='Focus_Map')
+                focus_map = gen_focus(focus_bbox, cor_size=[input_shape[1], input_shape[2]], name='Focus_Map')
 
             # Package the "Scaled Focus Bbox", "Focus Map" into the mediate holders.
             net_util.package_tensor(self.__mediates, focus_bbox)
             net_util.package_tensor(self.__mediates, focus_map)
+
+            # Generate and package the "Past Bbox Maps".
+            bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
+            bbox_maps = gen_focus(bbox_his, cor_size=[input_shape[1], input_shape[2]],
+                                  name='Bbox_Maps')     # [b*his, 4]
+            net_util.package_tensor(self.__mediates, bbox_maps)
 
             # Different fusion method for input according to input type.
             if input_type == 'region':
@@ -378,10 +393,75 @@ class DqnAgent:
         # Get up-sample part.
         conf_up = self._config['UpSample']
         up_part = conf_up.get('upsample_part', 'whole')
+        # Get max length of "Bbox History".
+        conf_dqn = self._config['DQN']
+        his_thres = conf_dqn.get('step_threshold', 10)
+        # Get the name stage prefix.
+        dqn_names = conf_dqn.get('double_dqn', None)
+        if dqn_names is not None:
+            stage_prefix = dqn_names[0]
+        else:
+            stage_prefix = self._name_space
+
+        # Declare the function used to fuse the "Past Local Information".
+        def history_fuse(x, glo_info, bbox, valid_his, scales, s_id, his_flag):
+            # generate flag.
+            bh = tf.expand_dims(tf.abs(bbox[:, 2] - bbox[:, 0]), axis=-1)   # [b*his, 1]
+            bw = tf.expand_dims(tf.abs(bbox[:, 3] - bbox[:, 1]), axis=-1)   # [b*his, 1]
+            ph = tf.greater_equal(bh, scales)   # [b*his, s]
+            pw = tf.greater_equal(bw, scales)   # [b*his, s]
+            p = tf.logical_or(ph, pw)   # [b*his, s]
+            pind = tf.argmin(tf.to_int32(p), axis=-1)   # [b*his]
+            flag = tf.equal(pind, s_id)     # [b*his]
+            flag = tf.logical_and(flag, his_flag)   # [b*his]
+            # generate the "local feature maps".
+            lfm = tf.expand_dims(glo_info, axis=1)     # [b, 1, gh, gw, gc]
+            lfm = tf.tile(lfm, multiples=[1, his_thres, 1, 1, 1])   # [b, his, gh, gw, gc]
+            g_h, g_w, g_c = glo_info.get_shape().as_list()[1:]
+            l_h, l_w, l_c = x.get_shape().as_list()[1:]
+            lfm = tf.reshape(lfm, [-1, g_h, g_w, g_c])  # [b*his, gh, gw, gc]
+            b_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))    # [b*his]
+            lfm = tf.image.crop_and_resize(lfm, bbox, b_ids, crop_size=(l_h, l_w))  # [b*his, lh, lw, gc]
+            lfm = cus_layers.base_conv2d(lfm, l_c, 1, 1,
+                                         reuse=tf.AUTO_REUSE,
+                                         feature_normalization=fe_norm,
+                                         activation=activation,
+                                         keep_prob=conv_kprob,
+                                         regularizer=regularizer,
+                                         name_space='Local_Feats_'+str(s_id))   # [b*his, lh, lw, lc]
+            # filter the invalid history.
+            flag = tf.expand_dims(tf.expand_dims(tf.expand_dims(flag, axis=-1), axis=-1),
+                                  axis=-1)  # [b*his, 1, 1, 1]
+            flag = tf.logical_and(flag, tf.ones_like(lfm, dtype=tf.bool))  # [b*his, lh, lw, lc]
+            lfm = tf.reshape(lfm, [-1, his_thres, l_h, l_w, l_c])   # [b, his, lh, lw, lc]
+            flag = tf.reshape(flag, [-1, his_thres, l_h, l_w, l_c])     # [b, his, lh, lw, lc]
+            lfm = tf.where(flag, lfm, tf.zeros_like(lfm))   # [b, his, lh, lw, lc]
+            lfm = tf.reduce_sum(lfm, axis=1)  # [b, lh, lw, lc]
+            # fuse the "local feature maps" into the raw input.
+            y = tf.add(x, lfm, name='Local_Fusion_'+str(s_id))  # [b, lh, lw, lc]
+            return y
+        # ------------------------- end of sub-func ----------------------------
 
         # Start definition.
         FE_name = name_space + '/FeatExt'
         with tf.variable_scope(FE_name):
+            # Generate the "Scales Ruler".
+            scales_ruler = []
+            for p in range(len(layer_units)):
+                scales_ruler.append(1/np.exp2(p+1))
+            scales_ruler.append(0.)
+            scales_ruler = tf.constant([scales_ruler], name='Scales_Ruler')     # [1, scales]
+            # Generate the "History Flag", which indicates the valid length of "History Information".
+            his_elem = tf.expand_dims(tf.range(his_thres), axis=0, name='history_range')    # [1, his]
+            his_len = self._inputs[stage_prefix+'/History_Length']     # [b]
+            his_flag = tf.less(his_elem, tf.expand_dims(his_len, axis=-1), name='raw_his_flag')  # [b, his]
+            his_flag = tf.reshape(his_flag, [-1], name='history_flag')  # [b*his]
+            # Get "Global Information", that is, the raw image.
+            glo_info = self._inputs[stage_prefix+'/image']  # [?, h, w, c]
+            # Get "History Information".
+            bbox_his = self._inputs[stage_prefix+'/Bbox_History']
+            bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
+
             # The feature maps dictionary, which is lately used in up-sample part.
             DS_feats = []
 
@@ -392,6 +472,9 @@ class DqnAgent:
                                                keep_prob=conv_kprob,
                                                regularizer=regularizer,
                                                name_space='ResNet_bconv')  # [?, 112, 112, ?]
+            # Fuse "History Information" of this scale level.
+            base_conv = history_fuse(base_conv, glo_info, bbox=bbox_his, valid_his=his_len,
+                                     scales=scales_ruler, s_id=0, his_flag=his_flag)
 
             # Record the 2x - feature maps.
             DS_feats.append(base_conv)
@@ -413,6 +496,9 @@ class DqnAgent:
                                                             keep_prob=conv_kprob,
                                                             regularizer=regularizer,
                                                             name_space='ResNet_Trans0' + str(idx + 1))
+                # Fuse "History Information" of this scale level.
+                block_tensor = history_fuse(block_tensor, glo_info, bbox=bbox_his, valid_his=his_len,
+                                            scales=scales_ruler, s_id=idx+1, his_flag=his_flag)
                 # Pass through the residual block.
                 block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx + 1], layer_units[idx] - 1,
                                                       feature_normalization=fe_norm,
