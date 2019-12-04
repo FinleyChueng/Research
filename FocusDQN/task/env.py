@@ -214,9 +214,9 @@ class FocusEnv:
 
         # Reset the "Complete Result" (segmentation).
         if CR_method == 'logit' or CR_method == 'prob':
-            self._COMP_result = np.zeros([suit_h, suit_w, clazz_dim], dtype=np.float32)
-        elif CR_method == 'mask':
-            self._COMP_result = np.zeros([suit_h, suit_w], dtype=np.float32)
+            self._COMP_result = collections.deque([np.zeros([suit_h, suit_w, clazz_dim], dtype=np.float32)] * step_thres)
+        elif CR_method in ['mask-lap', 'mask-vote']:
+            self._COMP_result = collections.deque([np.zeros([suit_h, suit_w], dtype=np.int64)] * step_thres)
         else:
             raise ValueError('Unknown result fusion method !!!')
 
@@ -297,9 +297,11 @@ class FocusEnv:
                 init_y2 = min(image_height, max(init_region[0]) + initFB_pad) / image_height
                 init_x2 = min(image_width, max(init_region[1]) + initFB_pad) / image_width
                 self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
-                # Assign the "Current Segmentation" and "Complete info" holders.
+                # Assign the "Current Segmentation" holders.
                 self._SEG_prev = segmentation
-                self._COMP_result = COMP_res
+                # Append region result into "Complete Results".
+                self._COMP_result.append(COMP_res)
+                self._COMP_result.popleft()
                 # Append the "Relative Direction" history (for wide range).
                 self._RelDir_prev.append('right-bottom')
                 # Increase the time-step, and record the current bbox to the history.
@@ -480,9 +482,11 @@ class FocusEnv:
         # Append the current bbox into "Bbox History".
         self._BBOX_his.append(dst_bbox.copy())
         self._BBOX_his.popleft()
-        # Iteratively re-assign the "Segmentation" result, "Complete info" and "Focus Bbox".
+        # Append the current region result into "Complete Result".
+        self._COMP_result.append(COMP_res)
+        self._COMP_result.popleft()
+        # Iteratively re-assign the "Segmentation" result and "Focus Bbox".
         self._SEG_prev = segmentation
-        self._COMP_result = COMP_res
         self._focus_bbox = np.asarray(dst_bbox)
         # -------------------------------- Core Part -----------------------------
 

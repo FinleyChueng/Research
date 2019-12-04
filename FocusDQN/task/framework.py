@@ -443,9 +443,9 @@ class DeepQNetwork(DQN):
         x7 = self._inputs[self._name_space + '/Complete_Result']
         o1 = self._outputs[self._name_space + '/SEG_output']
         if CR_method == 'logit' or CR_method == 'prob':
-            COMP_results = np.zeros((batch_size, suit_h, suit_w, clazz_dim), dtype=np.float32)
-        elif CR_method == 'mask':
-            COMP_results = np.zeros((batch_size, suit_h, suit_w), dtype=np.float32)
+            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w, clazz_dim), dtype=np.float32)
+        elif CR_method in ['mask-lap', 'mask-vote']:
+            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w), dtype=np.int64)
         else:
             raise ValueError('Unknown result fusion method !!!')
         # Validate function.
@@ -940,7 +940,7 @@ class DeepQNetwork(DQN):
         l4 = self._losses[self._name_space + '/clazz_weights']
         # Get segmentation output holder of model.
         y1 = self._outputs[self._name_space + '/SEG_output']
-        y2 = self._outputs[self._name_space + '/FUSE_result']
+        y2 = self._outputs[self._name_space + '/Region_Result']
         y3 = self._outputs[stage_prefix + '/DQN_output']
         y4 = self._losses[self._name_space + '/DQN_Rewards']
 
@@ -1035,7 +1035,7 @@ class DeepQNetwork(DQN):
         x7 = self._inputs[self._name_space + '/Complete_Result']
         # Get segmentation output holder of model.
         y1 = self._outputs[self._name_space + '/SEG_output']
-        y2 = self._outputs[self._name_space + '/FUSE_result']
+        y2 = self._outputs[self._name_space + '/Region_Result']
 
         # Generate the segmentation result for current region (focus bbox).
         segmentation, COMP_res = self._sess.run([y1, y2], feed_dict={

@@ -159,7 +159,7 @@ class DqnAgent:
             SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
             net_util.package_tensor(self.__mediates, SEG_tensor)
             # Fuse the previous (complete) and current (region) segmentation result.
-            SEG_output, FUSE_result = self.__result_fusion(SEG_tensor, self._name_space)
+            SEG_output, REGION_result = self.__result_fusion(SEG_tensor, self._name_space)
         else:
             # No need the two holders.
             SEG_logits = CEloss_tensors = None
@@ -171,7 +171,7 @@ class DqnAgent:
         net_util.package_tensor(self._outputs, DQN_output)
         if with_segmentation:
             net_util.package_tensor(self._outputs, SEG_output)
-            net_util.package_tensor(self._outputs, FUSE_result)
+            net_util.package_tensor(self._outputs, REGION_result)
 
         # Show the input and output holders.
         print('| ---> Finish model architecture (name scope: {}) !'.format(name_space))
@@ -314,21 +314,41 @@ class DqnAgent:
                                                  name='Scale_FoBbox')
                 # Generate "Focus Map".
                 focus_map = gen_focus(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
+                # Generate and package the "Past Bbox Maps".
+                bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
+                bbox_his = net_util.scale_bbox(bbox_his,
+                                               src_height=input_shape[1],
+                                               src_width=input_shape[2],
+                                               dst_height=suit_h,
+                                               dst_width=suit_w,
+                                               name='Scale_Bbox_His')
+                bbox_maps = gen_focus(bbox_his, cor_size=[suit_h, suit_w],
+                                      name='flat_bbox_maps')  # [b*his, h, w, 1]
+                bbox_maps = tf.reshape(bbox_maps, [-1, his_thres, suit_h, suit_w, 1],
+                                       name='Bbox_Maps')    # [b, his, h, w, 1]
             else:
                 # Rename the "Focus Bbox" for conveniently usage.
                 focus_bbox = tf.identity(focus_bbox, name='Scale_FoBbox')
                 # Only generate the "Focus Map".
                 focus_map = gen_focus(focus_bbox, cor_size=[input_shape[1], input_shape[2]], name='Focus_Map')
+                # Generate and package the "Past Bbox Maps".
+                bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
+                bbox_maps = gen_focus(bbox_his, cor_size=[input_shape[1], input_shape[2]],
+                                      name='flat_bbox_maps')    # [b*his, h, w, 1]
+                bbox_maps = tf.reshape(bbox_maps, [-1, his_thres, input_shape[1], input_shape[2], 1],
+                                       name='Bbox_Maps')    # [b, his, 4, h, w, 1]
 
-            # Package the "Scaled Focus Bbox", "Focus Map" into the mediate holders.
+            # Package the "Scaled Focus Bbox", "Focus Map", "Bbox Maps" into the mediate holders.
             net_util.package_tensor(self.__mediates, focus_bbox)
             net_util.package_tensor(self.__mediates, focus_map)
-
-            # Generate and package the "Past Bbox Maps".
-            bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
-            bbox_maps = gen_focus(bbox_his, cor_size=[input_shape[1], input_shape[2]],
-                                  name='Bbox_Maps')     # [b*his, 4]
             net_util.package_tensor(self.__mediates, bbox_maps)
+
+            # Generate and package the "History Flag", which indicates the valid length of "History Information".
+            his_elem = tf.expand_dims(tf.range(his_thres), axis=0, name='history_range')  # [1, his]
+            rev_his_len = tf.expand_dims(tf.subtract(his_thres, his_len), axis=-1,
+                                         name='reverse_his_len')     # [b, 1]
+            his_flag = tf.greater_equal(his_elem, rev_his_len, name='History_Flag')     # [b, his]
+            net_util.package_tensor(self.__mediates, his_flag)  # [b, his]
 
             # Different fusion method for input according to input type.
             if input_type == 'region':
@@ -411,7 +431,9 @@ class DqnAgent:
             ph = tf.greater_equal(bh, scales)   # [b*his, s]
             pw = tf.greater_equal(bw, scales)   # [b*his, s]
             p = tf.logical_or(ph, pw)   # [b*his, s]
-            pind = tf.argmin(tf.to_int32(p), axis=-1)   # [b*his]
+            pind = tf.expand_dims(tf.range(scales.get_shape().as_list()[-1]), axis=0)   # [1, s]
+            pind = tf.multiply(tf.to_int32(p), pind)    # [b*his, s]
+            pind = tf.argmin(pind, axis=-1)   # [b*his]
             flag = tf.equal(pind, s_id)     # [b*his]
             flag = tf.logical_and(flag, his_flag)   # [b*his]
             # generate the "local feature maps".
@@ -451,11 +473,11 @@ class DqnAgent:
                 scales_ruler.append(1/np.exp2(p+1))
             scales_ruler.append(0.)
             scales_ruler = tf.constant([scales_ruler], name='Scales_Ruler')     # [1, scales]
-            # Generate the "History Flag", which indicates the valid length of "History Information".
-            his_elem = tf.expand_dims(tf.range(his_thres), axis=0, name='history_range')    # [1, his]
-            his_len = self._inputs[stage_prefix+'/History_Length']     # [b]
-            his_flag = tf.less(his_elem, tf.expand_dims(his_len, axis=-1), name='raw_his_flag')  # [b, his]
-            his_flag = tf.reshape(his_flag, [-1], name='history_flag')  # [b*his]
+            # Get the "History Length".
+            his_len = self._inputs[stage_prefix + '/History_Length']    # [b]
+            # Get the "History Flag", which indicates the valid length of "History Information".
+            his_flag = self.__mediates[stage_prefix+'/History_Flag']    # [b, his]
+            his_flag = tf.reshape(his_flag, [-1], name='flat_history_flag')     # [b*his]
             # Get "Global Information", that is, the raw image.
             glo_info = self._inputs[stage_prefix+'/image']  # [?, h, w, c]
             # Get "History Information".
@@ -992,6 +1014,12 @@ class DqnAgent:
             stage_prefix = self._name_space
         focus_bbox = self.__mediates[stage_prefix+'/Scale_FoBbox']
         focus_map = self.__mediates[stage_prefix+'/Focus_Map']
+        # Get the "History Flag", which indicates the valid length of history information.
+        his_flag = self.__mediates[stage_prefix + '/History_Flag']  # [b, his]
+        # Get the "Bbox Maps", which indicates the "Past Focus Regions".
+        bbox_maps = self.__mediates[stage_prefix + '/Bbox_Maps']    # [b, his, h, w, 1]
+        # Get the "History Threshold".
+        his_thres = conf_dqn.get('step_threshold', 10)
 
         # Start definition.
         RF_name = name_space + '/ResFuse'
@@ -1016,68 +1044,110 @@ class DqnAgent:
                     output_shape=SEG_tensor.get_shape().as_list()[1:],
                     name='Region_tensor')   # [?, h, w, cls]
             elif logit_type == 'complete':
-                REGION_tensor = tf.identity(SEG_tensor, name='Region_tensor')
+                REGION_tensor = tf.identity(SEG_tensor, name='Region_tensor')   # [?, h, w, cls]
             else:
                 raise ValueError('Unknown segmentation logit type !!!')
+
+            # Generate the "Flag Maps" used to filter the "Fusion Result".
+            if logit_type in ['bbox-bi', 'bbox-crop']:
+                bbox_maps = tf.logical_and(
+                    tf.expand_dims(tf.expand_dims(tf.expand_dims(his_flag, axis=-1), axis=-1), axis=-1),
+                    bbox_maps, name='filt_bbox_maps')  # [?, his, h, w, 1]
+                flag_maps = tf.concat([bbox_maps, tf.expand_dims(focus_map, axis=1)], axis=1,
+                                      name='flag_maps_sin')  # [?, his+1, h, w, 1]
+                flag_maps = tf.tile(flag_maps, multiples=[1, 1, 1, 1, classification_dim],
+                                    name='Flag_maps')  # [?, his+1, h, w, cls]
+            elif logit_type == 'complete':
+                flag_maps = tf.concat([his_flag,
+                                       tf.slice(tf.ones_like(his_flag, dtype=tf.bool), begin=(0, 0), size=(-1, 1))],
+                                      axis=-1, name='flag_maps_2d')  # [?, his+1]
+                his_ind = tf.expand_dims(tf.ones_like(REGION_tensor, tf.bool), axis=1)  # [?, 1, h, w ,cls]
+                his_ind = tf.tile(his_ind, multiples=[1, his_thres+1, 1, 1, 1],
+                                  name='his_shape_ind')     # [?, his+1, h, w, cls]
+                flag_maps = tf.logical_and(
+                    tf.expand_dims(tf.expand_dims(tf.expand_dims(flag_maps, axis=-1), axis=-1), axis=-1),
+                    tf.ones_like(his_ind, dtype=tf.bool), name='Flag_maps')  # [?, his+1, h, w, cls]
+            else:
+                raise ValueError('Unknown segmentation logit type !!!')
+            # Meanwhile calculate the "mean factor".
+            fmean_factor = tf.reduce_sum(tf.to_float(flag_maps), axis=1,
+                                         name='raw_fmean_factor')  # [?, h, w, cls]
+            fmean_factor = tf.where(tf.not_equal(fmean_factor, 0.), fmean_factor, tf.ones_like(fmean_factor),
+                                    name='fmean_factor')  # [?, h, w, cls]
 
             # Fusion according to different method. (Including declare the "Complete Result")
             if fusion_method == 'logit':
                 # The placeholder of "Complete Result". --> Logit tensors.
                 complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
-                                                               [None, up_h, up_w, classification_dim],
-                                                               name='Complete_Result')  # [?, h, w, cls]
+                                                               [None, his_thres, up_h, up_w, classification_dim],
+                                                               name='Complete_Result')  # [?, his, h, w, cls]
+                # The "Region Result".
+                REGION_result = tf.identity(REGION_tensor, name='Region_Result')    # [?, h, w, cls]
+                # Stack the segmentation logits of previous and current.
+                STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)], axis=1,
+                                         name='Stack_result')   # [?, his+1, h, w, cls]
                 # Fuse the result in "Logit"-level, and generate the final segmentation result.
-                if logit_type in ['bbox-bi', 'bbox-crop']:
-                    focus_map = tf.tile(focus_map, multiples=[1, 1, 1, classification_dim])     # [?, h, w, cls]
-                    FUSE_result = tf.divide(tf.add(complete_result, REGION_tensor), 2.0,
-                                            name='RawF_result')     # [?, h, w, cls]
-                    FUSE_result = tf.where(focus_map, FUSE_result, complete_result,
-                                           name='FUSE_result')  # [?, h, w, cls]
-                elif logit_type == 'complete':
-                    FUSE_result = tf.divide(tf.add(complete_result, REGION_tensor), 2.0,
-                                            name='FUSE_result')     # [?, h, w, cls]
-                else:
-                    raise ValueError('Unknown segmentation logit type !!!')
+                FUSE_result = tf.where(flag_maps, STACK_result, tf.zeros_like(STACK_result),
+                                       name='raw_fuse_result_5D')  # [?, his+1, h, w, cls]
+                FUSE_result = tf.reduce_sum(FUSE_result, axis=1,
+                                            name='raw_fuse_result_4D')  # [?, h, w, cls]
+                FUSE_result = tf.divide(FUSE_result, fmean_factor, name='Fuse_result')  # [?, h, w, cls]
                 # Translate to result.
                 SEG_prob = tf.nn.softmax(FUSE_result, name='SEG_prob')  # [?, h, w, cls]
                 SEG_output = tf.argmax(SEG_prob, axis=-1, name='SEG_suit_output')    # [?, h, w]
             elif fusion_method == 'prob':
                 # The placeholder of "Complete Result". --> Probability.
                 complete_result = net_util.placeholder_wrapper(self._inputs, tf.float32,
-                                                               [None, up_h, up_w, classification_dim],
-                                                               name='Complete_Result')  # [?, h, w, cls]
+                                                               [None, his_thres, up_h, up_w, classification_dim],
+                                                               name='Complete_Result')  # [?, his, h, w, cls]
+                # The "Region Result".
+                REGION_result = tf.nn.softmax(REGION_tensor, name='Region_Result')  # [?, h, w, cls]
+                # Stack the segmentation probabilities of previous and current.
+                STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)], axis=1,
+                                         name='Stack_result')  # [?, his+1, h, w, cls]
                 # Fuse the result in "Probability"-level, and generate the final segmentation result.
-                region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
-                if logit_type in ['bbox-bi', 'bbox-crop']:
-                    focus_map = tf.tile(focus_map, multiples=[1, 1, 1, classification_dim])  # [?, h, w, cls]
-                    FUSE_result = tf.divide(tf.add(complete_result, region_prob), 2.0,
-                                            name='RawF_result')     # [?, h, w, cls]
-                    FUSE_result = tf.where(focus_map, FUSE_result, complete_result,
-                                           name='FUSE_result')  # [?, h, w, cls]
-                elif logit_type == 'complete':
-                    FUSE_result = tf.divide(tf.add(complete_result, region_prob), 2.0,
-                                            name='FUSE_result')     # [?, h, w, cls]
-                else:
-                    raise ValueError('Unknown segmentation logit type !!!')
+                FUSE_result = tf.where(flag_maps, STACK_result, tf.zeros_like(STACK_result),
+                                       name='raw_fuse_result_5D')  # [?, his+1, h, w, cls]
+                FUSE_result = tf.reduce_sum(FUSE_result, axis=1,
+                                            name='raw_fuse_result_4D')  # [?, h, w, cls]
+                FUSE_result = tf.divide(FUSE_result, fmean_factor, name='Fuse_result')  # [?, h, w, cls]
                 # Translate to result.
                 SEG_output = tf.argmax(FUSE_result, axis=-1, name='SEG_suit_output')  # [?, h, w]
-            elif fusion_method == 'mask':
+            # elif fusion_method == 'mask':
+            elif fusion_method in ['mask-lap', 'mask-vote']:
                 # The placeholder of "Complete Result". --> Mask.
                 complete_result = net_util.placeholder_wrapper(self._inputs, tf.int64,
-                                                               [None, up_h, up_w],
-                                                               name='Complete_Result')  # [?, h, w]
-                # Fuse the result in "Mask"-level, and generate the final segmentation result.
+                                                               [None, his_thres, up_h, up_w],
+                                                               name='Complete_Result')  # [?, his, h, w]
+                # The "Region Result".
                 region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
-                region_mask = tf.argmax(region_prob, axis=-1, name='region_mask')   # [?, h, w]
-                # Simply strategy: Use the "Region Mask" as the ground truth expects for "Background" category.
-                if logit_type in ['bbox-bi', 'bbox-crop']:
-                    focus_map = focus_map[:, :, :, 0]   # [?, h, w]
-                    FUSE_result = tf.where(focus_map, region_mask, complete_result,
-                                           name='FUSE_result')  # [?, h, w]
-                elif logit_type == 'complete':
-                    FUSE_result = region_mask   # [?, h, w]
+                REGION_result = tf.argmax(region_prob, axis=-1, name='Region_Result')   # [?, h, w]
+                # Stack the segmentation logits of previous and current.
+                STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)], axis=1,
+                                         name='raw_stack_result')   # [?, his+1, h, w]
+                STACK_result = tf.one_hot(STACK_result, depth=classification_dim,
+                                          name='clz_stack_result')  # [?, his+1, h, w, cls]
+                STACK_result = tf.where(flag_maps, STACK_result, tf.zeros_like(STACK_result),
+                                        name='Stack_result')    # [?, his+1, h, w, cls]
+                # The "Pure Background Mask".
+                BG_MASK = tf.one_hot(tf.zeros_like(REGION_result), depth=classification_dim,
+                                     name='BG_MASK')  # [?, h, w, cls]
+                # Deal with the one-hot mask according different fusion method.
+                if fusion_method == 'mask-lap':
+                    arg_posind = tf.range(his_thres+1, dtype=tf.float32)    # [his+1]
+                    arg_posind = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.expand_dims(
+                        arg_posind, axis=0), axis=-1), axis=-1), axis=-1)     # [1, his+1, 1, 1, 1]
+                    arg_posind = tf.multiply(STACK_result, arg_posind,
+                                             name='arg_posind')     # [?, his+1, h, w, cls]
+                    arg_posind = tf.argmax(arg_posind, axis=1)  # [?, h, w, cls]
+                    arg_posind = tf.one_hot(arg_posind, depth=his_thres+1, axis=1)  # [?, his+1, h, w, cls]
+                    FUSE_result = tf.reduce_sum(arg_posind, axis=1, name='fuse_laps')   # [?, h, w, cls]
                 else:
-                    raise ValueError('Unknown segmentation logit type !!!')
+                    FUSE_result = tf.reduce_sum(STACK_result, axis=1, name='fuse_votes')    # [?, h, w, cls]
+                # Filter the "Background Region".
+                FUSE_result = tf.where(tf.not_equal(FUSE_result, 0), FUSE_result, BG_MASK,
+                                       name='fuse_res_clazz')   # [?, h, w, cls]
+                FUSE_result = tf.argmax(FUSE_result, axis=-1, name='Fuse_result')   # [?, h, w]
                 # Fusion result is the final segmentation result.
                 SEG_output = tf.identity(FUSE_result, name='SEG_suit_output')  # [?, h, w]
             else:
@@ -1113,7 +1183,8 @@ class DqnAgent:
                 name_space, SEG_tensor.shape, SEG_output.shape))
 
             # Return the segmentation result and the fusion value for next iteration.
-            return SEG_output, FUSE_result
+            return SEG_output, REGION_result
+            # return SEG_output, FUSE_result
 
 
     def __region_selection(self, FE_tensor, SEG_info, action_dim, name_space):
