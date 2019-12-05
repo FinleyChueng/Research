@@ -3,7 +3,7 @@ import numpy as np
 
 
 
-def dice_loss(labels, logits, scope=None, weights=None, category_indep=True, ignore_BG=False):
+def dice_loss(labels, logits, scope=None, weights=None):
     r'''
         Calculate the DICE loss for given labels and logits.
     '''
@@ -24,27 +24,18 @@ def dice_loss(labels, logits, scope=None, weights=None, category_indep=True, ign
     category = logits.get_shape().as_list()[-1]
     labels = tf.one_hot(labels, depth=category)     # [?, h, w, cls]
     predictions = tf.nn.softmax(logits, axis=-1)    # [?, h, w, cls]
-    if ignore_BG:
-        labels = labels[:, :, :, 1:]    # [?, h, w, cls-1]
-        predictions = predictions[:, :, :, 1:]  # [?, h, w, cls-1]
-        if weights is not None:
-            weights = weights[:, :, :, 1:]  # [?, h, w, cls-1]
     # Calculate
     intersection = 2 * tf.multiply(labels, predictions)     # [?, h, w, cls]
     union = tf.add(labels, predictions)     # [?, h, w, cls]
     if weights is not None:
         intersection = tf.multiply(intersection, weights)   # [?, h, w, cls]
         union = tf.multiply(union, weights)     # [?, h, w, cls]
-    indep_axis = (1, 2) if category_indep else (1, 2, 3)
-    intersection = tf.reduce_sum(intersection, axis=indep_axis)  # [?] or [?, cls]
-    union = tf.reduce_sum(union, axis=indep_axis)  # [?] or [?, cls]
-    # Add epsilon.
-    intersection = tf.add(intersection, 1e-16)  # [?] or [?, cls]
-    union = tf.add(union, 1e-16)  # [?] or [?, cls]
-    dice = tf.divide(intersection, union, name='batch_dice')   # [?] or [?, cls]
-    # Specify
-    if category_indep:
-        dice = tf.reduce_mean(dice, axis=-1)  # [?]
-    dice = 1. - tf.reduce_mean(dice, name=scope)     # scalar
+        num_present = tf.reduce_sum(weights)    # [scalar]
+    else:
+        num_present = tf.reduce_sum(tf.ones_like(logits))   # [scalar]
+    dice = tf.divide(intersection + 1e-32, union + 1e-32, name='dice_loss')     # [?, h, w, cls]
+    dice = tf.divide(tf.reduce_sum(dice), num_present)  # [scalar]
+    # Use the reverse form.
+    loss = tf.subtract(1., tf.reduce_mean(dice), name=scope)    # scalar
     # Finish.
-    return dice
+    return loss

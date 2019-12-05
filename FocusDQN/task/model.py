@@ -433,7 +433,7 @@ class DqnAgent:
             p = tf.logical_or(ph, pw)   # [b*his, s]
             pind = tf.expand_dims(tf.range(scales.get_shape().as_list()[-1]), axis=0)   # [1, s]
             pind = tf.multiply(tf.to_int32(p), pind)    # [b*his, s]
-            pind = tf.argmin(pind, axis=-1)   # [b*his]
+            pind = tf.reduce_min(pind, axis=-1)     # [b*his]
             flag = tf.equal(pind, s_id)     # [b*his]
             flag = tf.logical_and(flag, his_flag)   # [b*his]
             # generate the "local feature maps".
@@ -1125,29 +1125,32 @@ class DqnAgent:
                 # Stack the segmentation logits of previous and current.
                 STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)], axis=1,
                                          name='raw_stack_result')   # [?, his+1, h, w]
-                STACK_result = tf.one_hot(STACK_result, depth=classification_dim,
+                STACK_result = tf.one_hot(STACK_result, depth=classification_dim, dtype=tf.int64,
                                           name='clz_stack_result')  # [?, his+1, h, w, cls]
                 STACK_result = tf.where(flag_maps, STACK_result, tf.zeros_like(STACK_result),
                                         name='Stack_result')    # [?, his+1, h, w, cls]
                 # The "Pure Background Mask".
-                BG_MASK = tf.one_hot(tf.zeros_like(REGION_result), depth=classification_dim,
-                                     name='BG_MASK')  # [?, h, w, cls]
+                BG_MASK = tf.zeros_like(REGION_result, name='BG_MASK')  # [?, h, w]
                 # Deal with the one-hot mask according different fusion method.
                 if fusion_method == 'mask-lap':
-                    arg_posind = tf.range(his_thres+1, dtype=tf.float32)    # [his+1]
-                    arg_posind = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.expand_dims(
-                        arg_posind, axis=0), axis=-1), axis=-1), axis=-1)     # [1, his+1, 1, 1, 1]
-                    arg_posind = tf.multiply(STACK_result, arg_posind,
-                                             name='arg_posind')     # [?, his+1, h, w, cls]
-                    arg_posind = tf.argmax(arg_posind, axis=1)  # [?, h, w, cls]
-                    arg_posind = tf.one_hot(arg_posind, depth=his_thres+1, axis=1)  # [?, his+1, h, w, cls]
-                    FUSE_result = tf.reduce_sum(arg_posind, axis=1, name='fuse_laps')   # [?, h, w, cls]
+                    oh_posind = tf.range(classification_dim, dtype=tf.int64)    # [cls]
+                    oh_posind = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.expand_dims(
+                        oh_posind, axis=0), axis=0), axis=0), axis=0)   # [1, 1, 1, 1, cls]
+                    oh_posind = tf.multiply(STACK_result, oh_posind,
+                                            name='oh_posind')   # [?, his+1, h, w, cls]
+                    FUSE_laps = tf.reduce_sum(oh_posind, axis=-1, name='fuse_laps')     # [?, his+1, h, w]
+                    FUSE_result = tf.reduce_max(FUSE_laps, axis=1, name='raw_fuse_result')  # [?, h, w]
+                    FUSE_result = tf.where(
+                        tf.not_equal(tf.reduce_sum(FUSE_laps, axis=1), 0),
+                        FUSE_result, BG_MASK,
+                        name='Fuse_result')  # [?, h, w]
                 else:
-                    FUSE_result = tf.reduce_sum(STACK_result, axis=1, name='fuse_votes')    # [?, h, w, cls]
-                # Filter the "Background Region".
-                FUSE_result = tf.where(tf.not_equal(FUSE_result, 0), FUSE_result, BG_MASK,
-                                       name='fuse_res_clazz')   # [?, h, w, cls]
-                FUSE_result = tf.argmax(FUSE_result, axis=-1, name='Fuse_result')   # [?, h, w]
+                    FUSE_votes = tf.reduce_sum(STACK_result, axis=1, name='fuse_votes')     # [?, h, w, cls]
+                    FUSE_result = tf.argmax(FUSE_votes, axis=-1, name='raw_fuse_result')    # [?, h, w]
+                    FUSE_result = tf.where(
+                        tf.not_equal(tf.reduce_sum(FUSE_votes, axis=-1), 0),
+                        FUSE_result, BG_MASK,
+                        name='Fuse_result')  # [?, h, w]
                 # Fusion result is the final segmentation result.
                 SEG_output = tf.identity(FUSE_result, name='SEG_suit_output')  # [?, h, w]
             else:
