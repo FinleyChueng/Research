@@ -1004,6 +1004,7 @@ class DqnAgent:
         conf_cus = self._config['Custom']
         fusion_method = conf_cus.get('result_fusion', 'prob')
         logit_type = conf_cus.get('result_tensor', 'complete')
+        fuse_part = conf_cus.get('result_part', 'complete')
 
         # Get the "Focus Bounding-box" holder.
         conf_dqn = self._config['DQN']
@@ -1049,7 +1050,7 @@ class DqnAgent:
                 raise ValueError('Unknown segmentation logit type !!!')
 
             # Generate the "Flag Maps" used to filter the "Fusion Result".
-            if logit_type in ['bbox-bi', 'bbox-crop']:
+            if (logit_type in ['bbox-bi', 'bbox-crop']) or (logit_type == 'complete' and fuse_part == 'region'):
                 bbox_maps = tf.logical_and(
                     tf.expand_dims(tf.expand_dims(tf.expand_dims(his_flag, axis=-1), axis=-1), axis=-1),
                     bbox_maps, name='filt_bbox_maps')  # [?, his, h, w, 1]
@@ -1057,7 +1058,7 @@ class DqnAgent:
                                       name='flag_maps_sin')  # [?, his+1, h, w, 1]
                 flag_maps = tf.tile(flag_maps, multiples=[1, 1, 1, 1, classification_dim],
                                     name='Flag_maps')  # [?, his+1, h, w, cls]
-            elif logit_type == 'complete':
+            elif (logit_type == 'complete' and fuse_part == 'complete'):
                 flag_maps = tf.concat([his_flag,
                                        tf.slice(tf.ones_like(his_flag, dtype=tf.bool), begin=(0, 0), size=(-1, 1))],
                                       axis=-1, name='flag_maps_2d')  # [?, his+1]
@@ -1068,7 +1069,9 @@ class DqnAgent:
                     tf.expand_dims(tf.expand_dims(tf.expand_dims(flag_maps, axis=-1), axis=-1), axis=-1),
                     tf.ones_like(his_ind, dtype=tf.bool), name='Flag_maps')  # [?, his+1, h, w, cls]
             else:
-                raise ValueError('Unknown segmentation logit type !!!')
+                raise ValueError('Unknown segmentation pair - logit type ({}) - fuse part - ({}) !!!'.format(
+                    logit_type, fuse_part
+                ))
             # Meanwhile calculate the "mean factor".
             fmean_factor = tf.reduce_sum(tf.to_float(flag_maps), axis=1,
                                          name='raw_fmean_factor')  # [?, h, w, cls]
@@ -1189,7 +1192,6 @@ class DqnAgent:
 
             # Return the segmentation result and the fusion value for next iteration.
             return SEG_output, REGION_result
-            # return SEG_output, FUSE_result
 
 
     def __region_selection(self, FE_tensor, SEG_info, action_dim, name_space):

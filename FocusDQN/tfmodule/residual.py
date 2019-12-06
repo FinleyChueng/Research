@@ -275,11 +275,11 @@ def __residual_v1(input_tensor,
                                regularizer=regularizer)
         # Coz ResNetV1. The procedure likes below:
         #   conv -> feature normalize -> addition -> ReLU
-        conv2d = tf_conv_func(conv2d, output_channels, kernel_size, 1, 'same',
-                              use_bias=use_bias,
-                              reuse=reuse,
-                              kernel_regularizer=regularizer,
-                              name=name_space + '/conv_2_conv')  # The parameters keep same as base conv.
+        conv2d = tf.layers.conv2d(conv2d, output_channels, kernel_size, 1, 'same',
+                                  use_bias=use_bias,
+                                  reuse=reuse,
+                                  kernel_regularizer=regularizer,
+                                  name=name_space + '/conv_2_conv')     # The parameters keep same as base conv.
         conv2d = tf_norl.feature_normalize(conv2d, feature_normalization,
                                            name_space=name_space + '/conv_2_bn',
                                            bn_decay=0.9,
