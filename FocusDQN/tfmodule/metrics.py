@@ -3,7 +3,7 @@ import numpy as np
 
 
 
-def DICE(labels, predictions, weights=None, scope=None, category_indep=True, ignore_BG=False):
+def DICE(labels, predictions, weights=None, scope=None, keep_batch=True):
     r'''
         Calculate the DICE metric for given predictions. We reduce it
             for each sample of a batch.
@@ -21,35 +21,26 @@ def DICE(labels, predictions, weights=None, scope=None, category_indep=True, ign
     shape_invar = (lab_shape != pred_shape).any() and (pred_shape != weight_shape).any()
     if shape_invar:
         raise TypeError('The labels, predictions and weights must be of same shape !!!')
-    # Prepare
-    if ignore_BG:
-        labels = labels[:, :, :, 1:]    # [?, h, w, cls-1]
-        predictions = predictions[:, :, :, 1:]  # [?, h, w, cls-1]
-        if weights is not None:
-            weights = weights[:, :, :, 1:]  # [?, h, w, cls-1]
     # Calculate
     intersection = 2 * tf.multiply(labels, predictions)     # [?, h, w, cls]
     union = tf.add(labels, predictions)     # [?, h, w, cls]
     if weights is not None:
         intersection = tf.multiply(intersection, weights)   # [?, h, w, cls]
         union = tf.multiply(union, weights)     # [?, h, w, cls]
-    indep_axis = (1, 2) if category_indep else (1, 2, 3)
-    intersection = tf.reduce_sum(intersection, axis=indep_axis)  # [?] or [?, cls]
-    union = tf.reduce_sum(union, axis=indep_axis)  # [?] or [?, cls]
-    # Add epsilon.
-    intersection = tf.add(intersection, 1e-16)  # [?] or [?, cls]
-    union = tf.add(union, 1e-16)  # [?] or [?, cls]
-    dice = tf.divide(intersection, union, name='batch_dice')   # [?] or [?, cls]
-    # Specify
-    if category_indep:
-        dice = tf.reduce_mean(dice, axis=-1)    # [?]
-    dice = tf.stop_gradient(dice, name=scope)   # [?]
+        num_present = tf.reduce_sum(weights)    # scalar
+    else:
+        num_present = tf.reduce_sum(tf.ones_like(predictions))   # scalar
+    dice = tf.divide(intersection + 1e-32, union + 1e-32, name='dice')     # [?, h, w, cls]
+    # Whether to keep batch
+    rec_axis = (1, 2, 3) if keep_batch else None
+    dice = tf.divide(tf.reduce_sum(dice, axis=rec_axis), num_present)   # scalar or [?,]
+    dice = tf.stop_gradient(dice, name=scope)   # scalar or [?]
     # Finish.
     return dice
 
 
 
-def recall(labels, predictions, weights=None, scope=None, category_indep=True, ignore_BG=False):
+def recall(labels, predictions, weights=None, scope=None, keep_batch=True):
     r'''
         Calculate the DICE metric for given predictions. We reduce it
             for each sample of a batch.
@@ -67,30 +58,19 @@ def recall(labels, predictions, weights=None, scope=None, category_indep=True, i
     shape_invar = (lab_shape != pred_shape).any() and (pred_shape != weight_shape).any()
     if shape_invar:
         raise TypeError('The labels, predictions and weights must be of same shape !!!')
-    # Prepare
-    if ignore_BG:
-        labels = labels[:, :, :, 1:]  # [?, h, w, cls-1]
-        predictions = predictions[:, :, :, 1:]  # [?, h, w, cls-1]
-        if weights is not None:
-            weights = weights[:, :, :, 1:]  # [?, h, w, cls-1]
     # Calculate
     intersection = tf.multiply(labels, predictions)  # [?, h, w, cls]
     ground_truth = labels
     if weights is not None:
         intersection = tf.multiply(intersection, weights)  # [?, h, w, cls]
         ground_truth = tf.multiply(ground_truth, weights)     # [?, h, w, cls]
-    indep_axis = (1, 2) if category_indep else (1, 2, 3)
-    intersection = tf.reduce_sum(intersection, axis=indep_axis)  # [?] or [?, cls]
-    ground_truth = tf.reduce_sum(ground_truth, axis=indep_axis)  # [?] or [?, cls]
-    # Add epsilon.
-    intersection = tf.add(intersection, 1e-16)  # [?] or [?, cls]
-    ground_truth = tf.add(ground_truth, 1e-16)  # [?] or [?, cls]
-    recall = tf.divide(intersection, ground_truth, name='batch_recall')  # [?] or [?, cls]
-    # Specify
-    if category_indep:
-        recall = tf.reduce_mean(recall, axis=-1)  # [?]
-    recall = tf.stop_gradient(recall, name=scope)   # [?]
+        num_present = tf.reduce_sum(weights)  # scalar
+    else:
+        num_present = tf.reduce_sum(tf.ones_like(predictions))  # scalar
+    recall = tf.divide(intersection + 1e-32, ground_truth + 1e-32, name='recall')   # [?, h, w, cls]
+    # Whether to keep batch
+    rec_axis = (1, 2, 3) if keep_batch else None
+    recall = tf.divide(tf.reduce_sum(recall, axis=rec_axis), num_present)   # scalar or [?,]
+    recall = tf.stop_gradient(recall, name=scope)   # scalar or [?]
     # Finish.
     return recall
-
-

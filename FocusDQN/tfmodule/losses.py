@@ -30,9 +30,9 @@ def dice_loss(labels, logits, scope=None, weights=None):
     if weights is not None:
         intersection = tf.multiply(intersection, weights)   # [?, h, w, cls]
         union = tf.multiply(union, weights)     # [?, h, w, cls]
-        num_present = tf.reduce_sum(weights)    # [scalar]
+        num_present = tf.reduce_sum(weights)    # scalar
     else:
-        num_present = tf.reduce_sum(tf.ones_like(logits))   # [scalar]
+        num_present = tf.reduce_sum(tf.ones_like(logits))   # scalar
     dice = tf.divide(intersection + 1e-32, union + 1e-32, name='dice_loss')     # [?, h, w, cls]
     dice = tf.divide(tf.reduce_sum(dice), num_present)  # [scalar]
     # Use the reverse form.

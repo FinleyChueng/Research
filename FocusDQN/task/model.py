@@ -1123,9 +1123,9 @@ class DqnAgent:
                 region_prob = tf.nn.softmax(REGION_tensor, name='region_prob')  # [?, h, w, cls]
                 REGION_result = tf.argmax(region_prob, axis=-1, name='Region_Result')   # [?, h, w]
                 # Stack the segmentation logits of previous and current.
-                STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)], axis=1,
-                                         name='raw_stack_result')   # [?, his+1, h, w]
-                STACK_result = tf.one_hot(STACK_result, depth=classification_dim, dtype=tf.int64,
+                raw_STACK_result = tf.concat([complete_result, tf.expand_dims(REGION_result, axis=1)],
+                                             axis=1, name='raw_stack_result')   # [?, his+1, h, w]
+                STACK_result = tf.one_hot(raw_STACK_result, depth=classification_dim, dtype=tf.int64,
                                           name='clz_stack_result')  # [?, his+1, h, w, cls]
                 STACK_result = tf.where(flag_maps, STACK_result, tf.zeros_like(STACK_result),
                                         name='Stack_result')    # [?, his+1, h, w, cls]
@@ -1133,13 +1133,15 @@ class DqnAgent:
                 BG_MASK = tf.zeros_like(REGION_result, name='BG_MASK')  # [?, h, w]
                 # Deal with the one-hot mask according different fusion method.
                 if fusion_method == 'mask-lap':
-                    oh_posind = tf.range(classification_dim, dtype=tf.int64)    # [cls]
+                    oh_posind = tf.range(his_thres+1, dtype=tf.int64)   # [his+1]
                     oh_posind = tf.expand_dims(tf.expand_dims(tf.expand_dims(tf.expand_dims(
-                        oh_posind, axis=0), axis=0), axis=0), axis=0)   # [1, 1, 1, 1, cls]
-                    oh_posind = tf.multiply(STACK_result, oh_posind,
-                                            name='oh_posind')   # [?, his+1, h, w, cls]
-                    FUSE_laps = tf.reduce_sum(oh_posind, axis=-1, name='fuse_laps')     # [?, his+1, h, w]
-                    FUSE_result = tf.reduce_max(FUSE_laps, axis=1, name='raw_fuse_result')  # [?, h, w]
+                        oh_posind, axis=0), axis=-1), axis=-1), axis=-1)    # [1, his+1, 1, 1, 1]
+                    oh_posind = tf.multiply(STACK_result, oh_posind)    # [?, his+1, h, w, cls]
+                    oh_posind = tf.reduce_sum(oh_posind, axis=-1)   # [?, his+1, h, w]
+                    oh_posind = tf.one_hot(tf.reduce_max(oh_posind, axis=1), depth=his_thres+1, dtype=tf.int64,
+                                           axis=1, name='oh_posind')    # [?, his+1, h, w]
+                    FUSE_laps = tf.multiply(raw_STACK_result, oh_posind, name='fuse_laps')  # [?, his+1, h, w]
+                    FUSE_result = tf.reduce_sum(FUSE_laps, axis=1, name='raw_fuse_result')  # [?, h, w]
                     FUSE_result = tf.where(
                         tf.not_equal(tf.reduce_sum(FUSE_laps, axis=1), 0),
                         FUSE_result, BG_MASK,
