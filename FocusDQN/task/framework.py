@@ -35,6 +35,7 @@ class DeepQNetwork(DQN):
         learning_rate = conf_train.get('learning_rate')
         decay_iter = conf_train.get('learning_decay_iter')
         decay_rate = conf_train.get('learning_decay_rate')
+        learning_policy = conf_train.get('learning_rate_policy', 'continuous')
         conf_dqn = self._config['DQN']
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
         conf_others = self._config['Others']
@@ -86,20 +87,26 @@ class DeepQNetwork(DQN):
         # Show the quantity of parameters.
         tf_util.show_all_variables()
 
-        # Define a unified optimizer.
+        # Determine the e-decay learning rate.
         self._global_step = tf.Variable(0, trainable=False, name='global_step')
         share_learning_rate = tf.train.exponential_decay(learning_rate, self._global_step,
                                                          decay_iter, decay_rate, staircase=True)
+
+        # Define a unified ("End-to-end") optimizer.
         optimizer = tf.train.AdamOptimizer(share_learning_rate)
         # Define the training operator for "End-to-End".
         net_loss = self._losses[self._name_space + '/NET_loss']
         self._train_op = optimizer.minimize(net_loss, global_step=self._global_step)
 
         # Define the training operator for single "Segmentation".
-        self._pre_step = tf.Variable(0, trainable=False, name='pretrain_step')
-        pretrain_learning_rate = tf.train.exponential_decay(learning_rate, self._pre_step,
-                                                            decay_iter, decay_rate, staircase=True)
-        pretrain_optimizer = tf.train.AdamOptimizer(pretrain_learning_rate)
+        if learning_policy == 'fixed':
+            pretrain_optimizer = tf.train.AdamOptimizer(learning_rate)
+            self._pre_step = tf.Variable(0, trainable=False, name='pretrain_step')
+        elif learning_policy == 'continuous':
+            pretrain_optimizer = tf.train.AdamOptimizer(share_learning_rate)
+            self._pre_step = self._global_step
+        else:
+            raise ValueError('Unknown learning rate policy !!!')
         sloss = self._losses[self._name_space + '/SEG_loss']
         self._pre_op = pretrain_optimizer.minimize(sloss, global_step=self._pre_step)
         # Visualization util for pre-train.
@@ -156,6 +163,7 @@ class DeepQNetwork(DQN):
         epsilon_dict = conf_train.get('epsilon_dict', None)
         replay_iter = conf_train.get('replay_iter', 1)
         pre_epochs = conf_train.get('customize_pretrain_epochs', 1)
+        learning_policy = conf_train.get('learning_rate_policy', 'continuous')
         conf_others = self._config['Others']
         restore_from_bp = conf_others.get('restore_breakpoint', True)
 
@@ -183,18 +191,16 @@ class DeepQNetwork(DQN):
         print('\n\nPre-training the SEGMENTATION model !!!')
         # Determine the start position.
         if restore_from_bp:
-            glo_step = int(self._global_step.eval(self._sess))
-            if glo_step != 0:
-                # Means it was in "End-to-end" phrase last time.
-                start_epoch = pre_epochs
-                start_iter = -1
-            else:
-                # Compute last iter.
-                pre_step = int(self._pre_step.eval(self._sess))
-                last_iter = pre_step * batch_size
-                # Compute the start epoch and iteration.
+            # Compute last iter.
+            pre_step = int(self._pre_step.eval(self._sess))
+            last_iter = pre_step * batch_size
+            # Compute the start epoch and iteration.
+            if last_iter < pre_epochs * max_iteration:
                 start_epoch = last_iter // max_iteration
                 start_iter = last_iter % max_iteration
+            else:
+                start_epoch = pre_epochs
+                start_iter = -1
         else:
             start_epoch = start_iter = 0
         # Start train the "Segmentation" model.
@@ -218,6 +224,12 @@ class DeepQNetwork(DQN):
             glo_step = int(self._global_step.eval(self._sess))
             last_iter = glo_step * replay_iter
             # Compute the start epoch and iteration.
+            if learning_policy == 'fixed':
+                pass
+            elif learning_policy == 'continuous':
+                last_iter -= (pre_epochs * max_iteration)
+            else:
+                raise ValueError('Unknown learning rate policy !!!')
             start_epoch = last_iter // max_iteration
             start_iter = last_iter % max_iteration
         else:
