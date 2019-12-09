@@ -27,10 +27,11 @@ def DICE(labels, predictions, weights=None, scope=None, keep_batch=True):
     if weights is not None:
         intersection = tf.multiply(intersection, weights)   # [?, h, w, cls]
         union = tf.multiply(union, weights)     # [?, h, w, cls]
-        num_present = tf.reduce_sum(weights)    # scalar
+        weights_map = tf.not_equal(tf.reduce_sum(tf.multiply(labels, weights), axis=-1), 0.)    # [?, h, w]
+        num_present = tf.reduce_sum(tf.to_float(weights_map))   # scalar
     else:
-        num_present = tf.reduce_sum(tf.ones_like(predictions))   # scalar
-    dice = tf.divide(intersection + 1e-32, union + 1e-32, name='dice')     # [?, h, w, cls]
+        num_present = tf.reduce_sum(tf.ones_like(predictions[:, :, :, 0]))  # scalar
+    dice = tf.divide(intersection + 1e-32, union + 1e-32, name='dice')  # [?, h, w, cls]
     # Whether to keep batch
     rec_axis = (1, 2, 3) if keep_batch else None
     dice = tf.divide(tf.reduce_sum(dice, axis=rec_axis), num_present)   # scalar or [?,]
@@ -64,9 +65,10 @@ def recall(labels, predictions, weights=None, scope=None, keep_batch=True):
     if weights is not None:
         intersection = tf.multiply(intersection, weights)  # [?, h, w, cls]
         ground_truth = tf.multiply(ground_truth, weights)     # [?, h, w, cls]
-        num_present = tf.reduce_sum(weights)  # scalar
+        weights_map = tf.not_equal(tf.reduce_sum(tf.multiply(labels, weights), axis=-1), 0.)    # [?, h, w]
+        num_present = tf.reduce_sum(tf.to_float(weights_map))   # scalar
     else:
-        num_present = tf.reduce_sum(tf.ones_like(predictions))  # scalar
+        num_present = tf.reduce_sum(tf.ones_like(predictions[:, :, :, 0]))  # scalar
     recall = tf.divide(intersection + 1e-32, ground_truth + 1e-32, name='recall')   # [?, h, w, cls]
     # Whether to keep batch
     rec_axis = (1, 2, 3) if keep_batch else None
