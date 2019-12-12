@@ -285,6 +285,44 @@ def pad_2up(x, bbox, cor_size, name, padding_values=0):
     return y
 
 
+def gen_focus_maps_4bbox(bbox, cor_size, name):
+    r'''
+        Generate the "Focus Maps" for the corresponding "Focus Bounding-box".
+
+    Parameters:
+        bbox: The bounding-box tensor, indicates the bbox coordinates.
+        cor_size: The corresponding size of the bounding-box.
+        name: The operation (output tensor) name.
+
+    Return:
+        The "Focus Maps" for corresponding "Focus Bounding-box". its shape likes below:
+            [batch, height, width, 1]. (last dimension is always 1) with data type bool.
+    '''
+    # Check validity.
+    if not isinstance(bbox, tf.Tensor) or len(bbox.shape) != 2 or bbox.shape[1] != 4:
+        raise TypeError('The bbox must be [?, 4] Tensor !!!')
+    if not isinstance(cor_size, list) or len(cor_size) != 2:
+        raise TypeError('The cor_size must be 2-element list !!!')
+    # Generate the maps.
+    h, w = cor_size
+    def _gen_map(_inp1):
+        _y = []
+        for _x1 in _inp1:
+            _cy1, _cx1, _cy2, _cx2 = _x1
+            _cy1 = int(round(_cy1 * h))
+            _cx1 = int(round(_cx1 * w))
+            _cy2 = int(round(_cy2 * h))
+            _cx2 = int(round(_cx2 * w))
+            _m = np.zeros((h, w, 1), dtype=np.bool)
+            _m[_cy1: _cy2, _cx1: _cx2, :] = True  # [h, w, 1]
+            _y.append(_m)
+        _y = np.asarray(_y)
+        return _y
+    y, = tf.py_func(_gen_map, inp=[bbox], Tout=[tf.bool])
+    y = tf.reshape(y, [-1, h, w, 1], name=name)  # [?, h, w, 1]
+    return y
+
+
 def copy_model_parameters(from_scope, to_scope):
     """
     Copies the model's parameters of `from_model` to `to_model`.

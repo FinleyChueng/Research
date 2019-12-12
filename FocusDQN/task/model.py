@@ -227,26 +227,6 @@ class DqnAgent:
             #   considered in current state.
             his_len = net_util.placeholder_wrapper(self._inputs, tf.int32, [None,], name='History_Length')
 
-            # Declare the function used to generate the "Focus Map".
-            def gen_focus(bbox, cor_size, name):
-                h, w = cor_size
-                def _gen_map(_inp1):
-                    _y = []
-                    for _x1 in _inp1:
-                        _cy1, _cx1, _cy2, _cx2 = _x1
-                        _cy1 = int(round(_cy1 * h))
-                        _cx1 = int(round(_cx1 * w))
-                        _cy2 = int(round(_cy2 * h))
-                        _cx2 = int(round(_cx2 * w))
-                        _m = np.zeros((h, w, 1), dtype=np.bool)
-                        _m[_cy1: _cy2, _cx1: _cx2, :] = True  # [h, w, 1]
-                        _y.append(_m)
-                    _y = np.asarray(_y)
-                    return _y
-                y, = tf.py_func(_gen_map, inp=[bbox], Tout=[tf.bool])
-                y = tf.reshape(y, [-1, h, w, 1], name=name)  # [?, h, w, 1]
-                return y
-
             # Declare the function used to crop the specific bbox region of input tensor.
             def region_crop(x, bbox, size, name):
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))
@@ -313,7 +293,7 @@ class DqnAgent:
                                                  dst_width=suit_w,
                                                  name='Scale_FoBbox')
                 # Generate "Focus Map".
-                focus_map = gen_focus(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
+                focus_map = net_util.gen_focus_maps_4bbox(focus_bbox, cor_size=[suit_h, suit_w], name='Focus_Map')
                 # Generate and package the "Past Bbox Maps".
                 bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
                 bbox_his = net_util.scale_bbox(bbox_his,
@@ -322,19 +302,20 @@ class DqnAgent:
                                                dst_height=suit_h,
                                                dst_width=suit_w,
                                                name='Scale_Bbox_His')
-                bbox_maps = gen_focus(bbox_his, cor_size=[suit_h, suit_w],
-                                      name='flat_bbox_maps')  # [b*his, h, w, 1]
+                bbox_maps = net_util.gen_focus_maps_4bbox(bbox_his, cor_size=[suit_h, suit_w],
+                                                          name='flat_bbox_maps')    # [b*his, h, w, 1]
                 bbox_maps = tf.reshape(bbox_maps, [-1, his_thres, suit_h, suit_w, 1],
                                        name='Bbox_Maps')    # [b, his, h, w, 1]
             else:
                 # Rename the "Focus Bbox" for conveniently usage.
                 focus_bbox = tf.identity(focus_bbox, name='Scale_FoBbox')
                 # Only generate the "Focus Map".
-                focus_map = gen_focus(focus_bbox, cor_size=[input_shape[1], input_shape[2]], name='Focus_Map')
+                focus_map = net_util.gen_focus_maps_4bbox(focus_bbox, cor_size=[input_shape[1], input_shape[2]],
+                                                          name='Focus_Map')
                 # Generate and package the "Past Bbox Maps".
                 bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
-                bbox_maps = gen_focus(bbox_his, cor_size=[input_shape[1], input_shape[2]],
-                                      name='flat_bbox_maps')    # [b*his, h, w, 1]
+                bbox_maps = net_util.gen_focus_maps_4bbox(bbox_his, cor_size=[input_shape[1], input_shape[2]],
+                                                          name='flat_bbox_maps')    # [b*his, h, w, 1]
                 bbox_maps = tf.reshape(bbox_maps, [-1, his_thres, input_shape[1], input_shape[2], 1],
                                        name='Bbox_Maps')    # [b, his, 4, h, w, 1]
 
@@ -1457,6 +1438,199 @@ class DqnAgent:
         return
 
 
+    # def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
+    #     r'''
+    #         Generate (Cross-Entropy or DICE) loss for the "Segmentation" branch.
+    #     '''
+    #
+    #     # Get configuration.
+    #     conf_base = self._config['Base']
+    #     conf_train = self._config['Training']
+    #     conf_cus = self._config['Custom']
+    #
+    #     # Get detailed parameters.
+    #     input_shape = conf_base.get('input_shape')
+    #     suit_h = conf_base.get('suit_height')
+    #     suit_w = conf_base.get('suit_width')
+    #     classification_dim = conf_base.get('classification_dimension')
+    #     score_factor = conf_train.get('score_loss_factor', 1.0)
+    #     crop_method = conf_cus.get('size_matcher', 'crop')
+    #     logit_type = conf_cus.get('result_tensor', 'complete')
+    #     supv_method = conf_cus.get('segmentation_supervision', 'dilate')
+    #     loss_type = conf_cus.get('segmentation_loss', 'DICE')
+    #
+    #     # Get the stage prefix for conveniently inferring inputs holders.
+    #     conf_dqn = self._config['DQN']
+    #     dqn_names = conf_dqn.get('double_dqn', None)
+    #     if dqn_names is not None:
+    #         stage_prefix = dqn_names[0]
+    #     else:
+    #         stage_prefix = self._name_space
+    #     # Get the "Focus Bounding-box" used to crop "Focus" region in label.
+    #     focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
+    #
+    #     # ---------------------- Definition of UN loss (cross-entropy or dice) ------------------------
+    #     LOSS_name = name_space + '/SegLoss'
+    #     with tf.variable_scope(LOSS_name):
+    #         # The clazz weights used to deal with the "Class imbalance".
+    #         clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
+    #                                                      name='clazz_weights')  # [?, cls]
+    #
+    #         # Placeholder of ground truth segmentation.
+    #         GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
+    #                                                 name='GT_label')  # [?, h, w]
+    #         # Also need to crop label if size do not match. Meanwhile re-assign
+    #         #   the coordinates of "Focus Bounding-box".
+    #         if suit_h != input_shape[1] or suit_w != input_shape[2]:
+    #             # Temporarily expand a dimension for conveniently processing.
+    #             GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')  # [?, h, w, 1]
+    #             # Match the size.
+    #             if crop_method == 'crop':
+    #                 # Crop to target size.
+    #                 GT_label = tf.image.resize_image_with_crop_or_pad(GT_label, suit_h, suit_w)
+    #             elif crop_method == 'bilinear':
+    #                 # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
+    #                 GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
+    #             else:
+    #                 raise ValueError('Unknown size match method !!!')
+    #         # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
+    #         if len(GT_label.shape) != 4:
+    #             GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')  # [?, h, w, 1]
+    #
+    #         # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
+    #         if logit_type == 'bbox-bi':
+    #             # Different operation procedure according to the "Supervision Method".
+    #             if supv_method == 'dilate':
+    #                 # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
+    #                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+    #                 GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
+    #                                                     method='nearest',
+    #                                                     name='focus_label')     # [?, h, w, 1]
+    #             elif supv_method == 'erode':
+    #                 # Don't need special process for label here.
+    #                 pass
+    #             else:
+    #                 raise ValueError('Unknown segmentation supervision method !!!')
+    #
+    #         # Different process to clazz weights and loss func.
+    #         if loss_type == 'CE':
+    #             cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
+    #                                  classification_dim, name='one_hot_label')    # [?, h, w, cls]
+    #             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+    #                                            name='expa_CW')      # [?, 1, 1, cls]
+    #             clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
+    #             # Determine the loss function we used to calculate loss for segmentation.
+    #             loss_func = tf.losses.sparse_softmax_cross_entropy
+    #         elif loss_type == 'DICE':
+    #             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+    #                                            name='expa_CW')  # [?, 1, 1, cls]
+    #             clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_logits),
+    #                                         name='rect_weights')  # [?, h, w, cls]
+    #             # Determine the loss function we used to calculate loss for segmentation.
+    #             loss_func = cus_loss.dice_loss
+    #         else:
+    #             raise ValueError('Unknown segmentation loss type !!!')
+    #
+    #         # Different loss calculation according to the "Segmentation Logits Type".
+    #         #   1) logits for "Bbox" region.
+    #         if logit_type in ['bbox-bi', 'bbox-crop']:
+    #             # Different loss operation procedure according to the "Supervision Method".
+    #             # --> Dilate the label.
+    #             if supv_method == 'dilate':
+    #                 # The "bbox-crop" result tensor should use "Erode" supervision method.
+    #                 if logit_type == 'bbox-crop':
+    #                     raise NotImplementedError('The "dilate" supervision method for "bbox-crop"'
+    #                                               ' result type is not implemented !!!')
+    #                 # Recover label to the original dimension.
+    #                 GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
+    #                 GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
+    #                 # Reduce dimension of clazz weights.
+    #                 if loss_type == 'CE':
+    #                     clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
+    #                 # The single segmentation loss.
+    #                 fix_loss = loss_func(
+    #                     labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
+    #                 # Recursively calculate the loss.
+    #                 additional_loss = 0.
+    #                 for idx, logits in enumerate(CEloss_tensors):
+    #                     additional_loss += loss_func(
+    #                         labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
+    #             # --> "Erode" the segmentation tensor.
+    #             elif supv_method == 'erode':
+    #                 # Declare the region loss function.
+    #                 def region_loss(x, bbox, cor_size):
+    #                     # Get candidates.
+    #                     lab, logit, w = x
+    #                     # Recover label to the original dimension and dtype.
+    #                     lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
+    #                     lab = tf.cast(lab, 'int32')     # [1, h, w]
+    #                     # Reduce dimension of clazz weights.
+    #                     if loss_type == 'CE':
+    #                         w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
+    #                     # Calculate loss.
+    #                     y = loss_func(labels=lab, logits=logit, weights=w)
+    #                     return y
+    #                 # Decide the corresponding size for "Focus Bounding-box".
+    #                 if suit_h != input_shape[1] or suit_w != input_shape[2]:
+    #                     cor_size = [suit_h, suit_w]
+    #                 else:
+    #                     cor_size = input_shape[1:3]
+    #                 # Decide the tensor resize methods tuple for loss calculation.
+    #                 if logit_type == 'bbox-crop':
+    #                     resize_methods = ['crop', 'crop', 'crop']
+    #                 else:
+    #                     resize_methods = ['crop', 'bilinear', 'crop']
+    #                 # The single segmentation loss.
+    #                 fix_loss = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_logits, clazz_weights],
+    #                                                                 bbox=focus_bbox, cor_size=cor_size,
+    #                                                                 resize_method=resize_methods,
+    #                                                                 op_func=region_loss,
+    #                                                                 output_shape=None,
+    #                                                                 name='FIX_loss')
+    #                 # Recursively calculate the loss.
+    #                 additional_loss = 0.
+    #                 for idx, logits in enumerate(CEloss_tensors):
+    #                     additional_loss += net_util.batch_resize_to_bbox_for_op(
+    #                         [GT_label, logits, clazz_weights],
+    #                         bbox=focus_bbox, cor_size=cor_size,
+    #                         resize_method=resize_methods,
+    #                         op_func=region_loss, output_shape=None,
+    #                         name='addition_loss0'+str(idx+1)
+    #                     )
+    #             # Invalid value.
+    #             else:
+    #                 raise ValueError('Unknown segmentation supervision method !!!')
+    #
+    #         # 2) use the complete logits.
+    #         elif logit_type == 'complete':
+    #             # Recover label to the original dimension.
+    #             GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
+    #             GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
+    #             # Reduce dimension of clazz weights.
+    #             if loss_type == 'CE':
+    #                 clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
+    #             # The single segmentation loss.
+    #             fix_loss = loss_func(
+    #                 labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
+    #             # Recursively calculate the loss.
+    #             additional_loss = 0.
+    #             for idx, logits in enumerate(CEloss_tensors):
+    #                 additional_loss += loss_func(
+    #                     labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
+    #
+    #         else:
+    #             raise ValueError('Unknown segmentation logits type !!!')
+    #
+    #         # Add the two parts as the final classification loss.
+    #         SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
+    #
+    #         # Print some information.
+    #         print('### Finish the definition of SEG loss, Shape: {}'.format(SEG_loss.shape))
+    #
+    #         # Return the segmentation loss.
+    #         return SEG_loss
+
+
     def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
         r'''
             Generate (Cross-Entropy or DICE) loss for the "Segmentation" branch.
@@ -1487,6 +1661,8 @@ class DqnAgent:
             stage_prefix = self._name_space
         # Get the "Focus Bounding-box" used to crop "Focus" region in label.
         focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
+        # Get the "Focus Map".
+        focus_map = self.__mediates[stage_prefix + '/Focus_Map']
 
         # ---------------------- Definition of UN loss (cross-entropy or dice) ------------------------
         LOSS_name = name_space + '/SegLoss'
@@ -1512,12 +1688,13 @@ class DqnAgent:
                     GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
                 else:
                     raise ValueError('Unknown size match method !!!')
-            # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
-            if len(GT_label.shape) != 4:
-                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')  # [?, h, w, 1]
+                # Reduce the dimension of labels.
+                GT_label = GT_label[:, :, :, 0]     # [?, h, w]
 
             # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
             if logit_type == 'bbox-bi':
+                # Temporarily expand a dimension for conveniently processing.
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')   # [?, h, w, 1]
                 # Different operation procedure according to the "Supervision Method".
                 if supv_method == 'dilate':
                     # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
@@ -1530,27 +1707,28 @@ class DqnAgent:
                     pass
                 else:
                     raise ValueError('Unknown segmentation supervision method !!!')
+                # Reduce the dimension of labels.
+                GT_label = GT_label[:, :, :, 0]     # [?, h, w]
 
-            # Different process to clazz weights and loss func.
+            # Cast the data type of labels.
+            GT_label = tf.cast(GT_label, 'int32', name='Corr_label')    # [?, h, w]
+            # Rectify the clazz weights.
+            cw_mask = tf.one_hot(GT_label, depth=classification_dim,
+                                 name='one_hot_label')  # [?, h, w, cls]
+            clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+                                           name='expa_CW')  # [?, 1, 1, cls]
+            clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
+            clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='sin_weights')   # [?, h, w]
+
+            # Determine the loss function we used to calculate loss for segmentation.
             if loss_type == 'CE':
-                cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
-                                     classification_dim, name='one_hot_label')    # [?, h, w, cls]
-                clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-                                               name='expa_CW')      # [?, 1, 1, cls]
-                clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
-                # Determine the loss function we used to calculate loss for segmentation.
                 loss_func = tf.losses.sparse_softmax_cross_entropy
             elif loss_type == 'DICE':
-                clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-                                               name='expa_CW')  # [?, 1, 1, cls]
-                clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_logits),
-                                            name='rect_weights')  # [?, h, w, cls]
-                # Determine the loss function we used to calculate loss for segmentation.
                 loss_func = cus_loss.dice_loss
             else:
                 raise ValueError('Unknown segmentation loss type !!!')
 
-            # Different loss calculation according to the "Segmentation Logits Type".
+            # Different process to the "clazz weights" (used to control the gradients).
             #   1) logits for "Bbox" region.
             if logit_type in ['bbox-bi', 'bbox-crop']:
                 # Different loss operation procedure according to the "Supervision Method".
@@ -1560,85 +1738,28 @@ class DqnAgent:
                     if logit_type == 'bbox-crop':
                         raise NotImplementedError('The "dilate" supervision method for "bbox-crop"'
                                                   ' result type is not implemented !!!')
-                    # Recover label to the original dimension.
-                    GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
-                    GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
-                    # Reduce dimension of clazz weights.
-                    if loss_type == 'CE':
-                        clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
-                    # The single segmentation loss.
-                    fix_loss = loss_func(
-                        labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-                    # Recursively calculate the loss.
-                    additional_loss = 0.
-                    for idx, logits in enumerate(CEloss_tensors):
-                        additional_loss += loss_func(
-                            labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
                 # --> "Erode" the segmentation tensor.
                 elif supv_method == 'erode':
-                    # Declare the region loss function.
-                    def region_loss(x, bbox, cor_size):
-                        # Get candidates.
-                        lab, logit, w = x
-                        # Recover label to the original dimension and dtype.
-                        lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
-                        lab = tf.cast(lab, 'int32')     # [1, h, w]
-                        # Reduce dimension of clazz weights.
-                        if loss_type == 'CE':
-                            w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
-                        # Calculate loss.
-                        y = loss_func(labels=lab, logits=logit, weights=w)
-                        return y
-                    # Decide the corresponding size for "Focus Bounding-box".
-                    if suit_h != input_shape[1] or suit_w != input_shape[2]:
-                        cor_size = [suit_h, suit_w]
-                    else:
-                        cor_size = input_shape[1:3]
-                    # Decide the tensor resize methods tuple for loss calculation.
-                    if logit_type == 'bbox-crop':
-                        resize_methods = ['crop', 'crop', 'crop']
-                    else:
-                        resize_methods = ['crop', 'bilinear', 'crop']
-                    # The single segmentation loss.
-                    fix_loss = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_logits, clazz_weights],
-                                                                    bbox=focus_bbox, cor_size=cor_size,
-                                                                    resize_method=resize_methods,
-                                                                    op_func=region_loss,
-                                                                    output_shape=None,
-                                                                    name='FIX_loss')
-                    # Recursively calculate the loss.
-                    additional_loss = 0.
-                    for idx, logits in enumerate(CEloss_tensors):
-                        additional_loss += net_util.batch_resize_to_bbox_for_op(
-                            [GT_label, logits, clazz_weights],
-                            bbox=focus_bbox, cor_size=cor_size,
-                            resize_method=resize_methods,
-                            op_func=region_loss, output_shape=None,
-                            name='addition_loss0'+str(idx+1)
-                        )
+                    # Filter the region outside the "Focus Map".
+                    clazz_weights = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
+                                                name='filter_focus')
                 # Invalid value.
                 else:
                     raise ValueError('Unknown segmentation supervision method !!!')
-
             # 2) use the complete logits.
             elif logit_type == 'complete':
-                # Recover label to the original dimension.
-                GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
-                GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
-                # Reduce dimension of clazz weights.
-                if loss_type == 'CE':
-                    clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
-                # The single segmentation loss.
-                fix_loss = loss_func(
-                    labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-                # Recursively calculate the loss.
-                additional_loss = 0.
-                for idx, logits in enumerate(CEloss_tensors):
-                    additional_loss += loss_func(
-                        labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
-
+                pass
             else:
                 raise ValueError('Unknown segmentation logits type !!!')
+
+            # The single segmentation loss.
+            fix_loss = loss_func(
+                labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
+            # Recursively calculate the loss.
+            additional_loss = 0.
+            for idx, logits in enumerate(CEloss_tensors):
+                additional_loss += loss_func(
+                    labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0'+str(idx+1))
 
             # Add the two parts as the final classification loss.
             SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
@@ -1648,6 +1769,137 @@ class DqnAgent:
 
             # Return the segmentation loss.
             return SEG_loss
+
+
+    # def __reward_calculation(self, name_space):
+    #     r'''
+    #         Calculate the rewards for all actions for conveniently use. It will be
+    #             used in both "Inference" and "Training" operation.
+    #     '''
+    #
+    #     # Get configuration.
+    #     conf_base = self._config['Base']
+    #     conf_dqn = self._config['DQN']
+    #
+    #     # Get detailed parameters.
+    #     input_shape = conf_base.get('input_shape')[1:3]
+    #     clazz_dim = conf_base.get('classification_dimension')
+    #     reward_form = conf_dqn.get('reward_form', 'SDR-DICE')
+    #     err_punish = conf_dqn.get('err_punish', -3.0)
+    #     terminal_dice = conf_dqn.get('terminal_dice_threshold', 0.85)
+    #     terminal_recall = conf_dqn.get('terminal_recall_threshold', 0.85)
+    #     terminal_value = conf_dqn.get('terminal_reward', 3.0)
+    #
+    #     # Get the stage prefix for conveniently inferring inputs holders.
+    #     dqn_names = conf_dqn.get('double_dqn', None)
+    #     if dqn_names is not None:
+    #         stage_prefix = dqn_names[0]
+    #     else:
+    #         stage_prefix = self._name_space
+    #
+    #     # Get the holders.
+    #     focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']     # focus bbox
+    #     clazz_weights = self._losses[self._name_space + '/clazz_weights']   # [?, cls]
+    #     GT_label = self._losses[self._name_space + '/GT_label']     # [?, h, w]
+    #     SEG_result = self._outputs[self._name_space + '/SEG_output']    # [?, h, w]
+    #
+    #     # ---------------------- Definition of UN cross-entropy loss ------------------------
+    #     LOSS_name = name_space + '/RewardCal'
+    #     with tf.variable_scope(LOSS_name):
+    #         # Translate to "one hot" form.
+    #         GT_label = tf.one_hot(GT_label, depth=clazz_dim, name='one_hot_label')  # [?, h, w, cls]
+    #         SEG_result = tf.one_hot(SEG_result, depth=clazz_dim, name='one_hot_pred')  # [?, h, w, cls]
+    #         # Filter class weights.
+    #         clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
+    #                                        name='expa_CW')  # [?, 1, 1, cls]
+    #         clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_result),
+    #                                     name='rect_weights')  # [?, h, w, cls]
+    #         # Declare the reward function.
+    #         def remain_value(x, bbox, cor_size):
+    #             lab, pred, w = x
+    #             dice = cus_metric.DICE(labels=lab, predictions=pred, weights=w)  # [1]
+    #             # Use reverse form.
+    #             y = 1. - dice   # [1]
+    #             return y
+    #
+    #         # Calculate value for current "Focus Bbox".
+    #         current_value = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_result, clazz_weights],
+    #                                                              bbox=focus_bbox, cor_size=input_shape,
+    #                                                              resize_method=['crop', 'crop', 'crop'],
+    #                                                              op_func=remain_value,
+    #                                                              output_shape=[],
+    #                                                              name='Cur_Value')  # [?]
+    #
+    #         # ---------------------- Start compute each candidates ------------------------
+    #         # The flag vector indicates whether the input candidate bounding-box is "Bbox-Error".
+    #         BBOX_err = net_util.placeholder_wrapper(self._losses, tf.bool, [None, self._action_dim - 1],
+    #                                                 name='BBOX_err')    # [?, acts-1]
+    #         # The candidates bounding-box (anchors) for next time-step.
+    #         candidates_bbox = net_util.placeholder_wrapper(self._losses, tf.float32, [None, self._action_dim - 1, 4],
+    #                                                        name='Candidates_Bbox')  # [?, acts-1, 4]
+    #
+    #         # Expand to add one dimension.
+    #         indt_5d = tf.ones([1, self._action_dim - 1, 1, 1, 1])
+    #         cand_label = tf.expand_dims(GT_label, axis=1) * indt_5d     # [?, acts-1, h, w, cls]
+    #         cand_result = tf.expand_dims(SEG_result, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
+    #         cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
+    #         # Translate to 4-D tensors.
+    #         oh, ow, oc = GT_label.get_shape().as_list()[1:]      # [h, w, cls]
+    #         cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])     # [?*a, h, w, cls]
+    #         cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])   # [?*a, h, w, cls]
+    #         cand_weights = tf.reshape(cand_weights, [-1, oh, ow, oc])     # [?*a, h, w, cls]
+    #         candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])    # [?*a, 4]
+    #
+    #         # Calculate value for next candidates.
+    #         candidates_value = net_util.batch_resize_to_bbox_for_op([cand_label, cand_result, cand_weights],
+    #                                                                 bbox=candidates_bbox, cor_size=input_shape,
+    #                                                                 resize_method=['crop', 'crop', 'crop'],
+    #                                                                 op_func=remain_value,
+    #                                                                 output_shape=[],
+    #                                                                 name='Cand_Value')  # [?]
+    #         candidates_value = tf.reshape(candidates_value, [-1, self._action_dim - 1],
+    #                                       name='Candidates_Value')  # [?, acts-1]
+    #
+    #         # Use the difference of remain value between "Candidates" and "Current Bbox".
+    #         if reward_form == 'SDR-DICE':
+    #             candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
+    #                                             name='Candidates_diff')     # [?, acts-1]
+    #             candidates_reward = tf.sign(candidates_reward, name='Candidates_Raw')    # [?, acts-1]
+    #         elif reward_form == 'DR-DICE':
+    #             candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
+    #                                             name='Candidates_Raw')  # [?, acts-1]
+    #         else:
+    #             raise ValueError('Unknown reward form !!!')
+    #
+    #         # Filter the error punishment.
+    #         candidates_reward = tf.where(BBOX_err, err_punish * tf.ones_like(candidates_reward),
+    #                                      candidates_reward,
+    #                                      name='Candidates_Reward')  # [?, acts-1]
+    #
+    #         # ---------------------- Compute reward for terminal situation ------------------------
+    #         # Check whether "Dice" reaches the threshold.
+    #         cur_dice = cus_metric.DICE(GT_label, SEG_result, clazz_weights, scope='Current_Dice')   # [?]
+    #         dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='Reach_Dice')   # [?]
+    #         # Check whether "Recall" reaches the threshold.
+    #         cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, scope='Current_Recall')  # [?]
+    #         recall_reach = tf.greater_equal(cur_recall, terminal_recall, name='Reach_Recall')   # [?]
+    #         # Determine the reward for "Terminal" action.
+    #         reach_thres = tf.logical_and(dice_reach, recall_reach, name='Reach_Thres')  # [?]
+    #         terminal_reward = tf.where(reach_thres,
+    #                                    terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
+    #                                    -terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
+    #                                    name='Terminal_Reward')  # [?]
+    #
+    #         # Generate final reward.
+    #         DQN_rewards = tf.concat([candidates_reward, tf.expand_dims(terminal_reward, axis=-1)],
+    #                                 axis=-1, name='final_reward')  # [?, acts]
+    #         DQN_rewards = tf.stop_gradient(DQN_rewards, name='DQN_Rewards')
+    #
+    #         # Print some information.
+    #         print('### Finish the rewards calculation of DQN candidates bbox, Shape: {}'.format(DQN_rewards.shape))
+    #
+    #         # Finish calculating reward for DQN.
+    #         return DQN_rewards
 
 
     def __reward_calculation(self, name_space):
@@ -1691,23 +1943,16 @@ class DqnAgent:
             # Filter class weights.
             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
                                            name='expa_CW')  # [?, 1, 1, cls]
-            clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_result),
-                                        name='rect_weights')  # [?, h, w, cls]
-            # Declare the reward function.
-            def remain_value(x, bbox, cor_size):
-                lab, pred, w = x
-                dice = cus_metric.DICE(labels=lab, predictions=pred, weights=w)  # [1]
-                # Use reverse form.
-                y = 1. - dice   # [1]
-                return y
+            clazz_weights = tf.multiply(clazz_weights, GT_label, name='rect_weights')  # [?, h, w, cls]
+            clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='sin_weights')  # [?, h, w]
 
             # Calculate value for current "Focus Bbox".
-            current_value = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_result, clazz_weights],
-                                                                 bbox=focus_bbox, cor_size=input_shape,
-                                                                 resize_method=['crop', 'crop', 'crop'],
-                                                                 op_func=remain_value,
-                                                                 output_shape=[],
-                                                                 name='Cur_Value')  # [?]
+            focus_map = net_util.gen_focus_maps_4bbox(focus_bbox, input_shape,
+                                                      name='focus_map_4rew')    # [?, h, w, 1]
+            cur_clzW = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
+                                   name='clazz_weights_4cur')   # [?, h, w]
+            current_value = cus_metric.DICE(labels=GT_label, predictions=SEG_result, weights=cur_clzW,
+                                            scope='Cur_Value')  # [?]
 
             # ---------------------- Start compute each candidates ------------------------
             # The flag vector indicates whether the input candidate bounding-box is "Bbox-Error".
@@ -1721,21 +1966,21 @@ class DqnAgent:
             indt_5d = tf.ones([1, self._action_dim - 1, 1, 1, 1])
             cand_label = tf.expand_dims(GT_label, axis=1) * indt_5d     # [?, acts-1, h, w, cls]
             cand_result = tf.expand_dims(SEG_result, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
-            cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
+            cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d[:, :, :, :, 0]   # [?, acts-1, h, w]
             # Translate to 4-D tensors.
-            oh, ow, oc = GT_label.get_shape().as_list()[1:]      # [h, w, cls]
-            cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])     # [?*a, h, w, cls]
-            cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])   # [?*a, h, w, cls]
-            cand_weights = tf.reshape(cand_weights, [-1, oh, ow, oc])     # [?*a, h, w, cls]
-            candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])    # [?*a, 4]
+            oh, ow, oc = GT_label.get_shape().as_list()[1:]     # [h, w, cls]
+            cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])   # [?*a, h, w, cls]
+            cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])     # [?*a, h, w, cls]
+            cand_weights = tf.reshape(cand_weights, [-1, oh, ow])       # [?*a, h, w]
+            candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])  # [?*a, 4]
 
             # Calculate value for next candidates.
-            candidates_value = net_util.batch_resize_to_bbox_for_op([cand_label, cand_result, cand_weights],
-                                                                    bbox=candidates_bbox, cor_size=input_shape,
-                                                                    resize_method=['crop', 'crop', 'crop'],
-                                                                    op_func=remain_value,
-                                                                    output_shape=[],
-                                                                    name='Cand_Value')  # [?]
+            cand_maps = net_util.gen_focus_maps_4bbox(candidates_bbox, input_shape,
+                                                      name='cand_maps_4rew')    # [?*a, h, w, 1]
+            cand_clzWs = tf.multiply(cand_weights, tf.to_float(cand_maps[:, :, :, 0]),
+                                     name='clazz_weights_4cands')   # [?*a, h, w]
+            candidates_value = cus_metric.DICE(labels=cand_label, predictions=cand_result, weights=cand_clzWs,
+                                               scope='Cand_Value')  # [?*a]
             candidates_value = tf.reshape(candidates_value, [-1, self._action_dim - 1],
                                           name='Candidates_Value')  # [?, acts-1]
 
