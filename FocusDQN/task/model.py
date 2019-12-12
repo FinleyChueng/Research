@@ -57,6 +57,9 @@ class DqnAgent:
             Definition of the whole model. Including build architecture and define loss function.
         '''
 
+        # Check the validity of configuration options.
+        self._config_validate()
+
         # Specify the name space if enable the "Double DQN".
         conf_dqn = self._config['DQN']
         double_dqn = conf_dqn.get('double_dqn', None)
@@ -130,6 +133,59 @@ class DqnAgent:
 
 
 
+    #### --------------------- Configuration Validation Related ----------------------------
+    def _config_validate(self):
+        r'''
+            Check some configuration options here. Coz some options are incompatible.
+                We check them here for conveniently coding later.
+        '''
+
+        # Get detailed configuration options.
+        conf_up = self._config['UpSample']
+        up_part = conf_up.get('upsample_part', 'whole')
+        up_structure = conf_up.get('upsample_structure', 'U-Net')
+        conf_cus = self._config['Custom']
+        logit_type = conf_cus.get('result_tensor', 'complete')
+        fuse_part = conf_cus.get('result_part', 'complete')
+        fusion_method = conf_cus.get('result_fusion', 'prob')
+        clazz_imb = conf_cus.get('class_imbalance', 'bbox')
+
+        # Check the validity of up-sample "part - structure - result" pair.
+        USSP_valid_cond_0 = (up_part == 'whole') and (up_structure == 'U-Net' or up_structure == 'MLIF') \
+                            and (logit_type == 'complete')
+        USSP_valid_cond_1 = (up_part == 'bbox-region') and (up_structure == 'U-Net' or up_structure == 'MLIF') \
+                            and (logit_type == 'bbox-bi')
+        USSP_valid_cond_2 = (up_part == 'whole') and (up_structure in ['FPN-pW', 'FPN-fW', 'FPN-S', 'FPN-bbox']) \
+                            and (logit_type == 'bbox-crop')
+        if not (USSP_valid_cond_0 or USSP_valid_cond_1 or USSP_valid_cond_2):
+            raise Exception('Invalid Up-sample Structure pair. - (up-part: {}) - '
+                            '(up-structure: {}) - (logit-type: {})'.format(up_part, up_structure, logit_type))
+
+        # Check the validity of result-fusion "logit type" and "fuse type" pair.
+        LFP_invalid_cond = (logit_type in ['bbox-bi', 'bbox-crop']) and (fuse_part == 'complete')
+        if LFP_invalid_cond:
+            raise Exception('Invalid LFP pair. - (logit-type: {}) - (fuse_part: {})'.format(
+                logit_type, fuse_part
+            ))
+
+        # Check the validity of "class imbalance solve" and "logit type" pair.
+        CL_invalid_cond = (logit_type == 'bbox-bi' or logit_type == 'bbox-crop') and (clazz_imb == 'bbox')
+        if CL_invalid_cond:
+            raise Exception('Invalid CLS pair. - (logit-type: {}) - (clazz-imb: {})'.format(
+                logit_type, clazz_imb
+            ))
+
+        # Print some information.
+        print('| ---> The configuration validation check !')
+        print('|   ===> Up-sample part: {}, structure: {}, logits-type: {}, '
+              'fusion-part: {}, fusion-method: {}'.format(up_part, up_structure, logit_type, fuse_part, fusion_method))
+        print('|   ===> Class Imbalance Solution: {}'.format(clazz_imb))
+        print('\-' * 50 + '\\')
+
+        # Finish check.
+        return
+
+
     #### --------------------- Model Definition Related ----------------------------
     def _architecture(self, action_dim, name_space, with_segmentation=True):
         r'''
@@ -157,14 +213,13 @@ class DqnAgent:
         # Segment current image (patch). (Generate the segmentation branch)
         if with_segmentation:
             SEG_tensor, SEG_logits, CEloss_tensors = self.__segmentation(FE_tensor, DS_feats, self._name_space)
-            net_util.package_tensor(self.__mediates, SEG_tensor)
             # Fuse the previous (complete) and current (region) segmentation result.
             SEG_output, REGION_result = self.__result_fusion(SEG_tensor, self._name_space)
         else:
             # No need the two holders.
             SEG_logits = CEloss_tensors = None
         # Select next region to deal with. (Generate the DQN output)
-        SEG_info = self.__mediates[self._name_space + '/SEG_tensor']
+        SEG_info = self.__mediates[self._name_space + '/Region_tensor']
         DQN_output = self.__region_selection(FE_tensor, SEG_info, action_dim, name_space)
 
         # Package some outputs.
@@ -259,7 +314,7 @@ class DqnAgent:
             elif pos_method == 'coord':
                 pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None, 4],
                                                         name=pos_name)  # [?, 4]
-            elif pos_method == 'w/o':
+            elif pos_method == 'W/O':
                 pos_info = net_util.placeholder_wrapper(self._inputs, tf.float32, [None,],
                                                         name=pos_name)  # [?]
             else:
@@ -519,7 +574,7 @@ class DqnAgent:
             # Use "Whole Tensors" or "Bbox-region Tensors" according to the up-sample part.
             if up_part == 'whole':
                 FE_tensor = tf.identity(FE_tensor, name='FE_tensors')
-            elif up_part == 'crop':
+            elif up_part == 'bbox-region':
                 dqn_names = self._config['DQN'].get('double_dqn', None)
                 if dqn_names is not None:
                     stage_prefix = dqn_names[0]
@@ -692,7 +747,7 @@ class DqnAgent:
             # Crop the "Bbox region" from raw "Down-sample Tensors" if specified.
             if up_part == 'whole':
                 pass
-            elif up_part == 'crop':
+            elif up_part == 'bbox-region':
                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
                 raw_ds = tf.image.crop_and_resize(raw_ds, focus_bbox, bbox_ids,
                                                   raw_ds.get_shape().as_list()[1:3],
@@ -803,7 +858,19 @@ class DqnAgent:
                 # For conveniently usage.
                 half_UST = US_tensor  # [?, half, half, OC]
                 # Scale up to the original size.
-                org_UST = cus_layers.base_deconv2d(half_UST, classification_dim, 3, 2,
+                org_UST = cus_layers.base_deconv2d(half_UST, half_UST.get_shape().as_list()[-1], 3, 2,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='raw_WS_tensor')
+                org_UST = cus_res.residual_block(org_UST, half_UST.get_shape().as_list()[-1], 1,
+                                                 feature_normalization=fe_norm,
+                                                 activation=activation,
+                                                 keep_prob=conv_kprob,
+                                                 regularizer=regularizer,
+                                                 name_space='res_WS_tensor')
+                org_UST = cus_layers.base_deconv2d(org_UST, classification_dim, 1, 1,
                                                    feature_normalization=fe_norm,
                                                    activation=activation,
                                                    keep_prob=conv_kprob,
@@ -879,79 +946,70 @@ class DqnAgent:
                                                    name_space='WS_tensor')
                 FPN_tensors.append(org_UST)
                 # Generate the patches from feature maps of each level.
-                FPN_patch_size = (suit_h // 16, suit_w // 16)   # [14, 14]
+                FPN_patch_size = (suit_h // 16, suit_w // 16)   # [h/16, w/16]
+                FPN_patch_chans = 256
                 temp_T = []
                 for i, t in enumerate(FPN_tensors):
                     bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
                     t_cls = tf.image.crop_and_resize(t, focus_bbox, bbox_ids, FPN_patch_size,
-                                                     name='FPN_patch_crop' + str(i + 1))    # [?, 14, 14, c]
-                    t_cls = cus_layers.base_conv2d(t_cls, 256, 1, 1,
+                                                     name='FPN_patch_crop' + str(i + 1))    # [?, h/16, w/16, c]
+                    t_cls = cus_res.residual_block(t_cls, FPN_patch_chans, 1,
                                                    feature_normalization=fe_norm,
                                                    activation=activation,
                                                    keep_prob=conv_kprob,
                                                    regularizer=regularizer,
-                                                   name_space='FPN_patch_conv1' + str(i + 1))
-                    t_cls = cus_layers.base_conv2d(t_cls, 256, 1, 1,
-                                                   feature_normalization=fe_norm,
-                                                   activation=activation,
-                                                   keep_prob=conv_kprob,
-                                                   regularizer=regularizer,
-                                                   name_space='FPN_patch_conv2' + str(i + 1))
-                    t_cls = cus_layers.base_deconv2d(t_cls, 256, 3, 2,
+                                                   name_space='FPN_patch_res1_' + str(i + 1))   # [?, h/16, w/16, c]
+                    t_cls = cus_layers.base_deconv2d(t_cls, FPN_patch_chans, 3, 2,
                                                      feature_normalization=fe_norm,
                                                      activation=activation,
                                                      keep_prob=conv_kprob,
                                                      regularizer=regularizer,
-                                                     name_space='FPN_patch_up' + str(i + 1))    # [?, 28, 28, c]
+                                                     name_space='FPN_patch_up' + str(i + 1))    # [?, h/8, w/8, c]
+                    t_cls = cus_res.residual_block(t_cls, FPN_patch_chans, 1,
+                                                   feature_normalization=fe_norm,
+                                                   activation=activation,
+                                                   keep_prob=conv_kprob,
+                                                   regularizer=regularizer,
+                                                   name_space='FPN_patch_res2_' + str(i + 1))   # [?, h/8, w/8, c]
                     org_t = cus_layers.base_conv2d(t_cls, classification_dim, 1, 1,
                                                    feature_normalization=fe_norm,
                                                    activation=activation,
                                                    keep_prob=conv_kprob,
                                                    regularizer=regularizer,
-                                                   name_space='FPN_patch_cls' + str(i + 1))  # [?, 28, 28, cls]
+                                                   name_space='FPN_patch_cls' + str(i + 1))     # [?, h/8, w/8, cls]
                     temp_T.append(org_t)
                 FPN_tensors = temp_T
 
                 # Generate the weights, and what's more weight tensors to generate FPN tensors.
-                FPN_tensors = tf.stack(FPN_tensors, axis=-1, name='FPN_stack')  # [1, h, w, cls, scales]
+                FPN_tensors = tf.stack(FPN_tensors, axis=-1, name='FPN_stack')  # [?, h/8, w/8, cls, scales]
                 FPN_W = FPN_weights(FPN_tensors, cor_size=FPN_tensors.get_shape().as_list()[1:3],
-                                    structure=up_structure)  # [?, h, w, cls, scales]
-                FPN_tensors = tf.reduce_sum(tf.multiply(FPN_tensors, FPN_W), axis=-1,
-                                            name='FPN_logits')  # [?, h, w, cls]
-
-                # Fuse results (logits) of each scale into one logit.
-                def FPN_restore(x, bbox, cor_size):
-                    y, = x
-                    y = net_util.pad_2up(y, bbox, cor_size, name='FPN_pad0' + str(i + 1))
-                    return y
-                # Crop and pad zero to get the FPN logits and then fuse them.
-                SEG_tensor = net_util.batch_resize_to_bbox_for_op(
-                    [FPN_tensors], bbox=focus_bbox, cor_size=[suit_h, suit_w],
-                    resize_method=['bilinear'], op_func=FPN_restore,
-                    output_shape=org_UST.get_shape().as_list()[1:],
-                    name='SEG_padding')  # [?, h, w, cls]
-                SEG_tensor = tf.identity(SEG_tensor, name='SEG_tensor')  # [?, h, w, cls]
+                                    structure=up_structure)     # [?, h/8, w/8, cls, scales]
+                SEG_tensor = tf.reduce_sum(tf.multiply(FPN_tensors, FPN_W), axis=-1,
+                                           name='SEG_tensor')   # [?, h/8, w/8, cls]
                 # Independently return the segmentation logits, so that we can flexibly deal with it.
                 SEG_logits = SEG_tensor
 
             else:
                 raise ValueError('Unknown up-sample structure !!!')
 
-            # Check the shape validity of each output tensors of "Segmentation" branch.
-            shape_validity = True
-            os1 = SEG_tensor.get_shape().as_list()[1:3]
-            if suit_h != os1[0] or suit_w != os1[1]:
-                shape_validity = False
-            os2 = SEG_logits.get_shape().as_list()[1:3]
-            if suit_h != os2[0] or suit_w != os2[1]:
-                shape_validity = False
-            for t in CEloss_tensors:
-                os3 = t.get_shape().as_list()[1:3]
-                if suit_h != os3[0] or suit_w != os3[1]:
+            # Check the shape validity of each output tensors of "Segmentation" branch when
+            #   it's some specific logits types.
+            logit_type = self._config['Custom'].get('result_tensor', 'complete')
+            if logit_type in ['bbox-bi', 'complete']:
+                shape_validity = True
+                os1 = SEG_tensor.get_shape().as_list()[1:3]
+                if suit_h != os1[0] or suit_w != os1[1]:
                     shape_validity = False
-            if not shape_validity:
-                raise ValueError('The output shape of "Segmentation" branch is invalid !!! '
-                                 'it should be: ({}, {})'.format(suit_h, suit_w))
+                os2 = SEG_logits.get_shape().as_list()[1:3]
+                if suit_h != os2[0] or suit_w != os2[1]:
+                    shape_validity = False
+                for t in CEloss_tensors:
+                    os3 = t.get_shape().as_list()[1:3]
+                    if suit_h != os3[0] or suit_w != os3[1]:
+                        shape_validity = False
+                if not shape_validity:
+                    raise ValueError('The output shape of "Segmentation" branch is invalid !!! '
+                                     'it should be: ({}, {})'.format(suit_h, suit_w))
 
             # Print some information.
             print('### Finish "Segmentation Head" (name scope: {}). '
@@ -1014,24 +1072,24 @@ class DqnAgent:
 
             # Different transition method according to the "Logit Tensor Type".
             if logit_type in ['bbox-bi', 'bbox-crop']:
-                # Bi-resize when the logit tensor is "bbox-bi" type.
-                if logit_type == 'bbox-crop':
-                    resize_methods = ['crop']
-                else:
-                    resize_methods = ['bilinear']
                 # Resize and pad zero to get the region tensor.
+                region_shape = [up_h, up_w, SEG_tensor.get_shape().as_list()[-1]]  # [h, w, c]
                 REGION_tensor = net_util.batch_resize_to_bbox_for_op(
                     [SEG_tensor], bbox=focus_bbox, cor_size=[up_h, up_w],
-                    resize_method=resize_methods, op_func=restore_2up,
-                    output_shape=SEG_tensor.get_shape().as_list()[1:],
-                    name='Region_tensor')   # [?, h, w, cls]
+                    resize_method=['bilinear'], op_func=restore_2up,
+                    output_shape=region_shape,
+                    name='raw_region_tensor')   # [?, h, w, cls]
             elif logit_type == 'complete':
-                REGION_tensor = tf.identity(SEG_tensor, name='Region_tensor')   # [?, h, w, cls]
+                # Directly use the segmentation tensors.
+                REGION_tensor = SEG_tensor
             else:
                 raise ValueError('Unknown segmentation logit type !!!')
+            REGION_tensor = tf.identity(REGION_tensor, name='Region_tensor')    # [?, h, w, cls]
+            # Package the "Region Tensor" for part of DQN input.
+            net_util.package_tensor(self.__mediates, REGION_tensor)
 
             # Generate the "Flag Maps" used to filter the "Fusion Result".
-            if (logit_type in ['bbox-bi', 'bbox-crop']) or (logit_type == 'complete' and fuse_part == 'region'):
+            if fuse_part == 'region':
                 bbox_maps = tf.logical_and(
                     tf.expand_dims(tf.expand_dims(tf.expand_dims(his_flag, axis=-1), axis=-1), axis=-1),
                     bbox_maps, name='filt_bbox_maps')  # [?, his, h, w, 1]
@@ -1039,7 +1097,7 @@ class DqnAgent:
                                       name='flag_maps_sin')  # [?, his+1, h, w, 1]
                 flag_maps = tf.tile(flag_maps, multiples=[1, 1, 1, 1, classification_dim],
                                     name='Flag_maps')  # [?, his+1, h, w, cls]
-            elif (logit_type == 'complete' and fuse_part == 'complete'):
+            elif fuse_part == 'complete':
                 flag_maps = tf.concat([his_flag,
                                        tf.slice(tf.ones_like(his_flag, dtype=tf.bool), begin=(0, 0), size=(-1, 1))],
                                       axis=-1, name='flag_maps_2d')  # [?, his+1]
@@ -1050,9 +1108,7 @@ class DqnAgent:
                     tf.expand_dims(tf.expand_dims(tf.expand_dims(flag_maps, axis=-1), axis=-1), axis=-1),
                     tf.ones_like(his_ind, dtype=tf.bool), name='Flag_maps')  # [?, his+1, h, w, cls]
             else:
-                raise ValueError('Unknown segmentation pair - logit type ({}) - fuse part - ({}) !!!'.format(
-                    logit_type, fuse_part
-                ))
+                raise ValueError('Unknown result fusion part !!!')
             # Meanwhile calculate the "mean factor".
             fmean_factor = tf.reduce_sum(tf.to_float(flag_maps), axis=1,
                                          name='raw_fmean_factor')  # [?, h, w, cls]
@@ -1229,16 +1285,18 @@ class DqnAgent:
             FE_prop = (suit_h // FE_h) * (suit_w // FE_w) * clazz_dim
             DQN_in = tf.reshape(SEG_info, [-1, FE_h, FE_w, FE_prop],
                                 name='SEG_info_4DQN')   # [?, fe_h, fe_w, prop^2]
-            DQN_in = cus_layers.base_conv2d(tf.to_float(DQN_in), FE_c, 1, 1,
+            DQN_in = cus_res.residual_block(DQN_in, FE_c, 1,
                                             feature_normalization=fe_norm,
                                             activation=activation,
                                             keep_prob=conv_kprob,
                                             regularizer=regularizer,
-                                            name_space='SEG_info_conv1x1')  # [?, fe_h, fe_w, fe_c]
+                                            name_space='SEG_info_res1')     # [?, fe_h, fe_w, fe_c]
             if seg_fuse == 'add':
                 DQN_in = tf.add(FE_tensor, DQN_in, name='Fuse_IN')  # [?, fe_h, fe_w, fe_c]
             elif seg_fuse == 'concat':
                 DQN_in = tf.concat([FE_tensor, DQN_in], axis=-1, name='Fuse_IN')    # [?, fe_h, fe_w, 2 * fe_c]
+            elif seg_fuse == 'diff':
+                DQN_in = tf.subtract(FE_tensor, DQN_in, name='Fuse_IN')     # [?, fe_h, fe_w, fe_c]
             else:
                 raise ValueError('Unknown segmentation fusion method for DQN !!!')
 
@@ -1309,7 +1367,7 @@ class DqnAgent:
                                              regularizer=regularizer,
                                              name_space='FC02')  # [?, 1024]
 
-            # Build the DRQN header according to the "Dueling Network" mode or not.
+            # Build the DQN header according to the "Dueling Network" mode or not.
             if dueling_network:
                 # Separate the feature map produced by "FC-layer" into the "State" and "Action" branches.
                 fc02vec_shape = int(fc02_tensor.shape[-1])
@@ -1356,6 +1414,7 @@ class DqnAgent:
             return DQN_output
 
 
+    #### --------------------- Loss-Summary Declaraion Related ----------------------------
     def _loss_summary(self, DQN_output, SEG_logits, CEloss_tensors):
         r'''
             Construct the loss function for each branch. Fuse each independent loss
@@ -1438,199 +1497,6 @@ class DqnAgent:
         return
 
 
-    # def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
-    #     r'''
-    #         Generate (Cross-Entropy or DICE) loss for the "Segmentation" branch.
-    #     '''
-    #
-    #     # Get configuration.
-    #     conf_base = self._config['Base']
-    #     conf_train = self._config['Training']
-    #     conf_cus = self._config['Custom']
-    #
-    #     # Get detailed parameters.
-    #     input_shape = conf_base.get('input_shape')
-    #     suit_h = conf_base.get('suit_height')
-    #     suit_w = conf_base.get('suit_width')
-    #     classification_dim = conf_base.get('classification_dimension')
-    #     score_factor = conf_train.get('score_loss_factor', 1.0)
-    #     crop_method = conf_cus.get('size_matcher', 'crop')
-    #     logit_type = conf_cus.get('result_tensor', 'complete')
-    #     supv_method = conf_cus.get('segmentation_supervision', 'dilate')
-    #     loss_type = conf_cus.get('segmentation_loss', 'DICE')
-    #
-    #     # Get the stage prefix for conveniently inferring inputs holders.
-    #     conf_dqn = self._config['DQN']
-    #     dqn_names = conf_dqn.get('double_dqn', None)
-    #     if dqn_names is not None:
-    #         stage_prefix = dqn_names[0]
-    #     else:
-    #         stage_prefix = self._name_space
-    #     # Get the "Focus Bounding-box" used to crop "Focus" region in label.
-    #     focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
-    #
-    #     # ---------------------- Definition of UN loss (cross-entropy or dice) ------------------------
-    #     LOSS_name = name_space + '/SegLoss'
-    #     with tf.variable_scope(LOSS_name):
-    #         # The clazz weights used to deal with the "Class imbalance".
-    #         clazz_weights = net_util.placeholder_wrapper(self._losses, tf.float32, [None, classification_dim],
-    #                                                      name='clazz_weights')  # [?, cls]
-    #
-    #         # Placeholder of ground truth segmentation.
-    #         GT_label = net_util.placeholder_wrapper(self._losses, tf.int32, input_shape[:-1],
-    #                                                 name='GT_label')  # [?, h, w]
-    #         # Also need to crop label if size do not match. Meanwhile re-assign
-    #         #   the coordinates of "Focus Bounding-box".
-    #         if suit_h != input_shape[1] or suit_w != input_shape[2]:
-    #             # Temporarily expand a dimension for conveniently processing.
-    #             GT_label = tf.expand_dims(GT_label, axis=-1, name='expa01_label')  # [?, h, w, 1]
-    #             # Match the size.
-    #             if crop_method == 'crop':
-    #                 # Crop to target size.
-    #                 GT_label = tf.image.resize_image_with_crop_or_pad(GT_label, suit_h, suit_w)
-    #             elif crop_method == 'bilinear':
-    #                 # Nearest-neighbour resize to target size. (Coz it's segmentation result, integer type)
-    #                 GT_label = tf.image.resize_nearest_neighbor(GT_label, [suit_h, suit_w], name='bi_labels')
-    #             else:
-    #                 raise ValueError('Unknown size match method !!!')
-    #         # Temporarily expand a dimension for conveniently processing if it's 3-D tensor.
-    #         if len(GT_label.shape) != 4:
-    #             GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')  # [?, h, w, 1]
-    #
-    #         # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
-    #         if logit_type == 'bbox-bi':
-    #             # Different operation procedure according to the "Supervision Method".
-    #             if supv_method == 'dilate':
-    #                 # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
-    #                 bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
-    #                 GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
-    #                                                     method='nearest',
-    #                                                     name='focus_label')     # [?, h, w, 1]
-    #             elif supv_method == 'erode':
-    #                 # Don't need special process for label here.
-    #                 pass
-    #             else:
-    #                 raise ValueError('Unknown segmentation supervision method !!!')
-    #
-    #         # Different process to clazz weights and loss func.
-    #         if loss_type == 'CE':
-    #             cw_mask = tf.one_hot(tf.reduce_mean(tf.to_int32(GT_label), axis=-1),
-    #                                  classification_dim, name='one_hot_label')    # [?, h, w, cls]
-    #             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-    #                                            name='expa_CW')      # [?, 1, 1, cls]
-    #             clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
-    #             # Determine the loss function we used to calculate loss for segmentation.
-    #             loss_func = tf.losses.sparse_softmax_cross_entropy
-    #         elif loss_type == 'DICE':
-    #             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-    #                                            name='expa_CW')  # [?, 1, 1, cls]
-    #             clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_logits),
-    #                                         name='rect_weights')  # [?, h, w, cls]
-    #             # Determine the loss function we used to calculate loss for segmentation.
-    #             loss_func = cus_loss.dice_loss
-    #         else:
-    #             raise ValueError('Unknown segmentation loss type !!!')
-    #
-    #         # Different loss calculation according to the "Segmentation Logits Type".
-    #         #   1) logits for "Bbox" region.
-    #         if logit_type in ['bbox-bi', 'bbox-crop']:
-    #             # Different loss operation procedure according to the "Supervision Method".
-    #             # --> Dilate the label.
-    #             if supv_method == 'dilate':
-    #                 # The "bbox-crop" result tensor should use "Erode" supervision method.
-    #                 if logit_type == 'bbox-crop':
-    #                     raise NotImplementedError('The "dilate" supervision method for "bbox-crop"'
-    #                                               ' result type is not implemented !!!')
-    #                 # Recover label to the original dimension.
-    #                 GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
-    #                 GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
-    #                 # Reduce dimension of clazz weights.
-    #                 if loss_type == 'CE':
-    #                     clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
-    #                 # The single segmentation loss.
-    #                 fix_loss = loss_func(
-    #                     labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-    #                 # Recursively calculate the loss.
-    #                 additional_loss = 0.
-    #                 for idx, logits in enumerate(CEloss_tensors):
-    #                     additional_loss += loss_func(
-    #                         labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
-    #             # --> "Erode" the segmentation tensor.
-    #             elif supv_method == 'erode':
-    #                 # Declare the region loss function.
-    #                 def region_loss(x, bbox, cor_size):
-    #                     # Get candidates.
-    #                     lab, logit, w = x
-    #                     # Recover label to the original dimension and dtype.
-    #                     lab = tf.reduce_mean(lab, axis=-1)  # [1, h, w]
-    #                     lab = tf.cast(lab, 'int32')     # [1, h, w]
-    #                     # Reduce dimension of clazz weights.
-    #                     if loss_type == 'CE':
-    #                         w = tf.reduce_sum(w, axis=-1)   # [1, h, w]
-    #                     # Calculate loss.
-    #                     y = loss_func(labels=lab, logits=logit, weights=w)
-    #                     return y
-    #                 # Decide the corresponding size for "Focus Bounding-box".
-    #                 if suit_h != input_shape[1] or suit_w != input_shape[2]:
-    #                     cor_size = [suit_h, suit_w]
-    #                 else:
-    #                     cor_size = input_shape[1:3]
-    #                 # Decide the tensor resize methods tuple for loss calculation.
-    #                 if logit_type == 'bbox-crop':
-    #                     resize_methods = ['crop', 'crop', 'crop']
-    #                 else:
-    #                     resize_methods = ['crop', 'bilinear', 'crop']
-    #                 # The single segmentation loss.
-    #                 fix_loss = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_logits, clazz_weights],
-    #                                                                 bbox=focus_bbox, cor_size=cor_size,
-    #                                                                 resize_method=resize_methods,
-    #                                                                 op_func=region_loss,
-    #                                                                 output_shape=None,
-    #                                                                 name='FIX_loss')
-    #                 # Recursively calculate the loss.
-    #                 additional_loss = 0.
-    #                 for idx, logits in enumerate(CEloss_tensors):
-    #                     additional_loss += net_util.batch_resize_to_bbox_for_op(
-    #                         [GT_label, logits, clazz_weights],
-    #                         bbox=focus_bbox, cor_size=cor_size,
-    #                         resize_method=resize_methods,
-    #                         op_func=region_loss, output_shape=None,
-    #                         name='addition_loss0'+str(idx+1)
-    #                     )
-    #             # Invalid value.
-    #             else:
-    #                 raise ValueError('Unknown segmentation supervision method !!!')
-    #
-    #         # 2) use the complete logits.
-    #         elif logit_type == 'complete':
-    #             # Recover label to the original dimension.
-    #             GT_label = tf.reduce_mean(GT_label, axis=-1, name='redc_label')  # [?, h, w]
-    #             GT_label = tf.cast(GT_label, 'int32', name='Corr_label')  # [?, h, w]
-    #             # Reduce dimension of clazz weights.
-    #             if loss_type == 'CE':
-    #                 clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='Weights_map')  # [?, h, w]
-    #             # The single segmentation loss.
-    #             fix_loss = loss_func(
-    #                 labels=GT_label, logits=SEG_logits, weights=clazz_weights, scope='FIX_loss')
-    #             # Recursively calculate the loss.
-    #             additional_loss = 0.
-    #             for idx, logits in enumerate(CEloss_tensors):
-    #                 additional_loss += loss_func(
-    #                     labels=GT_label, logits=logits, weights=clazz_weights, scope='addition_loss0' + str(idx + 1))
-    #
-    #         else:
-    #             raise ValueError('Unknown segmentation logits type !!!')
-    #
-    #         # Add the two parts as the final classification loss.
-    #         SEG_loss = tf.add(fix_loss, score_factor * additional_loss, name='SEG_loss')
-    #
-    #         # Print some information.
-    #         print('### Finish the definition of SEG loss, Shape: {}'.format(SEG_loss.shape))
-    #
-    #         # Return the segmentation loss.
-    #         return SEG_loss
-
-
     def __upsample_loss(self, SEG_logits, CEloss_tensors, name_space):
         r'''
             Generate (Cross-Entropy or DICE) loss for the "Segmentation" branch.
@@ -1649,7 +1515,8 @@ class DqnAgent:
         score_factor = conf_train.get('score_loss_factor', 1.0)
         crop_method = conf_cus.get('size_matcher', 'crop')
         logit_type = conf_cus.get('result_tensor', 'complete')
-        supv_method = conf_cus.get('segmentation_supervision', 'dilate')
+        clazz_imb = conf_cus.get('class_imbalance', 'bbox')
+        clzImb_thres = conf_cus.get('class_imbalance_threshold', 0.9)
         loss_type = conf_cus.get('segmentation_loss', 'DICE')
 
         # Get the stage prefix for conveniently inferring inputs holders.
@@ -1691,24 +1558,26 @@ class DqnAgent:
                 # Reduce the dimension of labels.
                 GT_label = GT_label[:, :, :, 0]     # [?, h, w]
 
-            # Only if the SEGMENTATION logits is "bbox"-form that we need crop logit or label.
-            if logit_type == 'bbox-bi':
+            # Different process to the GT labels according to the "Segmentation Logits Type".
+            if logit_type in ['bbox-bi', 'bbox-crop']:
                 # Temporarily expand a dimension for conveniently processing.
-                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')   # [?, h, w, 1]
-                # Different operation procedure according to the "Supervision Method".
-                if supv_method == 'dilate':
-                    # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
-                    bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
-                    GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, [suit_h, suit_w],
-                                                        method='nearest',
-                                                        name='focus_label')     # [?, h, w, 1]
-                elif supv_method == 'erode':
-                    # Don't need special process for label here.
-                    pass
+                GT_label = tf.expand_dims(GT_label, axis=-1, name='expa02_label')  # [?, h, w, 1]
+                # Crop and resize (to suit size) the corresponding region in label with respects to image (patch).
+                if logit_type == 'bbox-bi':
+                    resize_shape = [suit_h, suit_w]
                 else:
-                    raise ValueError('Unknown segmentation supervision method !!!')
+                    resize_shape = SEG_logits.get_shape().as_list()[1:3]
+                bbox_ids = tf.range(tf.reduce_sum(tf.ones_like(focus_bbox, dtype=tf.int32)[:, 0]))
+                GT_label = tf.image.crop_and_resize(GT_label, focus_bbox, bbox_ids, resize_shape,
+                                                    method='nearest',
+                                                    name='focus_label')  # [?, h, w, 1]
                 # Reduce the dimension of labels.
-                GT_label = GT_label[:, :, :, 0]     # [?, h, w]
+                GT_label = GT_label[:, :, :, 0]  # [?, h, w]
+            elif logit_type == 'complete':
+                # Do not need do anything.
+                pass
+            else:
+                raise ValueError('Unknown segmentation logits type !!!')
 
             # Cast the data type of labels.
             GT_label = tf.cast(GT_label, 'int32', name='Corr_label')    # [?, h, w]
@@ -1720,6 +1589,24 @@ class DqnAgent:
             clazz_weights = tf.multiply(clazz_weights, cw_mask, name='rect_weights')    # [?, h, w, cls]
             clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='sin_weights')   # [?, h, w]
 
+            # Operations for "Class Weights" to deal with the "Class Imbalance" problem.
+            if clazz_imb == 'bbox':
+                # Filter the region outside the "Focus Map".
+                clazz_weights = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
+                                            name='filter_focus')    # [?, h, w]
+            elif clazz_imb == 'threshold':
+                # Filter the gradients of whose probabilities greater than threshold.
+                filt_prob = tf.reduce_sum(tf.multiply(SEG_logits, cw_mask), axis=-1,
+                                          name='filter_prob')   # [?, h, w]
+                thres_map = tf.less(filt_prob, clzImb_thres, name='clzImb_thres_map')   # [?, h, w]
+                clazz_weights = tf.multiply(clazz_weights, tf.to_float(thres_map),
+                                            name='filter_thres')    # [?, h, w]
+            elif clazz_imb == 'W/O':
+                # Do nothing.
+                pass
+            else:
+                raise ValueError('Unknown class imbalance solution !!!')
+
             # Determine the loss function we used to calculate loss for segmentation.
             if loss_type == 'CE':
                 loss_func = tf.losses.sparse_softmax_cross_entropy
@@ -1727,30 +1614,6 @@ class DqnAgent:
                 loss_func = cus_loss.dice_loss
             else:
                 raise ValueError('Unknown segmentation loss type !!!')
-
-            # Different process to the "clazz weights" (used to control the gradients).
-            #   1) logits for "Bbox" region.
-            if logit_type in ['bbox-bi', 'bbox-crop']:
-                # Different loss operation procedure according to the "Supervision Method".
-                # --> Dilate the label.
-                if supv_method == 'dilate':
-                    # The "bbox-crop" result tensor should use "Erode" supervision method.
-                    if logit_type == 'bbox-crop':
-                        raise NotImplementedError('The "dilate" supervision method for "bbox-crop"'
-                                                  ' result type is not implemented !!!')
-                # --> "Erode" the segmentation tensor.
-                elif supv_method == 'erode':
-                    # Filter the region outside the "Focus Map".
-                    clazz_weights = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
-                                                name='filter_focus')
-                # Invalid value.
-                else:
-                    raise ValueError('Unknown segmentation supervision method !!!')
-            # 2) use the complete logits.
-            elif logit_type == 'complete':
-                pass
-            else:
-                raise ValueError('Unknown segmentation logits type !!!')
 
             # The single segmentation loss.
             fix_loss = loss_func(
@@ -1769,137 +1632,6 @@ class DqnAgent:
 
             # Return the segmentation loss.
             return SEG_loss
-
-
-    # def __reward_calculation(self, name_space):
-    #     r'''
-    #         Calculate the rewards for all actions for conveniently use. It will be
-    #             used in both "Inference" and "Training" operation.
-    #     '''
-    #
-    #     # Get configuration.
-    #     conf_base = self._config['Base']
-    #     conf_dqn = self._config['DQN']
-    #
-    #     # Get detailed parameters.
-    #     input_shape = conf_base.get('input_shape')[1:3]
-    #     clazz_dim = conf_base.get('classification_dimension')
-    #     reward_form = conf_dqn.get('reward_form', 'SDR-DICE')
-    #     err_punish = conf_dqn.get('err_punish', -3.0)
-    #     terminal_dice = conf_dqn.get('terminal_dice_threshold', 0.85)
-    #     terminal_recall = conf_dqn.get('terminal_recall_threshold', 0.85)
-    #     terminal_value = conf_dqn.get('terminal_reward', 3.0)
-    #
-    #     # Get the stage prefix for conveniently inferring inputs holders.
-    #     dqn_names = conf_dqn.get('double_dqn', None)
-    #     if dqn_names is not None:
-    #         stage_prefix = dqn_names[0]
-    #     else:
-    #         stage_prefix = self._name_space
-    #
-    #     # Get the holders.
-    #     focus_bbox = self._inputs[stage_prefix + '/Focus_Bbox']     # focus bbox
-    #     clazz_weights = self._losses[self._name_space + '/clazz_weights']   # [?, cls]
-    #     GT_label = self._losses[self._name_space + '/GT_label']     # [?, h, w]
-    #     SEG_result = self._outputs[self._name_space + '/SEG_output']    # [?, h, w]
-    #
-    #     # ---------------------- Definition of UN cross-entropy loss ------------------------
-    #     LOSS_name = name_space + '/RewardCal'
-    #     with tf.variable_scope(LOSS_name):
-    #         # Translate to "one hot" form.
-    #         GT_label = tf.one_hot(GT_label, depth=clazz_dim, name='one_hot_label')  # [?, h, w, cls]
-    #         SEG_result = tf.one_hot(SEG_result, depth=clazz_dim, name='one_hot_pred')  # [?, h, w, cls]
-    #         # Filter class weights.
-    #         clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
-    #                                        name='expa_CW')  # [?, 1, 1, cls]
-    #         clazz_weights = tf.multiply(clazz_weights, tf.ones_like(SEG_result),
-    #                                     name='rect_weights')  # [?, h, w, cls]
-    #         # Declare the reward function.
-    #         def remain_value(x, bbox, cor_size):
-    #             lab, pred, w = x
-    #             dice = cus_metric.DICE(labels=lab, predictions=pred, weights=w)  # [1]
-    #             # Use reverse form.
-    #             y = 1. - dice   # [1]
-    #             return y
-    #
-    #         # Calculate value for current "Focus Bbox".
-    #         current_value = net_util.batch_resize_to_bbox_for_op([GT_label, SEG_result, clazz_weights],
-    #                                                              bbox=focus_bbox, cor_size=input_shape,
-    #                                                              resize_method=['crop', 'crop', 'crop'],
-    #                                                              op_func=remain_value,
-    #                                                              output_shape=[],
-    #                                                              name='Cur_Value')  # [?]
-    #
-    #         # ---------------------- Start compute each candidates ------------------------
-    #         # The flag vector indicates whether the input candidate bounding-box is "Bbox-Error".
-    #         BBOX_err = net_util.placeholder_wrapper(self._losses, tf.bool, [None, self._action_dim - 1],
-    #                                                 name='BBOX_err')    # [?, acts-1]
-    #         # The candidates bounding-box (anchors) for next time-step.
-    #         candidates_bbox = net_util.placeholder_wrapper(self._losses, tf.float32, [None, self._action_dim - 1, 4],
-    #                                                        name='Candidates_Bbox')  # [?, acts-1, 4]
-    #
-    #         # Expand to add one dimension.
-    #         indt_5d = tf.ones([1, self._action_dim - 1, 1, 1, 1])
-    #         cand_label = tf.expand_dims(GT_label, axis=1) * indt_5d     # [?, acts-1, h, w, cls]
-    #         cand_result = tf.expand_dims(SEG_result, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
-    #         cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
-    #         # Translate to 4-D tensors.
-    #         oh, ow, oc = GT_label.get_shape().as_list()[1:]      # [h, w, cls]
-    #         cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])     # [?*a, h, w, cls]
-    #         cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])   # [?*a, h, w, cls]
-    #         cand_weights = tf.reshape(cand_weights, [-1, oh, ow, oc])     # [?*a, h, w, cls]
-    #         candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])    # [?*a, 4]
-    #
-    #         # Calculate value for next candidates.
-    #         candidates_value = net_util.batch_resize_to_bbox_for_op([cand_label, cand_result, cand_weights],
-    #                                                                 bbox=candidates_bbox, cor_size=input_shape,
-    #                                                                 resize_method=['crop', 'crop', 'crop'],
-    #                                                                 op_func=remain_value,
-    #                                                                 output_shape=[],
-    #                                                                 name='Cand_Value')  # [?]
-    #         candidates_value = tf.reshape(candidates_value, [-1, self._action_dim - 1],
-    #                                       name='Candidates_Value')  # [?, acts-1]
-    #
-    #         # Use the difference of remain value between "Candidates" and "Current Bbox".
-    #         if reward_form == 'SDR-DICE':
-    #             candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
-    #                                             name='Candidates_diff')     # [?, acts-1]
-    #             candidates_reward = tf.sign(candidates_reward, name='Candidates_Raw')    # [?, acts-1]
-    #         elif reward_form == 'DR-DICE':
-    #             candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
-    #                                             name='Candidates_Raw')  # [?, acts-1]
-    #         else:
-    #             raise ValueError('Unknown reward form !!!')
-    #
-    #         # Filter the error punishment.
-    #         candidates_reward = tf.where(BBOX_err, err_punish * tf.ones_like(candidates_reward),
-    #                                      candidates_reward,
-    #                                      name='Candidates_Reward')  # [?, acts-1]
-    #
-    #         # ---------------------- Compute reward for terminal situation ------------------------
-    #         # Check whether "Dice" reaches the threshold.
-    #         cur_dice = cus_metric.DICE(GT_label, SEG_result, clazz_weights, scope='Current_Dice')   # [?]
-    #         dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='Reach_Dice')   # [?]
-    #         # Check whether "Recall" reaches the threshold.
-    #         cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, scope='Current_Recall')  # [?]
-    #         recall_reach = tf.greater_equal(cur_recall, terminal_recall, name='Reach_Recall')   # [?]
-    #         # Determine the reward for "Terminal" action.
-    #         reach_thres = tf.logical_and(dice_reach, recall_reach, name='Reach_Thres')  # [?]
-    #         terminal_reward = tf.where(reach_thres,
-    #                                    terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
-    #                                    -terminal_value * tf.ones_like(reach_thres, dtype=tf.float32),
-    #                                    name='Terminal_Reward')  # [?]
-    #
-    #         # Generate final reward.
-    #         DQN_rewards = tf.concat([candidates_reward, tf.expand_dims(terminal_reward, axis=-1)],
-    #                                 axis=-1, name='final_reward')  # [?, acts]
-    #         DQN_rewards = tf.stop_gradient(DQN_rewards, name='DQN_Rewards')
-    #
-    #         # Print some information.
-    #         print('### Finish the rewards calculation of DQN candidates bbox, Shape: {}'.format(DQN_rewards.shape))
-    #
-    #         # Finish calculating reward for DQN.
-    #         return DQN_rewards
 
 
     def __reward_calculation(self, name_space):
