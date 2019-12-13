@@ -551,20 +551,17 @@ class DeepQNetwork(DQN):
             # Calculate the summary to get the statistic graph.
             if step > 0 and step % validate_steps == 0:
                 # Get summary holders.
-                s1 = self._summary[self._name_space + '/Reward']
-                s2 = self._summary[self._name_space + '/DICE']
-                s3 = self._summary[self._name_space + '/BRATS_metric']
-                out_summary = self._summary[self._name_space + '/Summaries']
+                s1 = self._summary[self._name_space + '/DICE']
+                s2 = self._summary[self._name_space + '/BRATS_metric']
+                out_summary = self._summary[self._name_space + '/SEG_Summaries']
                 # Execute "Validate".
-                reward_list = 0
                 DICE_list, BRATS_list = seg_validate(2)
                 # Print some info. --------------------------------------------
                 self._logger.info("Iter {} --> DICE: {}, BRATS: {} ".format(ite, DICE_list, BRATS_list))
                 # ------------------------------------------------------------
                 # Compute the summary value and add into statistic graph.
-                feed_dict[s1] = reward_list
-                feed_dict[s2] = DICE_list
-                feed_dict[s3] = BRATS_list
+                feed_dict[s1] = DICE_list
+                feed_dict[s2] = BRATS_list
                 summary = self._sess.run(out_summary, feed_dict=feed_dict)
                 self._summary_writer.add_summary(summary, step)
                 self._summary_writer.flush()
@@ -890,7 +887,7 @@ class DeepQNetwork(DQN):
             s1 = self._summary[self._name_space + '/Reward']
             s2 = self._summary[self._name_space + '/DICE']
             s3 = self._summary[self._name_space + '/BRATS_metric']
-            out_summary = self._summary[self._name_space + '/Summaries']
+            out_summary = self._summary[self._name_space + '/WHOLE_Summaries']
             # Execute "Validate".
             reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
             # Compute the summary value and add into statistic graph.

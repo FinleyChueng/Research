@@ -1864,12 +1864,33 @@ class DqnAgent:
             for b in range(3):
                 tf.summary.scalar('BRATS_'+str(b+1), BRATS[b])
 
+            # Get total summaries list.
+            total_sumList = tf.get_collection(tf.GraphKeys.SUMMARIES)
+            # Merge summaries for "Segmentation" model.
+            SEG_sums = ['SEG_Loss', 'DICE', 'BRATS_metric']
+            SEG_sumList = []
+            for ts_tensor in total_sumList:
+                for ss_str in SEG_sums:
+                    if ts_tensor.name.find(ss_str) != -1:
+                        SEG_sumList.append(ts_tensor)
+            SEG_summaries = tf.summary.merge(SEG_sumList, name='SEG_Summaries')
+            net_util.package_tensor(self._summary, SEG_summaries)
+            # Merge summaries for "DQN" model.
+            DQN_sums = ['DQN_Loss', 'Reward', 'DICE', 'BRATS_metric']
+            DQN_sumList = []
+            for ts_tensor in total_sumList:
+                for ds_str in DQN_sums:
+                    if ts_tensor.name.find(ds_str) != -1:
+                        DQN_sumList.append(ts_tensor)
+            DQN_summaries = tf.summary.merge(DQN_sumList, name='DQN_Summaries')
+            net_util.package_tensor(self._summary, DQN_summaries)
             # Merge all the summaries.
-            summaries = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES), name='Summaries')
-            net_util.package_tensor(self._summary, summaries)
+            WHOLE_summaries = tf.summary.merge(total_sumList, name='WHOLE_Summaries')
+            net_util.package_tensor(self._summary, WHOLE_summaries)
 
             # Print some information.
-            print('### The summary dict is {}'.format(summaries))
+            print('### The whole summary dict is {}, SEG summary dict is {}, DQN summary dict is {} !'.format(
+                WHOLE_summaries, SEG_summaries, DQN_summaries))
 
             # Plain return.
             return
