@@ -574,5 +574,5 @@ dqn = DeepQNetwork(config=config,
 # Train.
 dqn.train(epochs=2, max_iteration=260*155)
 # Test.
-dqn.test(10, is_validate=False)
+dqn.test(110, is_validate=False)
 

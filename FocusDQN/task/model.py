@@ -1676,15 +1676,13 @@ class DqnAgent:
             clazz_weights = tf.expand_dims(tf.expand_dims(clazz_weights, axis=1), axis=1,
                                            name='expa_CW')  # [?, 1, 1, cls]
             clazz_weights = tf.multiply(clazz_weights, GT_label, name='rect_weights')  # [?, h, w, cls]
-            clazz_weights = tf.reduce_sum(clazz_weights, axis=-1, name='sin_weights')  # [?, h, w]
 
             # Calculate value for current "Focus Bbox".
             focus_map = net_util.gen_focus_maps_4bbox(focus_bbox, input_shape,
                                                       name='focus_map_4rew')    # [?, h, w, 1]
-            cur_clzW = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
-                                   name='clazz_weights_4cur')   # [?, h, w]
+            cur_clzW = tf.multiply(clazz_weights, tf.to_float(focus_map), name='clazz_weights_4cur')    # [?, h, w, cls]
             current_value = cus_metric.DICE(labels=GT_label, predictions=SEG_result, weights=cur_clzW,
-                                            scope='Cur_Value')  # [?]
+                                            keep_axis=(0, -1), scope='Cur_Value')  # [?, cls]
 
             # ---------------------- Start compute each candidates ------------------------
             # The flag vector indicates whether the input candidate bounding-box is "Bbox-Error".
@@ -1698,32 +1696,35 @@ class DqnAgent:
             indt_5d = tf.ones([1, self._action_dim - 1, 1, 1, 1])
             cand_label = tf.expand_dims(GT_label, axis=1) * indt_5d     # [?, acts-1, h, w, cls]
             cand_result = tf.expand_dims(SEG_result, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
-            cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d[:, :, :, :, 0]   # [?, acts-1, h, w]
+            cand_weights = tf.expand_dims(clazz_weights, axis=1) * indt_5d  # [?, acts-1, h, w, cls]
             # Translate to 4-D tensors.
             oh, ow, oc = GT_label.get_shape().as_list()[1:]     # [h, w, cls]
             cand_label = tf.reshape(cand_label, [-1, oh, ow, oc])   # [?*a, h, w, cls]
             cand_result = tf.reshape(cand_result, [-1, oh, ow, oc])     # [?*a, h, w, cls]
-            cand_weights = tf.reshape(cand_weights, [-1, oh, ow])       # [?*a, h, w]
+            cand_weights = tf.reshape(cand_weights, [-1, oh, ow, oc])   # [?*a, h, w, cls]
             candidates_bbox = tf.reshape(candidates_bbox, [-1, 4])  # [?*a, 4]
 
             # Calculate value for next candidates.
             cand_maps = net_util.gen_focus_maps_4bbox(candidates_bbox, input_shape,
                                                       name='cand_maps_4rew')    # [?*a, h, w, 1]
-            cand_clzWs = tf.multiply(cand_weights, tf.to_float(cand_maps[:, :, :, 0]),
-                                     name='clazz_weights_4cands')   # [?*a, h, w]
+            cand_clzWs = tf.multiply(cand_weights, tf.to_float(cand_maps),
+                                     name='clazz_weights_4cands')   # [?*a, h, w, cls]
             candidates_value = cus_metric.DICE(labels=cand_label, predictions=cand_result, weights=cand_clzWs,
-                                               scope='Cand_Value')  # [?*a]
-            candidates_value = tf.reshape(candidates_value, [-1, self._action_dim - 1],
-                                          name='Candidates_Value')  # [?, acts-1]
+                                               keep_axis=(0, -1), scope='Cand_Value')   # [?*a, cls]
+            candidates_value = tf.reshape(candidates_value,
+                                          [-1, self._action_dim - 1, candidates_value.get_shape().as_list()[-1]],
+                                          name='Candidates_Value')  # [?, acts-1, cls]
 
             # Use the difference of remain value between "Candidates" and "Current Bbox".
             if reward_form == 'SDR-DICE':
-                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
-                                                name='Candidates_diff')     # [?, acts-1]
+                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=1),
+                                                name='Candidates_diff')     # [?, acts-1, cls]
+                candidates_reward = tf.reduce_mean(candidates_reward, axis=-1, name='Candidates_mean')  # [?, acts-1]
                 candidates_reward = tf.sign(candidates_reward, name='Candidates_Raw')    # [?, acts-1]
             elif reward_form == 'DR-DICE':
-                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=-1),
-                                                name='Candidates_Raw')  # [?, acts-1]
+                candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=1),
+                                                name='Candidates_diff')  # [?, acts-1, cls]
+                candidates_reward = tf.reduce_mean(candidates_reward, axis=-1, name='Candidates_Raw')   # [?, acts-1]
             else:
                 raise ValueError('Unknown reward form !!!')
 
@@ -1733,12 +1734,33 @@ class DqnAgent:
                                          name='Candidates_Reward')  # [?, acts-1]
 
             # ---------------------- Compute reward for terminal situation ------------------------
+            # Translate the terminal thresholds to valid vector.
+            if isinstance(terminal_dice, float):
+                pass
+            elif isinstance(terminal_dice, list):
+                terminal_dice = tf.constant(terminal_dice)  # [cls]
+                terminal_dice = tf.expand_dims(terminal_dice, axis=0)   # [1, cls]
+            else:
+                raise TypeError('The terminal dice threshold must be float or list !!!')
+            if isinstance(terminal_recall, float):
+                pass
+            elif isinstance(terminal_recall, list):
+                terminal_recall = tf.constant(terminal_recall)  # [cls]
+                terminal_recall = tf.expand_dims(terminal_recall, axis=0)   # [1, cls]
+            else:
+                raise TypeError('The terminal recall threshold must be float or list !!!')
             # Check whether "Dice" reaches the threshold.
-            cur_dice = cus_metric.DICE(GT_label, SEG_result, clazz_weights, scope='Current_Dice')   # [?]
-            dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='Reach_Dice')   # [?]
+            cur_dice = cus_metric.DICE(GT_label, SEG_result, clazz_weights, keep_axis=(0, -1),
+                                       scope='Current_Dice')    # [?, cls]
+            dice_reach = tf.greater_equal(cur_dice, terminal_dice, name='reach_dice_cls')   # [?, cls]
+            dice_reach = tf.equal(tf.reduce_prod(tf.to_int32(dice_reach), axis=-1), 1,
+                                  name='Reach_Dice')    # [?]
             # Check whether "Recall" reaches the threshold.
-            cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, scope='Current_Recall')  # [?]
-            recall_reach = tf.greater_equal(cur_recall, terminal_recall, name='Reach_Recall')   # [?]
+            cur_recall = cus_metric.recall(GT_label, SEG_result, clazz_weights, keep_axis=(0, -1),
+                                           scope='Current_Recall')  # [?, cls]
+            recall_reach = tf.greater_equal(cur_recall, terminal_recall, name='reach_recall_cls')   # [?, cls]
+            recall_reach = tf.equal(tf.reduce_prod(tf.to_int32(recall_reach), axis=-1), 1,
+                                    name='Reach_Recall')    # [?]
             # Determine the reward for "Terminal" action.
             reach_thres = tf.logical_and(dice_reach, recall_reach, name='Reach_Thres')  # [?]
             terminal_reward = tf.where(reach_thres,
@@ -1824,18 +1846,11 @@ class DqnAgent:
         # Start generate summaries.
         SUMMARY_name = name_space + '/Summary'
         with tf.variable_scope(SUMMARY_name):
-            # # Summary merge list.
-            # merge_list = []
-
             # Add losses.
             tf.summary.scalar('NET_Loss', self._losses[name_space+'/NET_loss'])
-            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'NET_Loss'))
             tf.summary.scalar('SEG_Loss', self._losses[name_space+'/SEG_loss'])
-            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'SEG_Loss'))
             tf.summary.scalar('DQN_Loss', self._losses[name_space+'/DQN_loss'])
-            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DQN_Loss'))
             tf.summary.scalar('Training_Reward', self._losses[name_space+'/DQN_Rewards'])
-            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Training_Reward'))
 
             # Custom define some metric to show.
             rewards = net_util.placeholder_wrapper(self._summary, tf.float32, None, name='Reward')
@@ -1846,14 +1861,11 @@ class DqnAgent:
             # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Rewards'))
             for c in range(classification_dim):
                 tf.summary.scalar('DICE_'+str(c+1), DICE[c])
-                # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DICE_'+str(c+1)))
             for b in range(3):
                 tf.summary.scalar('BRATS_'+str(b+1), BRATS[b])
-                # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'BRATS_'+str(b+1)))
 
             # Merge all the summaries.
             summaries = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES), name='Summaries')
-            # summaries = tf.summary.merge(merge_list, name='Summaries')
             net_util.package_tensor(self._summary, summaries)
 
             # Print some information.
