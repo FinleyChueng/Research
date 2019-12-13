@@ -89,20 +89,24 @@ class BratsAdapter(Adapter):
         '''
 
         # Check validity.
-        if not isinstance(result, np.ndarray) or result.ndim != 2:
-            raise TypeError('The result should be an 2-D @Type{numpy.ndarray} !!!')
+        if not isinstance(result, np.ndarray) or not (result.ndim == 2 or result.ndim == 3):
+            raise TypeError('The result should be a 2-D or 3-D @Type{numpy.ndarray} !!!')
         if not isinstance(name, str):
             raise TypeError('The name should be @Type{str} !!!')
         if not isinstance(mode, str):
             raise TypeError('The mode should be @Type{str} !!!')
 
+        # Cast 2-D result to 3-D.
+        if result.ndim == 2:
+            result = [result]
+
         # Return train or test pair according to the mode.
         if mode == 'Train':
-            self._train_brats.save_train_Itk([result])
+            self._train_brats.save_train_Itk(result)
         elif mode == 'Validate':
-            self._train_brats.saveItk([result], name='Finley_'+name)
+            self._train_brats.saveItk(result, name='Finley_'+name)
         elif mode == 'Test':
-            self._test_brats.saveItk([result], name='Finley_'+name)
+            self._test_brats.saveItk(result, name='Finley_'+name)
         else:
             raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
         # Finish.

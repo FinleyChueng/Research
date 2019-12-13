@@ -64,9 +64,6 @@ class DeepQNetwork(DQN):
             replay_memory = PrioritizedPool(replay_memories)
         self._replay_memory = replay_memory
 
-        # # Declare the normal storage for segmentation sample.
-        # self._sample_storage = collections.deque()
-
         # session
         self._sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
         # # Use the @Util{tfdebug}...
@@ -162,7 +159,7 @@ class DeepQNetwork(DQN):
         batch_size = conf_train.get('batch_size', 32)
         epsilon_dict = conf_train.get('epsilon_dict', None)
         replay_iter = conf_train.get('replay_iter', 1)
-        pre_epochs = conf_train.get('customize_pretrain_epochs', 1)
+        pre_epochs = conf_train.get('customize_pretrain_epochs', 0)
         learning_policy = conf_train.get('learning_rate_policy', 'continuous')
         conf_others = self._config['Others']
         restore_from_bp = conf_others.get('restore_breakpoint', True)
@@ -216,20 +213,29 @@ class DeepQNetwork(DQN):
             # Print some info.
             print('Finish the epoch {} for SEGMENTATION'.format(epoch))
 
-        # ---------------- Train the whole model many times. (Depend on epochs) ----------------
+        # Save the immediate model here for conveniently conduct experiments.
+        if pre_epochs != 0:
+            params_dir = conf_others.get('net_params')
+            if not params_dir.endswith('/'): params_dir += '/'
+            self._saver.save(self._sess, params_dir, 233)   # training folder.
+            params_dir += '/warm-up/'
+            self._saver.save(self._sess, params_dir, 233)   # immediate folder.
+
+        # ---------------- Train the whole model (End-to-end) many times. (Depend on epochs) ----------------
         print('\n\nEnd-to-End Training !!!')
         # Determine the start position.
         if restore_from_bp:
             # Compute last iter.
             glo_step = int(self._global_step.eval(self._sess))
-            last_iter = glo_step * replay_iter
             # Compute the start epoch and iteration.
             if learning_policy == 'fixed':
-                pass
+                e2e_step = glo_step
             elif learning_policy == 'continuous':
-                last_iter -= (pre_epochs * max_iteration)
+                total_presteps = pre_epochs * max_iteration // batch_size
+                e2e_step = glo_step - total_presteps
             else:
                 raise ValueError('Unknown learning rate policy !!!')
+            last_iter = e2e_step * replay_iter
             start_epoch = last_iter // max_iteration
             start_iter = last_iter % max_iteration
         else:
@@ -347,6 +353,7 @@ class DeepQNetwork(DQN):
                     cate_dice.append(cdice)
                 dice_metrics.append(cate_dice)  # [turn, category]
             else:
+                pred_3d = np.asarray(pred_3d)
                 self._data_adapter.write_result(result=pred_3d, name=str(t))
 
         # ----------------------------- End of loop. -------------------------
@@ -374,9 +381,11 @@ class DeepQNetwork(DQN):
         '''
         conf_others = self._config['Others']
         params_dir = conf_others.get('net_params')
+        restore_from_bp = conf_others.get('restore_breakpoint', True)
         if params_dir is not None:
             if not params_dir.endswith('/'): params_dir += '/'
-            self._saver = tf.train.Saver()
+            var_list = None if restore_from_bp else tf.trainable_variables()
+            self._saver = tf.train.Saver(var_list=var_list)
             checkpoint_state = tf.train.get_checkpoint_state(params_dir)
             if checkpoint_state and checkpoint_state.model_checkpoint_path:
                 path = checkpoint_state.model_checkpoint_path

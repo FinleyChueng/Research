@@ -1824,18 +1824,18 @@ class DqnAgent:
         # Start generate summaries.
         SUMMARY_name = name_space + '/Summary'
         with tf.variable_scope(SUMMARY_name):
-            # Summary merge list.
-            merge_list = []
+            # # Summary merge list.
+            # merge_list = []
 
             # Add losses.
             tf.summary.scalar('NET_Loss', self._losses[name_space+'/NET_loss'])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'NET_Loss'))
+            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'NET_Loss'))
             tf.summary.scalar('SEG_Loss', self._losses[name_space+'/SEG_loss'])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'SEG_Loss'))
+            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'SEG_Loss'))
             tf.summary.scalar('DQN_Loss', self._losses[name_space+'/DQN_loss'])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DQN_Loss'))
+            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DQN_Loss'))
             tf.summary.scalar('Training_Reward', self._losses[name_space+'/DQN_Rewards'])
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Training_Reward'))
+            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Training_Reward'))
 
             # Custom define some metric to show.
             rewards = net_util.placeholder_wrapper(self._summary, tf.float32, None, name='Reward')
@@ -1843,16 +1843,17 @@ class DqnAgent:
             BRATS = net_util.placeholder_wrapper(self._summary, tf.float32, [3], name='BRATS_metric')
             # Recursively add the summary.
             tf.summary.scalar('Rewards', rewards)
-            merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Rewards'))
+            # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'Rewards'))
             for c in range(classification_dim):
                 tf.summary.scalar('DICE_'+str(c+1), DICE[c])
-                merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DICE_'+str(c+1)))
+                # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'DICE_'+str(c+1)))
             for b in range(3):
                 tf.summary.scalar('BRATS_'+str(b+1), BRATS[b])
-                merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'BRATS_'+str(b+1)))
+                # merge_list.append(tf.get_collection(tf.GraphKeys.SUMMARIES, 'BRATS_'+str(b+1)))
 
             # Merge all the summaries.
-            summaries = tf.summary.merge(merge_list, name='Summaries')
+            summaries = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES), name='Summaries')
+            # summaries = tf.summary.merge(merge_list, name='Summaries')
             net_util.package_tensor(self._summary, summaries)
 
             # Print some information.
