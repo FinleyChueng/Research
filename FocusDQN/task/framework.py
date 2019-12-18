@@ -6,7 +6,7 @@ import tensorflow as tf
 
 from core.dqn import *
 from task.model import DqnAgent
-from task.env import FocusEnv
+from task.env import FocusEnvWrapper
 import tfmodule.util as tf_util
 import util.evaluation as eva
 from util.visualization import PictureVisual
@@ -52,7 +52,7 @@ class DeepQNetwork(DQN):
         self._model = DqnAgent(self._config, name_space=self._name_space)
 
         # Define the environment.
-        self._env = FocusEnv(self._config, data_adapter=data_adapter)
+        self._env = FocusEnvWrapper.get_instance(self._config, data_adapter=data_adapter)
 
         # Get the valid action quantity.
         self._acts_dim = self._env.acts_dim
@@ -245,7 +245,7 @@ class DeepQNetwork(DQN):
             # Reset the start position of iteration.
             self._data_adapter.reset_position(start_iter)
             # Start training.
-            self._train(max_iteration, start_iter, epsilon_book)
+            self._train(max_iteration, epoch, start_iter, epsilon_book)
             # Re-assign the start position iteration to zero.
             #   Note that, only the first epoch is specified,
             #   others start from zero.
@@ -257,7 +257,7 @@ class DeepQNetwork(DQN):
         return
 
 
-    def test(self, instances_num, is_validate):
+    def test(self, instances_num, is_validate, is_e2e=True):
         r'''
             Test or validate the model of given iterations.
 
@@ -267,101 +267,27 @@ class DeepQNetwork(DQN):
         # Check validity.
         if not isinstance(instances_num, int):
             raise TypeError('The instances_num must be an integer !!!')
-        if not isinstance(is_validate, bool):
-            raise TypeError('The is_validate must be a boolean !!!')
         if instances_num <= 0:
             raise ValueError('The instances_num must be positive !!!')
+        if not isinstance(is_validate, bool):
+            raise TypeError('The is_validate must be a boolean !!!')
+        if not isinstance(is_e2e, bool):
+            raise TypeError('The is_e2e must be a boolean !!!')
 
         # Indicating -------------------
         self._logger.info('Testing...')
         sys.stdout.flush()
         # ------------------------------
 
-        # Get config.
-        conf_base = self._config['Base']
-        clazz_dim = conf_base.get('classification_dimension')
-
-        # Ensure the right phrase of "environment".
-        if is_validate:
-            self._env.switch_phrase('Validate')
-        else:
-            self._env.switch_phrase('Test')
-
-        # Check whether need additional iteration to deal with 3-D data.
-        if self._data_adapter.slices_3d <= 0:
-            iter_3d = 1
-        else:
-            iter_3d = self._data_adapter.slices_3d
-
-        # Metrics.
-        total_rewards = []  # rewards
-        dice_metrics = []   # Dice Metric.
-        brats_metrics = []  # BRATS Metric.
+        # The cost time.
         start_time = time.time()  # time.
 
-        # Start to Testing ...
-        for t in range(instances_num):
-            # Metric used to record rewards of current turn if not None.
-            turn_reward = []
-            # 3D data holder. Used to compute the metric.
-            label_3d = []
-            pred_3d = []
-
-            # 3D data
-            for it in range(iter_3d):
-                # Metric.
-                it_reward = []
-
-                # Reset the environment.
-                label = self._env.reset(self._segment_func)
-                # Iteratively process.
-                for step in range(9999999999):  # 9999999999: max step per epoch
-                    # Push forward the environment.
-                    terminal, (segmentation, reward, info) = self._env.step(self._core_func)
-
-                    # Update metric info.
-                    if is_validate:
-                        it_reward.append(reward)
-
-                    # Current slice is finish.
-                    if terminal:
-                        if is_validate:
-                            label_3d.append(label)
-                        pred_3d.append(segmentation)
-                        break
-                # Render environment. No need visualize each one.
-                if it % (iter_3d // 6) == 0:
-                    self._env.render(anim_type='video')
-
-                # Update turn metric.
-                turn_reward.append(np.sum(it_reward))
-
-            # Update total metric or write the result according to the phrase.
-            if is_validate:
-                total_rewards.append(turn_reward)   # [turn, iter_3d]
-                label_3d = np.asarray(label_3d)
-                pred_3d = np.asarray(pred_3d)
-                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=label_3d)
-                brats_2 = eva.BRATS_Core(pred=pred_3d, label=label_3d)
-                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=label_3d)
-                brats_metrics.append([brats_1, brats_2, brats_3])   # [turn, 3]
-                cate_dice = []
-                for c in range(clazz_dim):
-                    cate_pred = pred_3d == c
-                    cate_lab = label_3d == c
-                    cdice = eva.DICE_Bi(pred=cate_pred, label=cate_lab)
-                    cate_dice.append(cdice)
-                dice_metrics.append(cate_dice)  # [turn, category]
-            else:
-                pred_3d = np.asarray(pred_3d)
-                self._data_adapter.write_result(result=pred_3d, name=str(t))
-
-        # ----------------------------- End of loop. -------------------------
-
-        # Mean the metrics.
-        mean_reward = np.mean(total_rewards)
-        mean_dice = np.mean(dice_metrics, axis=0)
-        mean_brats = np.mean(brats_metrics, axis=0)
+        # Different test method according to the flag.
+        if is_e2e:
+            mean_dice, mean_brats, mean_reward = self._end2end_test(instances_num, is_validate)
+        else:
+            mean_dice, mean_brats = self._customize_test(instances_num, is_validate)
+            mean_reward = None
 
         # Show some information. ---------------------------------------
         self._logger.info('Finish testing --> average_reward: {}, avg_DICE: {}, '
@@ -408,8 +334,6 @@ class DeepQNetwork(DQN):
         # Get config.
         conf_base = self._config['Base']
         input_shape = conf_base.get('input_shape')[1:3]
-        suit_h = conf_base.get('suit_height')
-        suit_w = conf_base.get('suit_width')
         clazz_dim = conf_base.get('classification_dimension')
         conf_train = self._config['Training']
         batch_size = conf_train.get('batch_size', 32)
@@ -419,7 +343,6 @@ class DeepQNetwork(DQN):
         step_thres = conf_dqn.get('step_threshold', 10)
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
-        CR_method = conf_cus.get('result_fusion', 'prob')
         conf_others = self._config['Others']
         save_steps = conf_others.get('save_steps', 100)
         save_steps *= 4
@@ -459,59 +382,6 @@ class DeepQNetwork(DQN):
         bboxes_his = np.asarray([[self._env.Fake_Bbox]])
         bboxes_his = bboxes_his * np.ones((batch_size, step_thres, 4))
         his_len = np.zeros(batch_size, dtype=np.int32)
-
-        # The sub-function used to "Validate". Meanwhile define some holders and data.
-        x7 = self._inputs[self._name_space + '/Complete_Result']
-        o1 = self._outputs[self._name_space + '/SEG_output']
-        if CR_method == 'logit' or CR_method == 'prob':
-            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w, clazz_dim), dtype=np.float32)
-        elif CR_method in ['mask-lap', 'mask-vote']:
-            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w), dtype=np.int64)
-        else:
-            raise ValueError('Unknown result fusion method !!!')
-        # Validate function.
-        def seg_validate(instance_num):
-            BRATSs = []
-            DICEs = []
-            for _1 in range(instance_num):
-                pred_3d = []
-                lab_3d = []
-                for _2 in range(self._data_adapter.slices_3d // batch_size + 1):
-                    val_imgs, val_labs = self._data_adapter.next_image_pair('Validate', batch_size=batch_size)
-                    la_l = val_imgs.shape[0]
-                    feed_dict = {
-                        # Origin input part.
-                        x1: val_imgs[:la_l],
-                        x2: SEG_prevs[:la_l],
-                        x3: position_infos[:la_l],
-                        x4: focus_bboxes[:la_l],
-                        x5: bboxes_his[:la_l],
-                        x6: his_len[:la_l],
-                        x7: COMP_results[:la_l]
-                    }
-                    preds = self._sess.run(o1, feed_dict=feed_dict)
-                    pred_3d.extend(preds)
-                    lab_3d.extend(val_labs)
-                    # visual.
-                    if self._pre_visutil is not None:
-                        self._pre_visutil.visualize((val_imgs[0], val_labs[0], preds[0]), mode='Train')
-                # metric.
-                pred_3d = np.asarray(pred_3d)
-                lab_3d = np.asarray(lab_3d)
-                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=lab_3d)
-                brats_2 = eva.BRATS_Core(pred=pred_3d, label=lab_3d)
-                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=lab_3d)
-                BRATSs.append([brats_1, brats_2, brats_3])
-                dice = []
-                for c in range(clazz_dim):
-                    cate_pred = pred_3d == c
-                    cate_lab = lab_3d == c
-                    dice.append(eva.DICE_Bi(pred=cate_pred, label=cate_lab))
-                DICEs.append(dice)
-            DICE = np.mean(np.asarray(DICEs), axis=0)      # category
-            BRATS = np.mean(np.asarray(BRATSs), axis=0)    # 3
-            return DICE, BRATS
-        # ------------------------- end of sub-func ------------------------
 
         # Start to train.
         for ite in range(start_pos // batch_size, max_iteration // batch_size + 1):
@@ -555,7 +425,7 @@ class DeepQNetwork(DQN):
                 s2 = self._summary[self._name_space + '/BRATS_metric']
                 out_summary = self._summary[self._name_space + '/SEG_Summaries']
                 # Execute "Validate".
-                DICE_list, BRATS_list = seg_validate(2)
+                _1, DICE_list, BRATS_list = self.test(2, is_validate=True, is_e2e=False)
                 # Print some info. --------------------------------------------
                 self._logger.info("Iter {} --> DICE: {}, BRATS: {} ".format(ite, DICE_list, BRATS_list))
                 # ------------------------------------------------------------
@@ -572,7 +442,7 @@ class DeepQNetwork(DQN):
         return
 
 
-    def _train(self, max_iteration, start_pos, epsilon_book):
+    def _train(self, max_iteration, cur_epoch, start_pos, epsilon_book):
         r'''
             End-to-end train the whole model.
         '''
@@ -582,110 +452,146 @@ class DeepQNetwork(DQN):
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
         conf_others = self._config['Others']
         memory_size = conf_others.get('replay_memories')
-        store_type = conf_others.get('sample_type', 'light')
-
+        eins_num = conf_others.get('environment_instances', 16)
+        validate_steps = conf_others.get('validate_steps', 500)
         conf_train = self._config['Training']
         batch_size = conf_train.get('batch_size', 32)
         replay_iter = conf_train.get('replay_iter', 1)
 
         # Declare the store function for "Experience Store".
-        def store_2mem(exp):
+        def store_2mem(experiences):
             r'''
                 experience likes below:
                 (sample_meta, (SEG_prev, cur_bbox, position_info, acts_prev), \
                     action, terminal, anchors.copy(), BBOX_errs.copy(), \
                     (SEG_cur, focus_bbox, next_posinfo, acts_cur))
             '''
-            # Store the experience in "Replay Memory".
-            if prioritized_replay:
-                # using the "Prioritized Replay".
-                self._replay_memory.store(exp)
-            else:
-                self._replay_memory.append(exp)
-                # remove element (experience) if exceeds max size.
-                if len(self._replay_memory) > memory_size:
-                    self._replay_memory.popleft()
+            # Store all the experiences in "Replay Memory".
+            for exp in experiences:
+                if prioritized_replay:
+                    # using the "Prioritized Replay".
+                    self._replay_memory.store(exp)
+                else:
+                    self._replay_memory.append(exp)
+                    # remove element (experience) if exceeds max size.
+                    if len(self._replay_memory) > memory_size:
+                        self._replay_memory.popleft()
             # Finish.
             return
 
+        # Calculate the instance that "Focus Model" already finished.
+        #   It's also the start instance id for very beginning loop.
+        model_finished = cur_epoch * max_iteration + start_pos
+        # Calculate the loop threshold for very beginning loop.
+        loop_thres = validate_steps * replay_iter - (start_pos % (validate_steps * replay_iter))
+        # Calculate the remain loops.
+        remain_loops = (max_iteration - start_pos) // (validate_steps * replay_iter) + 1
+
         # ------------------------ Train Loop Part ------------------------
-        # Start to training ...
-        for turn in range(start_pos, max_iteration):
-            # Some info holder.
-            turn_rewards = 0
-            start_time = time.time()
+        for loop_id in range(remain_loops):
+            # Reset the start instance id at the very beginning of each epoch.
+            self._env.reset_instance_id(p='Train', ins_id=model_finished)
+            # Calculate the max iter for current loop.
+            tp_maxIter = self._env.instance_id(p='Train') + loop_thres
 
-            # Get current epsilon.
-            for idx in range(len(epsilon_book) - 1):
-                lower = epsilon_book[idx][0]
-                upper = epsilon_book[idx + 1][0]
-                if turn in range(lower, upper):
-                    self._epsilon = epsilon_book[idx][1]
+            # The previous training position.
+            prev_tpos = model_finished
+            # The previous animation position.
+            prev_aniPos = model_finished
+
+            # Some (metric) info holder.
+            turn_rewards = [0] * eins_num
+            turn_sts = [time.time()] * eins_num
+            turn_steps = [0] * eins_num
+            # Loop related.
+            loop_time = time.time()
+
+            # -------------------------- Start to training ... -----------------------------
+            while True:
+                # Get current epsilon.
+                for idx in range(len(epsilon_book) - 1):
+                    lower = epsilon_book[idx][0]
+                    upper = epsilon_book[idx + 1][0]
+                    if model_finished in range(lower, upper):
+                        self._epsilon = epsilon_book[idx][1]
+                        break
+
+                # Ensure environment works in "Train" mode, what's more, reset the max iteration of environment.
+                self._env.switch_phrase(p='Train', max_iter=tp_maxIter)
+
+                # Determine whether should record picture or not.
+                apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
+                if apos_count > 0:
+                    anim_type = 'pic'
+                    prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
+                else:
+                    anim_type = None
+
+                # Single roll out.
+                experiences, terminals, rewards, infos, reach_max, sample_ids, env_ids = self._env.roll_out(
+                    segment_func=self._segment_func,
+                    op_func=self._core_func,
+                    anim_type=anim_type
+                )   # unknown batch size.
+
+                # Store the experiences to the replay buffer.
+                store_2mem(experiences)
+
+                # Traverse to check the terminal situation so that we can increase
+                #   the total model finish number.
+                # What's more, update and print some information.
+                for eid, sid, t, r, i in zip(env_ids, sample_ids, terminals, rewards, infos):
+                    # Update some information for visual.
+                    turn_rewards[eid] += r
+                    turn_steps[eid] += 1
+                    if t:
+                        # Show some info. --------------------------------------------
+                        self._logger.debug(
+                            "Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, cost time: {}".format(
+                                sid - cur_epoch * max_iteration, turn_steps[eid], turn_rewards[eid],
+                                self._epsilon, time.time() - turn_sts[eid]))
+                        # ------------------------------------------------------------
+                        turn_steps[eid] = 0
+                        turn_rewards[eid] = 0
+                        turn_sts[eid] = time.time()
+                        # Increase the total model finish number.
+                        model_finished += 1
+
+                # Calculate the training count.
+                train_count = ((prev_tpos % replay_iter) + (model_finished - prev_tpos)) // replay_iter
+                # Only update previous train position when train count greater than 0. Reserve remain value.
+                if train_count > 0:
+                    prev_tpos = model_finished
+                # Check whether to training or not.
+                exec_train = (len(self._replay_memory) >= batch_size) and train_count > 0
+                # Start training the DQN agent.
+                if exec_train:
+                    for tc in range(train_count):
+                        # Metric used to see the training time.
+                        train_time = time.time()
+                        # Really training the DQN agent.
+                        v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train()
+                        # Debug. ------------------------------------------------------
+                        self._logger.info("Iter {}, TrainCount: {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
+                                          "Reward Bias: {}, Training time: {}".format(
+                            model_finished, tc, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
+                        )
+                        # -------------------------------------------------------------
+
+                # Break the loop when reach the max iteration.
+                if reach_max:
                     break
+            # -------------------------- End of training core part -----------------------------
 
-            # Ensure environment works in "Train" mode.
-            self._env.switch_phrase('Train')
+            # Check the validity of total finished number.
+            MF_valid = cur_epoch * max_iteration + (loop_id + 1) * (validate_steps * replay_iter)
+            if model_finished != MF_valid:
+                raise Exception('Error coding !!!')
+            # Reset the loop threshold.
+            loop_thres = validate_steps * replay_iter
 
-            # ------------------- Start single iteration. -------------------
-            # Reset the environment.
-            image, label, clazz_weights, (mha_idx, inst_idx) = self._env.reset(self._segment_func)
-
-            # Determine the store type.
-            if store_type == 'light':
-                sample_meta = (mha_idx, inst_idx, clazz_weights)
-            elif store_type == 'heave':
-                sample_meta = (image, label, clazz_weights)
-            else:
-                raise ValueError('Unknown sample store type !!!')
-
-            # ---------------------------- Core Part ----------------------------
-            # 9999999999: max step per iteration.
-            for step in range(9999999999):
-                # Push forward the environment.
-                (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev), \
-                    action, terminal, anchors, BBOX_errs, \
-                    (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur), \
-                    reward, info = self._env.step(self._core_func)
-
-                # Store the sample into "Segment" storage.
-                store_2mem((sample_meta, (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev),
-                            action, terminal, anchors, BBOX_errs,
-                            (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur), reward))
-
-                # Current processing is terminated.
-                if terminal:
-                    # Show some info. --------------------------------------------
-                    self._logger.debug("Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, "
-                                       "cost time: {}".format(
-                        turn, step, turn_rewards, self._epsilon, time.time() - start_time))
-                    # ------------------------------------------------------------
-                    break
-
-                # Update some info for visual.
-                turn_rewards += reward
-            # ---------------------------- End of core part ----------------------------
-
-            # Finish the process of current image. Render.
-            self._env.render(None)
-
-            # Check whether to training or not.
-            exec_train = (len(self._replay_memory) >= batch_size) and \
-                         (turn % replay_iter == 0)
-            # Start training the DQN agent.
-            if exec_train:
-                # Metric used to see the training time.
-                train_time = time.time()
-                # Really training the DQN agent.
-                v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train()
-                # Debug. ------------------------------------------------------
-                self._logger.info("Iter {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
-                                  "Reward Bias: {}, Training time: {}".format(
-                    turn, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
-                )
-                # -------------------------------------------------------------
-
-            # Print some info.
-            self._logger.debug('Iter {} finish !!! Cost time: {}'.format(turn, time.time() - start_time))
+            # Print some information.
+            self._logger.debug("Epoch{}, loop: {}, cost time: {}".format(cur_epoch, loop_id, time.time() - loop_time))
 
         # Finish one epoch.
         return
@@ -888,6 +794,9 @@ class DeepQNetwork(DQN):
             s2 = self._summary[self._name_space + '/DICE']
             s3 = self._summary[self._name_space + '/BRATS_metric']
             out_summary = self._summary[self._name_space + '/WHOLE_Summaries']
+            # Reset the sample id for "Validate" mode.
+            val_sampleId = (step//validate_steps-1) * 2 * self._data_adapter.slices_3d
+            self._env.reset_instance_id(p='Validate', ins_id=val_sampleId)
             # Execute "Validate".
             reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
             # Compute the summary value and add into statistic graph.
@@ -920,8 +829,8 @@ class DeepQNetwork(DQN):
 
         ----------------------------------------------------------------
         Parameters:
-            x: The current observation of environment.
-                When with rewards, it consists of:
+            x: The current observations of environment.
+                When with rewards, each of it consists of:
                     (image, SEG_prev, position_info, focus_bbox, acts_prev, bboxes_prev, his_plen, COMP_res,
                     anchors, BBOX_errs, label)
                 Otherwise:
@@ -962,59 +871,91 @@ class DeepQNetwork(DQN):
         y3 = self._outputs[stage_prefix + '/DQN_output']
         y4 = self._losses[self._name_space + '/DQN_Rewards']
 
+        # The function used to package input data.
+        def package_xbatch(data):
+            i1 = []
+            i2 = []
+            i3 = []
+            i4 = []
+            i5 = []
+            i6 = []
+            i7 = []
+            i8 = []
+            if with_reward:
+                i9 = []
+                i10 = []
+                i11 = []
+                i12 = []
+            for d in data:
+                i1.append(d[0])
+                i2.append(d[1])
+                i3.append(d[2])
+                i4.append(d[3])
+                i5.append(d[4])
+                i6.append(d[5])
+                i7.append(d[6])
+                i8.append(d[7])
+                if with_reward:
+                    i9.append(d[8])
+                    i10.append(d[9])
+                    i11.append(d[10])
+                    i12.append(d[11])
+            if with_reward:
+                return i1, i2, i3, i4, i5, i6, i7, i8, \
+                       i9, i10, i11, i12
+            else:
+                return i1, i2, i3, i4, i5, i6, i7, i8
+        # -----------------------------------------------------
+
         # Different execution logic according to the flag.
         if with_reward:
             # Get each input elements.
-            image, SEG_prev, position_info, focus_bbox, acts_prev, bboxes_prev, his_plen, \
-                COMP_result, anchors, BBOX_errs, label, clazz_weights = x
+            images, SEG_prevs, position_infos, focus_bboxs, acts_prevs, bboxes_prevs, his_plens, \
+                COMP_results, anchors, BBOX_errs, labels, clazz_weights = package_xbatch(x)
             # Generate the segmentation result for current region (focus bbox).
-            segmentation, COMP_res, q_val, rewards = self._sess.run([y1, y2, y3, y4], feed_dict={
+            segmentations, COMP_ress, q_vals, rewards = self._sess.run([y1, y2, y3, y4], feed_dict={
                 # Input part.
-                x1: [image],
-                x2: [SEG_prev],
-                x3: [position_info],
-                x4: [focus_bbox],
-                x5: [acts_prev],
-                x6: [bboxes_prev],
-                x7: [his_plen],
-                x8: [COMP_result],
+                x1: images,
+                x2: SEG_prevs,
+                x3: position_infos,
+                x4: focus_bboxs,
+                x5: acts_prevs,
+                x6: bboxes_prevs,
+                x7: his_plens,
+                x8: COMP_results,
                 # Reward part.
-                l1: [anchors],
-                l2: [BBOX_errs],
-                l3: [label],
-                l4: [clazz_weights]
+                l1: anchors,
+                l2: BBOX_errs,
+                l3: labels,
+                l4: clazz_weights
             })
         else:
             # Get input elements.
-            image, SEG_prev, position_info, focus_bbox, acts_prev, bboxes_prev, his_plen, COMP_result = x
+            images, SEG_prevs, position_infos, focus_bboxs, acts_prevs, \
+                bboxes_prevs, his_plens, COMP_results = package_xbatch(x)
             # Generate the segmentation result for current region (focus bbox).
-            segmentation, COMP_res, q_val = self._sess.run([y1, y2, y3], feed_dict={
-                x1: [image],
-                x2: [SEG_prev],
-                x3: [position_info],
-                x4: [focus_bbox],
-                x5: [acts_prev],
-                x6: [bboxes_prev],
-                x7: [his_plen],
-                x8: [COMP_result],
+            segmentations, COMP_ress, q_vals = self._sess.run([y1, y2, y3], feed_dict={
+                x1: images,
+                x2: SEG_prevs,
+                x3: position_infos,
+                x4: focus_bboxs,
+                x5: acts_prevs,
+                x6: bboxes_prevs,
+                x7: his_plens,
+                x8: COMP_results,
             })
 
-        # Get the segmentation and complete value result.
-        segmentation = segmentation[0]
-        COMP_res = COMP_res[0]
-        q_val = q_val[0]
         # Select action according to the output of "Deep Q Network".
-        action = np.argmax(q_val, axis=-1)  # scalar
+        actions = np.argmax(q_vals, axis=-1)    # [?]
         # e-greedy action policy.
         if with_explore:
-            action = self.__egreedy_action(action, self._epsilon)
+            actions = self.__egreedy_action(actions, self._epsilon)     # [?]
 
         # Return both segmentation result and DQN result. What's more, return reward if given.
         if with_reward:
-            rewards = rewards[0]
-            return segmentation, COMP_res, action, rewards
+            return segmentations, COMP_ress, actions, rewards
         else:
-            return segmentation, COMP_res, action
+            return segmentations, COMP_ress, actions
 
 
     def _segment_func(self, x):
@@ -1071,25 +1012,22 @@ class DeepQNetwork(DQN):
         return segmentation, COMP_res
 
 
-    def __explore_policy(self, distribution='uniform'):
+    def __explore_policy(self, vector_len, distribution='uniform'):
         r'''
             Randomly select an action.
         '''
-        return np.random.randint(self._acts_dim)
+        return np.random.randint(self._acts_dim, size=vector_len)
 
 
-    def __egreedy_action(self, action, epsilon):
+    def __egreedy_action(self, actions, epsilon):
         r'''
             The ε-greedy exploration for DQN agent.
         '''
         # Exploration or Exploitation according to the epsilon.
-        if random.random() <= epsilon:
-            # Exploration.
-            action_index = self.__explore_policy()
-        else:
-            # Exploitation. Use network (DRQN) to predict action index.
-            action_index = action
-        return action_index
+        exploration_flag = np.random.rand(len(actions)) <= epsilon  # [?,]
+        exploration_actions = self.__explore_policy(len(actions))   # [?,]
+        action_indexs = np.where(exploration_flag, exploration_actions, actions)    # [?,]
+        return action_indexs
 
 
     def __next_Qvalues(self, x):
@@ -1185,4 +1123,266 @@ class DeepQNetwork(DQN):
 
         # Return the next Q values.
         return next_q_values
+
+
+    def _end2end_test(self, instances_num, is_validate):
+        r'''
+            Test or validate the whole model (including segmentation and DQN branch)
+                for given iterations.
+
+            ** Note that, it's evaluation metric is mainly designed for 3-D data.
+
+        Parameters:
+            instances_num: The number of instances used to validate or test.
+            is_validate: Flag that indicates whether it's validate or test phrase.
+
+        Return:
+            The Brats-metric and Dice-metric of each category.
+        '''
+
+        # Get config.
+        conf_base = self._config['Base']
+        clazz_dim = conf_base.get('classification_dimension')
+        img_h, img_w = conf_base.get('input_shape')[1:3]
+
+        # Check whether need additional iteration to deal with 3-D data.
+        if self._data_adapter.slices_3d <= 0:
+            iter_3d = 1
+        else:
+            iter_3d = self._data_adapter.slices_3d
+
+        # Metrics.
+        total_rewards = np.zeros((instances_num, iter_3d))  # Rewards
+        dice_metrics = np.zeros((instances_num, clazz_dim))  # Dice Metric.
+        brats_metrics = np.zeros((instances_num, 3))  # BRATS Metric.
+        # Temporary holders.
+        preds_holder = np.zeros((instances_num, iter_3d, img_h, img_w))  # Predictions
+        labels_holder = np.zeros((instances_num, iter_3d, img_h, img_w))  # Labels
+        MHAs_holder = np.zeros((instances_num, iter_3d))  # MHA ids
+
+        # Ensure the right phrase of "environment".
+        if is_validate:
+            # The oldest (from beginning).
+            oldest_insId = self._env.instance_id(p='Validate')
+            max_iter = oldest_insId + instances_num * iter_3d
+            self._env.switch_phrase(p='Validate', max_iter=max_iter)
+        else:
+            # The oldest (from beginning).
+            oldest_insId = self._env.instance_id(p='Test')
+            max_iter = oldest_insId + instances_num * iter_3d
+            self._env.switch_phrase(p='Test', max_iter=max_iter)
+
+        # The total model finished number and the previous training position.
+        model_finished = oldest_insId
+        prev_aniPos = oldest_insId
+
+        # --------------------------------------- Core body ---------------------------------------
+        # Start to Testing ...
+        while True:
+            # Determine whether should record animation or not.
+            apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
+            if apos_count > 0:
+                anim_type = 'video'
+                prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
+            else:
+                anim_type = None
+
+            # Single roll out.
+            segmentations, labels, terminals, rewards, infos, reach_max, \
+            sample_ids, env_ids, data_identities = self._env.roll_out(
+                segment_func=self._segment_func,
+                op_func=self._core_func,
+                anim_type=anim_type
+            )  # unknown batch size.
+
+            # Record predictions and labels. What's more, update the total model finished number.
+            for eid, sid, di, s, t, l, r, i in zip(
+                    env_ids, sample_ids, data_identities, segmentations, terminals, labels, rewards, infos):
+                # Calculate the batch_id and the iter_id.
+                batch_id = (sid - oldest_insId) // iter_3d
+                iter_id = (sid - oldest_insId) % iter_3d
+                # Update metric info.
+                if is_validate:
+                    total_rewards[batch_id, iter_id] += r
+                # Record prediction and its label.
+                if t:
+                    if is_validate:
+                        labels_holder[batch_id, iter_id] = l
+                    preds_holder[batch_id, iter_id] = s
+                    MHAs_holder[batch_id, iter_id] = di[0]
+                    # Update the total model finished number.
+                    model_finished += 1
+
+            # Break the loop if finish max iterations.
+            if reach_max:
+                break
+        # ---------------------------------- End of loop ----------------------------------
+
+        # Check the validity of whole operation. The mha_id of same instance must be same.
+        for mha in MHAs_holder:
+            if ((mha - np.mean(mha)) != 0).any():
+                raise Exception('Error coding !!! The The mha_id of same instance must be same !!!')
+
+        # Calculate total metric or write the result according to the phrase.
+        if is_validate:
+            for ins_id, elem in enumerate(zip(preds_holder, labels_holder)):
+                pred_3d, label_3d = elem
+                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=label_3d)
+                brats_2 = eva.BRATS_Core(pred=pred_3d, label=label_3d)
+                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=label_3d)
+                brats_vector = np.asarray([brats_1, brats_2, brats_3])  # [3]
+                brats_metrics[ins_id] = brats_vector  # [instance, 3]
+                cate_dice = []
+                for c in range(clazz_dim):
+                    cate_pred = pred_3d == c
+                    cate_lab = label_3d == c
+                    cdice = eva.DICE_Bi(pred=cate_pred, label=cate_lab)
+                    cate_dice.append(cdice)
+                cate_dice = np.asarray(cate_dice)  # [category]
+                dice_metrics[ins_id] = cate_dice  # [instance, category]
+        else:
+            for ins_id, elem in enumerate(zip(MHAs_holder, preds_holder)):
+                mha_id, pred_3d = elem
+                self._data_adapter.write_result(MHA_id=mha_id[0], result=pred_3d, name=str(ins_id))
+
+        # Mean the metrics.
+        DICE = np.mean(dice_metrics, axis=0)    # [category]
+        BRATS = np.mean(brats_metrics, axis=0)  # [3]
+        REWARD = np.mean(total_rewards) # scalar
+
+        # Return the metrics.
+        return DICE, BRATS, REWARD
+
+
+    def _customize_test(self, instances_num, is_validate):
+        r'''
+            Test or validate the pure segmentation branch of model for given iterations.
+
+            ** Note that, it's evaluation metric is mainly designed for 3-D data.
+
+        Parameters:
+            instances_num: The number of instances used to validate or test.
+            is_validate: Flag that indicates whether it's validate or test phrase.
+
+        Return:
+            The Brats-metric and Dice-metric of each category.
+        '''
+
+        # Get config.
+        conf_base = self._config['Base']
+        input_shape = conf_base.get('input_shape')[1:3]
+        suit_h = conf_base.get('suit_height')
+        suit_w = conf_base.get('suit_width')
+        clazz_dim = conf_base.get('classification_dimension')
+        conf_train = self._config['Training']
+        batch_size = conf_train.get('batch_size', 32)
+        conf_dqn = self._config['DQN']
+        double_q = conf_dqn.get('double_dqn', None)
+        step_thres = conf_dqn.get('step_threshold', 10)
+        conf_cus = self._config['Custom']
+        pos_method = conf_cus.get('position_info', 'map')
+        CR_method = conf_cus.get('result_fusion', 'prob')
+        conf_others = self._config['Others']
+        validate_steps = conf_others.get('validate_steps', 500)
+        validate_steps //= 4
+
+        # Get origin input part.
+        if double_q is None:
+            org_name = self._name_space
+        else:
+            org_name = double_q[0]
+        x1 = self._inputs[org_name + '/image']
+        x2 = self._inputs[org_name + '/prev_result']
+        x3 = self._inputs[org_name + '/position_info']
+        x4 = self._inputs[org_name + '/Focus_Bbox']
+        x5 = self._inputs[org_name + '/Bbox_History']
+        x6 = self._inputs[org_name + '/History_Length']
+
+        # Fake data. (Focus bbox, SEG )
+        focus_bboxes = np.asarray([[0.0, 0.0, 1.0, 1.0]])  # [[y1, x1, y2, x2]]
+        focus_bboxes = focus_bboxes * np.ones((batch_size, 4))
+        SEG_prevs = np.zeros((batch_size, input_shape[0], input_shape[1]))
+        if pos_method == 'map':
+            position_infos = np.ones((batch_size, input_shape[0], input_shape[1]))
+        elif pos_method == 'coord':
+            position_infos = focus_bboxes.copy()
+        elif pos_method == 'w/o':
+            position_infos = None
+        else:
+            raise ValueError('Unknown position information fusion method !!!')
+        bboxes_his = np.asarray([[self._env.Fake_Bbox]])
+        bboxes_his = bboxes_his * np.ones((batch_size, step_thres, 4))
+        his_len = np.zeros(batch_size, dtype=np.int32)
+
+        # The sub-function used to "Validate". Meanwhile define some holders and data.
+        x7 = self._inputs[self._name_space + '/Complete_Result']
+        o1 = self._outputs[self._name_space + '/SEG_output']
+        if CR_method == 'logit' or CR_method == 'prob':
+            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w, clazz_dim), dtype=np.float32)
+        elif CR_method in ['mask-lap', 'mask-vote']:
+            COMP_results = np.zeros((batch_size, step_thres, suit_h, suit_w), dtype=np.int64)
+        else:
+            raise ValueError('Unknown result fusion method !!!')
+
+        # Calculate the instance id.
+        step = self._pre_step.eval(self._sess)
+        last_insId = (step//validate_steps-1) * instances_num * (self._data_adapter.slices_3d//batch_size+1)
+
+        # Start validate/test loop ...
+        BRATSs = []
+        DICEs = []
+        for i in range(instances_num):
+            mha_id = -1
+            pred_3d = []
+            lab_3d = []
+            for j in range(self._data_adapter.slices_3d // batch_size + 1):
+                if is_validate:
+                    imgs, labs, _3, data_args = self._data_adapter.next_image_pair('Validate', batch_size=batch_size)
+                else:
+                    imgs, labs, data_args = self._data_adapter.next_image_pair('Test', batch_size=batch_size)
+                if mha_id < 0: mha_id = data_args[0]
+                la_l = imgs.shape[0]
+                feed_dict = {
+                    # Origin input part.
+                    x1: imgs[:la_l],
+                    x2: SEG_prevs[:la_l],
+                    x3: position_infos[:la_l],
+                    x4: focus_bboxes[:la_l],
+                    x5: bboxes_his[:la_l],
+                    x6: his_len[:la_l],
+                    x7: COMP_results[:la_l]
+                }
+                preds = self._sess.run(o1, feed_dict=feed_dict)
+                pred_3d.extend(preds)
+                lab_3d.extend(labs)
+                # Visualize.
+                if self._pre_visutil is not None:
+                    ins_id = last_insId + i * (self._data_adapter.slices_3d // batch_size + 1) + j
+                    save_dir = 'Train' if is_validate else 'Test'
+                    self._pre_visutil.visualize(ins_id, (imgs[0], labs[0], preds[0]), mode=save_dir)
+            # Calculate metrics if validate, write results if test.
+            if is_validate:
+                pred_3d = np.asarray(pred_3d)
+                lab_3d = np.asarray(lab_3d)
+                brats_1 = eva.BRATS_Complete(pred=pred_3d, label=lab_3d)
+                brats_2 = eva.BRATS_Core(pred=pred_3d, label=lab_3d)
+                brats_3 = eva.BRATS_Enhance(pred=pred_3d, label=lab_3d)
+                BRATSs.append([brats_1, brats_2, brats_3])
+                dice = []
+                for c in range(clazz_dim):
+                    cate_pred = pred_3d == c
+                    cate_lab = lab_3d == c
+                    dice.append(eva.DICE_Bi(pred=cate_pred, label=cate_lab))
+                DICEs.append(dice)
+            else:
+                pred_3d = np.asarray(pred_3d)
+                self._data_adapter.write_result(MHA_id=mha_id, result=pred_3d, name=str(i))
+
+        # Mean the metrics.
+        DICE = np.mean(np.asarray(DICEs), axis=0)   # [category]
+        BRATS = np.mean(np.asarray(BRATSs), axis=0)     # [3]
+
+        # Return the metrics.
+        return DICE, BRATS
+
 

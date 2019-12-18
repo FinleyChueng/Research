@@ -75,12 +75,13 @@ class BratsAdapter(Adapter):
         else:
             raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
 
-    def write_result(self, result, name, mode='Test'):
+    def write_result(self, MHA_id, result, name, mode='Test'):
         r'''
             Save the segmentation result in "MHA" form to the file system.
 
         -----------------------------------------------
         Parameters:
+            MHA_id: The id of corresponding MHA image.
             result: The segmentation of an image instance. That is,
                 a 2-D array.
             name: The file name of result.
@@ -102,11 +103,11 @@ class BratsAdapter(Adapter):
 
         # Return train or test pair according to the mode.
         if mode == 'Train':
-            self._train_brats.save_train_Itk(result)
+            self._train_brats.save_train_Itk(MHA_id, result, name='Finley_'+name)
         elif mode == 'Validate':
-            self._train_brats.saveItk(result, name='Finley_'+name)
+            self._train_brats.saveItk(MHA_id, result, name='Finley_'+name)
         elif mode == 'Test':
-            self._test_brats.saveItk(result, name='Finley_'+name)
+            self._test_brats.saveItk(MHA_id, result, name='Finley_'+name)
         else:
             raise ValueError('Unknown dataset mode: {} !!!'.format(mode))
         # Finish.
@@ -186,7 +187,7 @@ class BratsAdapter(Adapter):
 
     def __next_train_pair(self, batch_size):
         r'''
-            Return the train pair consisted of (image, label).
+            Return the train pair consisted of (image, label, clazz_weights, MHA_id, inst_id).
 
         --------------------------------------------------------------------
         Parameters:
@@ -195,7 +196,7 @@ class BratsAdapter(Adapter):
 
         ----------------------------------------------------------
         Return:
-            A tuple of (image, label).
+            A tuple of (image, label, clazz_weights, MHA_id, inst_id).
         '''
 
         # Indicates all angle are traversed. Switch to next image.
@@ -238,16 +239,16 @@ class BratsAdapter(Adapter):
 
         # Return the batch pair according to the batch size.
         if batch_size == 1:
-            # Shape: [width, height, modalities], [width, height, cls]
+            # Shape: [width, height, modalities], [width, height, cls], [category], scalar, scalar
             return four_modality[0], ground_truth[0], clazz_weights, (MHA_idx, inst_idx[0])
         else:
-            # Shape: [batches, width, height, modalities], [batches, width, height, cls]
+            # Shape: [batches, width, height, modalities], [batches, width, height, cls], [category], scalar, [batches]
             return four_modality, ground_truth, clazz_weights, (MHA_idx, inst_idx)
 
 
     def __next_test_pair(self, batch_size, validation):
         r'''
-            Return the test pair consisted of (image, label).
+            Return the test pair consisted of (image, label, MHA_id, inst_id).
 
         --------------------------------------------------------------------
         Parameters:
@@ -256,14 +257,14 @@ class BratsAdapter(Adapter):
 
         ----------------------------------------------------------
         Return:
-            A tuple of (image, label).
+            A tuple of (image, label, MHA_id, inst_id).
         '''
 
         # Get image, label and flag.
         if validation:
-            test_image, test_label = self._train_brats.next_test_batch(batch_size)
+            test_image, test_label, clazz_weights, MHA_idx, inst_idx = self._train_brats.next_test_batch(batch_size)
         else:
-            test_image, test_label = self._test_brats.next_test_batch(batch_size)
+            test_image, test_label, MHA_idx, inst_idx = self._test_brats.next_test_batch(batch_size)
 
         # Assign test image. Note the data type.
         four_modality = np.asarray(test_image, dtype=np.float32)
@@ -278,11 +279,19 @@ class BratsAdapter(Adapter):
 
         # Return the batch pair according to the batch size.
         if batch_size == 1:
-            # Shape: [width, height, modalities], [width, height, cls]
-            return four_modality[0], ground_truth[0]
+            if validation:
+                # Shape: [width, height, modalities], [width, height, cls], [category], scalar, scalar
+                return four_modality[0], ground_truth[0], clazz_weights, (MHA_idx, inst_idx[0])
+            else:
+                # Shape: [width, height, modalities], [width, height, cls], scalar, scalar
+                return four_modality[0], ground_truth[0], (MHA_idx, inst_idx[0])
         else:
-            # Shape: [batches, width, height, modalities], [batches, width, height, cls]
-            return four_modality, ground_truth
+            if validation:
+                # Shape: [batches, width, height, modalities], [batches, width, height, cls], [category], scalar, [batches]
+                return four_modality, ground_truth, clazz_weights, (MHA_idx, inst_idx)
+            else:
+                # Shape: [batches, width, height, modalities], [batches, width, height, cls], scalar, [batches]
+                return four_modality, ground_truth, (MHA_idx, inst_idx)
 
 
     def __normalize(self, src, upper):

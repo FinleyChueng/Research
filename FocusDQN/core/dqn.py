@@ -43,13 +43,14 @@ class DQN:
         '''
         raise NotImplementedError
 
-    def test(self, iteration, is_validate):
+    def test(self, iteration, is_validate, is_e2e):
         r'''
             Start to test the DQN agent in fixed epochs.
 
         Parameters:
             iteration: Indicates the iterations for one epoch in testing phrase.
             is_validate: Indicates whether it's "Validate" or real "Test".
+            is_e2e: Indicates whether it's "End-to-end" or "Customize" training.
         '''
         raise NotImplementedError
 

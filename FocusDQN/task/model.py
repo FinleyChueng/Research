@@ -1850,7 +1850,8 @@ class DqnAgent:
             tf.summary.scalar('NET_Loss', self._losses[name_space+'/NET_loss'])
             tf.summary.scalar('SEG_Loss', self._losses[name_space+'/SEG_loss'])
             tf.summary.scalar('DQN_Loss', self._losses[name_space+'/DQN_loss'])
-            tf.summary.scalar('Training_Reward', self._losses[name_space+'/DQN_Rewards'])
+            tf.summary.scalar('Training_Reward',
+                              tf.reduce_mean(tf.reduce_max(self._losses[name_space+'/DQN_Rewards'], axis=-1), axis=0))
 
             # Custom define some metric to show.
             rewards = net_util.placeholder_wrapper(self._summary, tf.float32, None, name='Reward')
@@ -1867,7 +1868,7 @@ class DqnAgent:
             # Get total summaries list.
             total_sumList = tf.get_collection(tf.GraphKeys.SUMMARIES)
             # Merge summaries for "Segmentation" model.
-            SEG_sums = ['SEG_Loss', 'DICE', 'BRATS_metric']
+            SEG_sums = ['SEG_Loss', 'DICE', 'BRATS']
             SEG_sumList = []
             for ts_tensor in total_sumList:
                 for ss_str in SEG_sums:
@@ -1876,7 +1877,7 @@ class DqnAgent:
             SEG_summaries = tf.summary.merge(SEG_sumList, name='SEG_Summaries')
             net_util.package_tensor(self._summary, SEG_summaries)
             # Merge summaries for "DQN" model.
-            DQN_sums = ['DQN_Loss', 'Reward', 'DICE', 'BRATS_metric']
+            DQN_sums = ['DQN_Loss', 'Reward', 'DICE', 'BRATS']
             DQN_sumList = []
             for ts_tensor in total_sumList:
                 for ds_str in DQN_sums:

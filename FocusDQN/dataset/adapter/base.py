@@ -27,13 +27,14 @@ class Adapter:
         '''
         raise NotImplementedError
 
-    def write_result(self, result, name, mode):
+    def write_result(self, instance_id, result, name, mode):
         r'''
             Write the result according to the requirement of dataset.
                 It usually save the result file in a special form.
 
         --------------------------------------------------------------------
         Parameters:
+            instance_id: The id used to distinguish the sample instance.
             result: The result data, usually a 3-D or 4-D array.
             name: The file name of result.
             mode: The dataset mode, indicating the save mode.

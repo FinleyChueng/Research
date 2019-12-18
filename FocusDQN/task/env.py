@@ -51,21 +51,17 @@ class Env:
 
 
 # ---------------------------------------------------------------------------
-# The two-stage segmentation environment. Which consists of "Segment" and
-#   "Focus" phrase.
+# The "Focus Environment". Which is "End-to-end" type.
+#   Directly use it is not recommended. Better to use the wrapper.
 # ---------------------------------------------------------------------------
 
-class FocusEnv:
+class FocusEnvCore:
     r'''
-        The task-specific environment. This one is a "Two-stage" environment, which
-            consists of "Segment" and "Focus" stage.
-
-        When in "Segment" stage, it will supply the segmentation result for given region.
-        When in "Focus" stage, it will calculate the next "Focus Bbox" coordinates for
-            precisely process.
+        The task-specific environment. This one is an "End-to-end" type.
+            It will generate the next "Focus Bounding-box" for each step.
     '''
 
-    def __init__(self, config, data_adapter):
+    def __init__(self, config, data_adapter, is_separate):
         r'''
             Initialization method for environment. Mainly to declare some
                 holder and initialize some config.
@@ -81,7 +77,6 @@ class FocusEnv:
         suit_width = conf_base.get('suit_width')
 
         # Data adapter.
-        self._verify_data(data_adapter, clazz_dim)
         self._adapter = data_adapter
 
         # Action quantity.
@@ -130,6 +125,30 @@ class FocusEnv:
         fx2_1px = 1 / image_width
         self._FAKE_BBOX = np.asarray([0.0, 0.0, fy2_1px, fx2_1px])  # [y1, x1, y2, x2]
 
+        # Get "Position Information" fusion method.
+        conf_cus = self._config['Custom']
+        pos_method = conf_cus.get('position_info', 'map')
+        # Declare the position information generation function, for convenient usage.
+        def gen_position_info(focus_bbox):
+            # The position information. Declaration according to config.
+            if pos_method == 'map':
+                pos_info = np.zeros([image_height, image_width], dtype=np.int64)
+                fy1, fx1, fy2, fx2 = focus_bbox.copy()
+                fy1 = int(round(image_height * fy1))
+                fx1 = int(round(image_width * fx1))
+                fy2 = int(round(image_height * fy2))
+                fx2 = int(round(image_width * fx2))
+                pos_info[fy1: fy2, fx1: fx2] = 1
+            elif pos_method == 'coord':
+                pos_info = focus_bbox.copy()
+            elif pos_method == 'w/o':
+                pos_info = None
+            else:
+                raise ValueError('Unknown position information fusion method !!!')
+            return pos_info
+        # Assign the holder for lately usage.
+        self._position_func = gen_position_info
+
         # The previous "Segmentation" result (real form).
         self._SEG_prev = None
 
@@ -146,7 +165,14 @@ class FocusEnv:
 
         # The process flag.
         self._finished = True   # finish current image
-        self._FB_opted = False     # whether optimized the "Focus Bbox" or not.
+        self._FB_opted = False  # whether optimized the "Focus Bbox" or not.
+
+        # "Separate Execution" related variables.
+        self._separate_execution = is_separate
+        self._exec_1st = False
+
+        # "Instance Id" for current processing image.
+        self._sample_id = -1
 
         # Finish initialization.
         return
@@ -168,6 +194,22 @@ class FocusEnv:
         return self._FAKE_BBOX.copy()
 
 
+    @property
+    def finished(self):
+        r'''
+            Whether the process of current image is finished or not.
+        '''
+        return self._finished
+
+
+    @property
+    def sample_id(self):
+        r'''
+            Get the sample id for current processing image.
+        '''
+        return self._sample_id
+
+
     def switch_phrase(self, p):
         r'''
             Switch to target phrase.
@@ -178,7 +220,7 @@ class FocusEnv:
         return
 
 
-    def reset(self, segment_func=None):
+    def reset(self, sample_id, segment_func=None):
         r'''
             Reset the environment. Mainly to reset the related parameters,
                 and switch to next image-label pair.
@@ -191,6 +233,12 @@ class FocusEnv:
         if not self._finished:
             raise Exception('The processing of current image is not yet finished, '
                             'please keep calling @Method{step} !!!')
+
+        # Check validity of parameters.
+        if not isinstance(sample_id, (int, np.int, np.int32, np.int64)) or sample_id < 0:
+            raise TypeError('The sample_id must be non-negative integer !!!')
+        if segment_func is not None and not callable(segment_func):
+            raise TypeError('The segment_func must be None or function !!!')
 
         # --------------------------- Reset some holders ---------------------------
         # Get detailed config parameters.
@@ -238,17 +286,24 @@ class FocusEnv:
         # Reset the process flag.
         self._finished = False
 
+        # Reset the "Step" state.
+        if self._separate_execution:
+            self._exec_1st = False
+
+        # Reset the "Sample Id" for current processing image of this environment.
+        self._sample_id = sample_id
+
         # -------------------------- Switch to next image-label pair. ---------------------------
         # Get the next image-label pair according to the phrase.
         if self._phrase == 'Train':
             # Get the next train sample pair.
             img, label, clazz_weights, data_arg = self._adapter.next_image_pair(mode='Train', batch_size=1)
         elif self._phrase == 'Validate':
-            # Get the next validate image-label pair.
-            img, label = self._adapter.next_image_pair(mode='Validate', batch_size=1)
+            # Get the next validate image-label pair, and additional arguments.
+            img, label, clazz_weights, data_arg = self._adapter.next_image_pair(mode='Validate', batch_size=1)
         elif self._phrase == 'Test':
-            # Get the next test image-label pair.
-            img, label = self._adapter.next_image_pair(mode='Test', batch_size=1)
+            # Get the next test image-label pair, and additional arguments.
+            img, label, data_arg = self._adapter.next_image_pair(mode='Test', batch_size=1)
         else:
             raise ValueError('Unknown phrase !!!')
 
@@ -258,10 +313,14 @@ class FocusEnv:
         # Get clazz weights from configuration here.
         conf_train = self._config['Training']
         self._clazz_weights = conf_train.get('clazz_weights', None)
+        # Reset clazz weights if needed.
+        if self._clazz_weights is None:     # do not config
+            if self._label is not None:     # train or validate
+                self._clazz_weights = clazz_weights
 
         # Record the process.
         if self._anim_recorder is not None:
-            self._anim_recorder.reload((img.copy(), label.copy() if label is not None else None))
+            self._anim_recorder.reload((sample_id, img.copy(), label.copy() if label is not None else None))
 
         # -------------------------- Optimize Part. ---------------------------
         # Optimize the initial "Focus Bbox" if specified.
@@ -311,43 +370,32 @@ class FocusEnv:
 
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
-            # Reset lazz weights if needed.
-            if self._clazz_weights is None:  # do not config
-                self._clazz_weights = clazz_weights
             # Return train samples.
             return img.copy(), label.copy(), self._clazz_weights.copy(), data_arg
         else:
-            # Return the label used to compute metric when in "Validate" phrase.
-            return label.copy() if label is not None else None
+            # Return the label used to compute metric when in "Validate" phrase. (And mha_id used to save results)
+            return label.copy() if label is not None else None, data_arg
 
 
-    def step(self, op_func):
+    def step_comp(self, op_func):
         r'''
-            Step (interact with) the environment. Here coz we build
-                the two-stage alternative model, so this function will
-                execute the "Segment" and "Focus" stage, alternatively.
+            Step (interact with) the environment. Here prepare inputs for "Focus Model",
+                and then get results from it, finally re-assign some holders for
+                "Step-by-step" logic. What's more, it will return the training elements.
 
         Parameters:
-            op_func: The operation function. It must be one of the
-                type listed likes below:
-                -----------------------------
-                1) segment_func: The segment function used in "Segment" stage,
-                which will be applied to generate the fusion result
-                of previous complete result and current region result.
-                -----------------------------
-                2) focus_func: The focus function used in "Focus" (and "Segment")
-                stage, which will be applied to select the next region
+            op_func: The operation function. Containing the both two of "Segment" and "Focus"
+                function. Which will be applied to generate the fusion result of previous
+                complete result, current region result and select the next region
                 to precisely segment.
-                -----------------------------
-                3) train_func: Containing the both two of "Segment" and "Focus"
-                function. Only used in "Training" phrase.
-                -----------------------------
 
         Return:
-            The tuple of (state, action, terminal, anchors, err, next_state, info)
-                when in "Train" phrase.
-            state: (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev)
-            next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur)
+            The tuple of (state, action, terminal, anchors, err, next_state, info) when in "Train" phrase.
+                state: (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev)
+                next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur)
+            The tuple of (terminal, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
+                ** Note that, the reward is None when in "Test" phrase, and the
+                SEG_cur will be used to write result in "Test" phrase.
             ---------------------------------------------------------------
             SEG_prev: The previous segmentation result.
             cur_bbox: The current bbox of image.
@@ -356,10 +404,12 @@ class FocusEnv:
             bboxes_prev: The current bboxes history.
             his_plen: The valid length of current history.
             comp_prev: The current "Complete Result".
+            ---------------------------------------------------------------
             action: The action executed of current time-step.
             terminal: Flag that indicates whether current image is finished.
             anchors: The anchors for current bbox.
             BBOX_errs: The "BBOX erros" vector for current anchors.
+            ---------------------------------------------------------------
             SEG_cur: Current segmentation result.
             focus_bbox: Next focus bbox of image.
             next_posinfo: The fake next position information.
@@ -367,16 +417,14 @@ class FocusEnv:
             bboxes_cur: The next bboxes history.
             his_clen: The valid length of next history.
             comp_cur: The next "Complete Result".
-            info: Extra information.(Optional, default is type.None)
             ---------------------------------------------------------------
-            The tuple of (terminal, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
-                ** Note that, the reward is None when in "Test" phrase, and the
-                    SEG_cur will be used to write result in "Test" phrase.
+            info: Extra information.(Optional, default is type.None)
         '''
 
-        # Check validity.
-        if not callable(op_func):
-            raise TypeError('The op_func must be a function !!!')
+        # Check whether should use this "Step" version.
+        if self._separate_execution:
+            raise Exception('One must call the @Method{step_1st} and @Method{step_2nd} instead'
+                            ' of this step version !!!')
 
         # Check the validity of execution logic.
         if self._finished:
@@ -385,38 +433,18 @@ class FocusEnv:
                             'You should call the @Method{reset} to reset the '
                             'environment to process the next image.')
 
+        # Check validity.
+        if not callable(op_func):
+            raise TypeError('The op_func must be a function !!!')
+
         # Get the detailed config.
-        conf_base = self._config['Base']
-        input_shape = conf_base.get('input_shape')
-        image_height, image_width = input_shape[1:3]
         conf_dqn = self._config['DQN']
         step_threshold = conf_dqn.get('step_threshold', 10)
-        conf_cus = self._config['Custom']
-        pos_method = conf_cus.get('position_info', 'map')
-
-        # The position information generation function, for convenient usage.
-        def gen_position_info(focus_bbox):
-            # The position information. Declaration according to config.
-            if pos_method == 'map':
-                pos_info = np.zeros([image_height, image_width], dtype=np.int64)
-                fy1, fx1, fy2, fx2 = focus_bbox.copy()
-                fy1 = int(round(image_height * fy1))
-                fx1 = int(round(image_width * fx1))
-                fy2 = int(round(image_height * fy2))
-                fx2 = int(round(image_width * fx2))
-                pos_info[fy1: fy2, fx1: fx2] = 1
-            elif pos_method == 'coord':
-                pos_info = focus_bbox.copy()
-            elif pos_method == 'w/o':
-                pos_info = None
-            else:
-                raise ValueError('Unknown position information fusion method !!!')
-            return pos_info
 
         # The current state.
         cur_bbox = self._focus_bbox.copy()
         SEG_prev = self._SEG_prev.copy()
-        position_info = gen_position_info(self._focus_bbox)
+        position_info = self._position_func(self._focus_bbox)
         acts_prev = np.asarray(self._ACTION_his.copy())
         bboxes_prev = np.asarray(self._BBOX_his.copy())
         his_plen = self._time_step
@@ -440,9 +468,9 @@ class FocusEnv:
         # Get the "Bbox Error" vector for all the candidates (anchors).
         BBOX_errs, infos = self._check_candidates(anchors)
 
-        # Execute the operation fucntion to conduct "Segment" and "Focus".
+        # Execute the operation function to conduct "Segment" and "Focus".
         if self._label is not None:
-            segmentation, COMP_res, action, reward = op_func((self._image.copy(),
+            segmentation, COMP_res, action, reward = op_func([(self._image.copy(),
                                                               SEG_prev.copy(),
                                                               position_info.copy(),
                                                               cur_bbox.copy(),
@@ -453,21 +481,27 @@ class FocusEnv:
                                                               anchors.copy(),
                                                               BBOX_errs.copy(),
                                                               self._label.copy(),
-                                                              self._clazz_weights.copy()),
+                                                              self._clazz_weights.copy())],
                                                              with_explore=self._phrase == 'Train',
                                                              with_reward=True)
-            reward = reward[action]
+            segmentation = segmentation[0]
+            COMP_res = COMP_res[0]
+            action = action[0]
+            reward = reward[0][action]
         else:
-            segmentation, COMP_res, action = op_func((self._image.copy(),
+            segmentation, COMP_res, action = op_func([(self._image.copy(),
                                                       SEG_prev.copy(),
                                                       position_info.copy(),
                                                       cur_bbox.copy(),
                                                       acts_prev.copy(),
                                                       bboxes_prev.copy(),
                                                       his_plen,
-                                                      comp_prev.copy()),
+                                                      comp_prev.copy())],
                                                      with_explore=False,
                                                      with_reward=False)
+            segmentation= segmentation[0]
+            COMP_res = COMP_res[0]
+            action = action[0]
             reward = None
 
         # Push forward the environment.
@@ -506,11 +540,260 @@ class FocusEnv:
         # Generate next state.
         SEG_cur = self._SEG_prev.copy()
         focus_bbox = self._focus_bbox.copy()
-        next_posinfo = gen_position_info(self._focus_bbox)
+        next_posinfo = self._position_func(self._focus_bbox)
         acts_cur = np.asarray(self._ACTION_his.copy())
         bboxes_cur = np.asarray(self._BBOX_his.copy())
         his_clen = self._time_step
         comp_cur = self._COMP_result.copy()
+
+        # Return sample when in "Train" phrase.
+        if self._phrase == 'Train':
+            return (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev), \
+                   action, terminal, anchors.copy(), BBOX_errs.copy(), \
+                   (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur), \
+                   reward, info
+        else:
+            # Return terminal flag (most important), and other information.
+            return terminal, (SEG_cur, reward, info)
+
+
+    def step_1st(self):
+        r'''
+            Step (interact with) the environment, this is only part one.
+            Here we prepare the inputs (state) data for the "Focus Model", including:
+                inherent input elements, and the candidates bounding-box.
+
+        Return:
+            state_elems: The elements fed for "Focus Model". Detailed as belows:
+                The tuple of (image, SEG_prev , position_info, cur_bbox, acts_prev, bboxes_prev, his_plen, comp_prev)
+                    when in "Test" phrase. (Only state elements)
+                When in "Train/Validate" phrase, the additional information (evaluation elements):
+                    (anchors, BBOX_errs, label, clazz_weights)
+                ---------------------------------------------------------------
+                image: The current processing image.
+                SEG_prev: The previous segmentation result.
+                position_info: The position information for current time-step.
+                cur_bbox: The current bbox of image.
+                acts_prev: The current actions history.
+                bboxes_prev: The current bboxes history.
+                his_plen: The valid length of current history.
+                comp_prev: The current "Complete Result".
+                ---------------------------------------------------------------
+                anchors: The anchors for current bbox.
+                BBOX_errs: The "BBOX erros" vector for current anchors.
+                label: The corresponding label for current image.
+                clazz_weights: The class weights for current image.
+            push_elems: The elements used to "Push Forward Environment". Detail as belows:
+                (anchors, BBOX_errs, infos)
+        '''
+
+        # Check whether should use this "Step" version.
+        if not self._separate_execution:
+            raise Exception('One must call the @Method{step_comp} instead'
+                            ' of this step version !!!')
+
+        # Check the validity of execution logic.
+        if self._finished:
+            raise Exception('The process of current image-label pair is finished, it '
+                            'can not be @Method{step_1st} any more !!! '
+                            'You should call the @Method{reset} to reset the '
+                            'environment to process the next image.')
+        if self._exec_1st:
+            raise Exception('Already execute the @Method{step_1st}, one must call the '
+                            '@Method{step_2nd} to go on !!!')
+
+        # The current state.
+        cur_bbox = self._focus_bbox.copy()
+        SEG_prev = self._SEG_prev.copy()
+        position_info = self._position_func(self._focus_bbox)
+        acts_prev = np.asarray(self._ACTION_his.copy())
+        bboxes_prev = np.asarray(self._BBOX_his.copy())
+        his_plen = self._time_step
+        comp_prev = self._COMP_result.copy()
+
+        # -------------------------------- Core Part -----------------------------
+        # Generate anchors.
+        conf_dqn = self._config['DQN']
+        anchor_scale = conf_dqn.get('anchors_scale', 2)
+        if self._act_dim == 9:
+            # "Restrict" mode.
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 9,
+                                    arg=self._RelDir_prev[-1])   # the newest relative direction.
+        elif self._act_dim == 17:
+            # "Whole Candidates" mode.
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 17)
+        else:
+            raise Exception('Unknown action dimension, there is no logic with respect to '
+                            'current act_dim, please check your code !!!')
+
+        # Get the "Bbox Error" vector for all the candidates (anchors).
+        BBOX_errs, infos = self._check_candidates(anchors)
+
+        # Update the "Step" state.
+        self._exec_1st = True
+
+        # Return the "State" (and "Evaluation") elements for lately usage (inferring model...).
+        if self._label is not None:
+            return (self._image.copy(), SEG_prev.copy(), position_info.copy(),
+                    cur_bbox.copy(), acts_prev.copy(), bboxes_prev.copy(), his_plen, comp_prev.copy(),
+                    anchors.copy(), BBOX_errs.copy(), self._label.copy(), self._clazz_weights.copy()), \
+                   (anchors.copy(), BBOX_errs.copy(), infos)
+        else:
+            return (self._image.copy(), SEG_prev.copy(), position_info.copy(),
+                    cur_bbox.copy(), acts_prev.copy(), bboxes_prev.copy(), his_plen, comp_prev.copy()), \
+                   (anchors.copy(), BBOX_errs.copy(), infos)
+
+
+    def step_2nd(self, results, state_elems, push_elems):
+        r'''
+            Step (interact with) the environment, this is only part two.
+            Here we get the results from "Focus Model", and later we re-assign some
+                holder for "Step-by-step" logic. What's more, it will return the
+                "State" and "Evaluation" elements for "Train" phrase, and return
+                "Terminal" flag when in "Test" phrase.
+
+        Parameters:
+            results: The results from "Focus Model", including the "Segmentation",
+                "Complete Result" and "Action" for current time-step.
+            state_elems: The state elements fed for "Focus Model". It will be used
+                to train the tensorflow model.
+            push_elems: The evaluation elements used to "Push Forward Environment".
+
+        Return:
+            The tuple of (state, action, terminal, anchors, err, next_state, info) when in "Train" phrase.
+                state: (SEG_prev, cur_bbox, position_info, acts_prev, bboxes_prev, his_plen, comp_prev)
+                next_state: (SEG_cur, focus_bbox, next_posinfo, acts_cur, bboxes_cur, his_clen, comp_cur)
+            The tuple of (terminal, SEG_cur, reward, info) when in "Validate" or "Test" phrase.
+                ** Note that, the reward is None when in "Test" phrase, and the
+                SEG_cur will be used to write result in "Test" phrase.
+            ---------------------------------------------------------------
+            SEG_prev: The previous segmentation result.
+            cur_bbox: The current bbox of image.
+            position_info: The position information for current time-step.
+            acts_prev: The current actions history.
+            bboxes_prev: The current bboxes history.
+            his_plen: The valid length of current history.
+            comp_prev: The current "Complete Result".
+            ---------------------------------------------------------------
+            action: The action executed of current time-step.
+            terminal: Flag that indicates whether current image is finished.
+            anchors: The anchors for current bbox.
+            BBOX_errs: The "BBOX erros" vector for current anchors.
+            ---------------------------------------------------------------
+            SEG_cur: Current segmentation result.
+            focus_bbox: Next focus bbox of image.
+            next_posinfo: The fake next position information.
+            acts_cur: The next actions history.
+            bboxes_cur: The next bboxes history.
+            his_clen: The valid length of next history.
+            comp_cur: The next "Complete Result".
+            ---------------------------------------------------------------
+            info: Extra information.(Optional, default is type.None)
+        '''
+
+        # Check whether should use this "Step" version.
+        if not self._separate_execution:
+            raise Exception('One must call the @Method{step_comp} instead'
+                            ' of this step version !!!')
+
+        # Check the validity of execution logic.
+        if self._finished:
+            raise Exception('The process of current image-label pair is finished, it '
+                            'can not be @Method{step_2nd} any more !!! '
+                            'You should call the @Method{reset} to reset the '
+                            'environment to process the next image.')
+        if not self._exec_1st:
+            raise Exception('Not yet execute the @Method{step_1st}, one must call it before calling '
+                            '@Method{step_2nd}!!!')
+
+        # Check validity of parameters.
+        if not isinstance(results, tuple):
+            raise TypeError('The results should be tuple !!!')
+        else:
+            if self._label is not None and len(results) != 4:
+                raise ValueError('The results should contain 4 elements when label is not None !!!')
+            elif self._label is None and len(results) != 3:
+                raise ValueError('The results should contain 3 elements when label is None !!!')
+            else:
+                pass
+        if not isinstance(state_elems, tuple):
+            raise TypeError('The state_elems should be tuple !!!')
+        else:
+            if self._label is not None and len(state_elems) != 12:
+                raise ValueError('The state_elems should contain 12 elements when label is not None !!!')
+            elif self._label is None and len(state_elems) != 8:
+                raise ValueError('The state_elems should contain 8 elements when label is None !!!')
+            else:
+                pass
+        if not isinstance(push_elems, tuple) or len(push_elems) != 3:
+            raise TypeError('The push_elems should be 3-elements tuple !!!')
+
+        # Get the detailed config.
+        conf_dqn = self._config['DQN']
+        step_threshold = conf_dqn.get('step_threshold', 10)
+
+        # Get the detailed elements from "State Elements".
+        if self._label is not None:
+            _1, SEG_prev, position_info, cur_bbox, acts_prev, bboxes_prev, his_plen, comp_prev, \
+                _9, _10, _11, _12 = state_elems
+        else:
+            _1, SEG_prev, position_info, cur_bbox, acts_prev, bboxes_prev, his_plen, comp_prev = state_elems
+
+        # Get detailed results for "Segment" and "Focus".
+        if self._label is not None:
+            segmentation, COMP_res, action, reward = results
+            reward = reward[action]
+        else:
+            segmentation, COMP_res, action = results
+            reward = None
+
+        # Get detailed elements from "Push Forward Elements".
+        anchors, BBOX_errs, infos = push_elems
+
+        # Push forward the environment.
+        dst_bbox, terminal, info = self._push_forward(action,
+                                                      candidates=anchors,
+                                                      BBOX_errs=BBOX_errs,
+                                                      step_thres=step_threshold,
+                                                      infos=infos)
+        # Append the current action into "Action History".
+        self._ACTION_his.append(action)
+        self._ACTION_his.popleft()
+        # Append the current bbox into "Bbox History".
+        self._BBOX_his.append(dst_bbox.copy())
+        self._BBOX_his.popleft()
+        # Append the current region result into "Complete Result".
+        self._COMP_result.append(COMP_res)
+        self._COMP_result.popleft()
+        # Iteratively re-assign the "Segmentation" result and "Focus Bbox".
+        self._SEG_prev = segmentation
+        self._focus_bbox = np.asarray(dst_bbox)
+        # -------------------------------- Core Part -----------------------------
+
+        # Record the process.
+        if self._anim_recorder is not None:
+            # "Segment" phrase.
+            self._anim_recorder.record(
+                (cur_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
+            # "Focus" phrase.
+            self._anim_recorder.record(
+                (cur_bbox.copy(), self._focus_bbox.copy(), reward, self._SEG_prev.copy(), info))  # Need copy !!!
+
+        # Reset the process flag when current process terminate.
+        if terminal:
+            self._finished = True
+
+        # Generate next state.
+        SEG_cur = self._SEG_prev.copy()
+        focus_bbox = self._focus_bbox.copy()
+        next_posinfo = self._position_func(self._focus_bbox)
+        acts_cur = np.asarray(self._ACTION_his.copy())
+        bboxes_cur = np.asarray(self._BBOX_his.copy())
+        his_clen = self._time_step
+        comp_cur = self._COMP_result.copy()
+
+        # Update the "Step" state.
+        self._exec_1st = False
 
         # Return sample when in "Train" phrase.
         if self._phrase == 'Train':
@@ -533,12 +816,9 @@ class FocusEnv:
         else:
             raise Exception('The processing of current image is not yet finish, '
                             'can not @Method{render} !!!')
-
         # Save the process into filesystem.
         if self._anim_recorder is not None:
             self._anim_recorder.show(mode=self._phrase, anim_type=anim_type)
-        # Release the memory.
-        gc.collect()
         return
 
 
@@ -827,51 +1107,595 @@ class FocusEnv:
 
 
 
-    def _verify_data(self, adapter, category):
+# ---------------------------------------------------------------------------
+# The wrapper for "Focus Environment", for the conveniently usage purpose.
+# ---------------------------------------------------------------------------
+
+class FocusEnvWrapper:
+    r'''
+        The wrapper for the "Focus Environment". It can be easily used.
+    '''
+
+    @staticmethod
+    def get_instance(config, data_adapter):
         r'''
-            Verify the data supported by adapter.
+            Get the specific wrapper instance for use.
+        '''
+        is_multi = config['Others'].get('environment_instances', 16) > 1
+        if is_multi:
+            print('### ~~~ Focus-Environment start in "Multi-instance" mode !!!')
+            return FocusEnvWrapper.FocusEnvMulti(config, data_adapter)
+        else:
+            print('### ~~~ Focus-Environment start in "Single-instance" mode !!!')
+            return FocusEnvWrapper.FocusEnvSingle(config, data_adapter)
+
+
+    class FocusEnv:
+        r'''
+            Abstract Wrapper.
         '''
 
-        # Firstly check the type of adapter.
-        if not isinstance(adapter, Adapter):
-            raise TypeError('The adapter should be @Type{Adapter} !!!')
+        def __init__(self, config, data_adapter):
+            r'''
+                Initialization.
+            '''
+            # Normal.
+            self._config = config
+            # Check validity of data adapter.
+            conf_base = self._config['Base']
+            clazz_dim = conf_base.get('classification_dimension')
+            self._verify_data(data_adapter, clazz_dim)
+            self._data_adapter = data_adapter
+            # Phrase.
+            self._phrase = None
+            # Instance id for each mode.
+            self._train_Iid = 0
+            self._validate_Iid = 0
+            self._test_Iid = 0
+            # Max iteration.
+            self._max_iter = -1
 
-        # Get a train image-label pair to verify.
-        img, label, clazz_weights, data_arg = adapter.next_image_pair(mode='Train', batch_size=1)
-        MHA_idx, inst_idx = data_arg
+        @property
+        def acts_dim(self):
+            r'''
+                Get the valid actions quantity (dimension) of real environment.
+            '''
+            raise NotImplementedError
 
-        # Check the type and dimension of the data.
-        if not isinstance(img, np.ndarray) or not isinstance(label, np.ndarray):
-            raise TypeError('The type of image and label both should be'
-                            '@Type{numpy.ndarray} !!!')
+        @property
+        def Fake_Bbox(self):
+            r'''
+                The fake "Bounding-Box" used in real environment.
+            '''
+            raise NotImplementedError
 
-        # Now we only support single image processing.
-        if img.ndim != 3 or label.ndim != 2:    # [width, height, modalities], [width, height]
-            raise Exception('The dimension of the image and label both should '
-                            'be 3 and 2 !!! img: {}, label: {}\n'
-                            'Now we only support single image processing ...'.format(img.ndim, label.ndim))
+        def instance_id(self, p):
+            r'''
+                Get the (newest) instance id of specific phrase of environment.
+            '''
+            if p == 'Train':
+                return self._train_Iid
+            elif p == 'Validate':
+                return self._validate_Iid
+            elif p == 'Test':
+                return self._test_Iid
+            else:
+                raise ValueError('Unknown phrase value !!!')
 
-        # Check the shape consistency.
-        shape_img = img.shape[:-1]
-        shape_label = label.shape
-        shape_consistency = shape_img == shape_label
-        if not shape_consistency:
-            raise Exception('The shape of image and label are not satisfy consistency !!! '
-                            'img: {}, label: {}'.format(shape_img, shape_label))
+        def reset_instance_id(self, p, ins_id):
+            r'''
+                Reset the (instance id) counter for specific phrase. It mainly
+                    used with the "restore from breakpoint" policy.
+            '''
+            if not isinstance(ins_id, (int, np.int, np.int32, np.int64)) or ins_id < 0:
+                raise ValueError('The ins_id must be non-negative integer !!!')
+            if p == 'Train':
+                self._train_Iid = ins_id
+            elif p == 'Validate':
+                self._validate_Iid = ins_id
+            elif p == 'Test':
+                self._test_Iid = ins_id
+            else:
+                raise ValueError('Unknown phrase value !!!')
+            return
 
-        # Check the validity of MHA_idx and inst_idx.
-        if not isinstance(MHA_idx, (int, np.int, np.int32, np.int64)):
-            raise TypeError('The MHA_idx must be of integer type !!!')
-        if not isinstance(inst_idx, (int, np.int, np.int32, np.int64)):
-            raise TypeError('The inst_idx must be of integer type !!!')
+        def switch_phrase(self, p, max_iter):
+            r'''
+                Switch to target phrase. And reset the max iteration.
+            '''
+            if p not in ['Train', 'Validate', 'Test']:
+                raise ValueError('Unknown phrase value !!!')
+            self._phrase = p
+            if not isinstance(max_iter, (int, np.int, np.int32, np.int64)) or max_iter <= 0:
+                raise ValueError('The max_iter must be None or positive integer !!!')
+            self._max_iter = max_iter
+            return
 
-        # Check the validity of clazz_weights.
-        if not isinstance(clazz_weights, np.ndarray) or \
-                        clazz_weights.ndim != 1 or \
-                        clazz_weights.shape[0] != category:
-            raise Exception('The class weights should be of 2-D numpy '
-                            'array with shape (?, category) !!!')
+        def roll_out(self, segment_func, op_func, anim_type):
+            r'''
+                Roll out environment one time-step. What's more, it will return the
+                    training elements for "Train" phrase, or just terminal flag for
+                    "Validate/Test" phrase.
 
-        # Finish.
-        return
+            Parameters:
+                segment_func: The function used to segmentation.
+                op_func: The function used to operate for step.
+                anim_type: The visualization type.
+
+            Return:
+                The tuple of (experiences, terminals, rewards, infos, reach_max, sample_ids, env_ids)
+                    when in "Train" phrase.
+                The tuple of (segmentations, labels, terminals, rewards, infos, reach_max, sample_ids, env_ids,
+                    data_identities) when in "Validate" or "Test" phrase.
+            '''
+            raise NotImplementedError
+
+        def _verify_data(self, adapter, category):
+            r'''
+                Verify the data supported by adapter.
+            '''
+
+            # Firstly check the type of adapter.
+            if not isinstance(adapter, Adapter):
+                raise TypeError('The adapter should be @Type{Adapter} !!!')
+
+            # Get a train image-label pair to verify.
+            img, label, clazz_weights, data_arg = adapter.next_image_pair(mode='Train', batch_size=1)
+            MHA_idx, inst_idx = data_arg
+
+            # Check the type and dimension of the data.
+            if not isinstance(img, np.ndarray) or not isinstance(label, np.ndarray):
+                raise TypeError('The type of image and label both should be'
+                                '@Type{numpy.ndarray} !!!')
+
+            # Now we only support single image processing.
+            if img.ndim != 3 or label.ndim != 2:  # [width, height, modalities], [width, height]
+                raise Exception('The dimension of the image and label both should '
+                                'be 3 and 2 !!! img: {}, label: {}\n'
+                                'Now we only support single image processing ...'.format(img.ndim, label.ndim))
+
+            # Check the shape consistency.
+            shape_img = img.shape[:-1]
+            shape_label = label.shape
+            shape_consistency = shape_img == shape_label
+            if not shape_consistency:
+                raise Exception('The shape of image and label are not satisfy consistency !!! '
+                                'img: {}, label: {}'.format(shape_img, shape_label))
+
+            # Check the validity of MHA_idx and inst_idx.
+            if not isinstance(MHA_idx, (int, np.int, np.int32, np.int64)):
+                raise TypeError('The MHA_idx must be of integer type !!!')
+            if not isinstance(inst_idx, (int, np.int, np.int32, np.int64)):
+                raise TypeError('The inst_idx must be of integer type !!!')
+
+            # Check the validity of clazz_weights.
+            if not isinstance(clazz_weights, np.ndarray) or \
+                            clazz_weights.ndim != 1 or \
+                            clazz_weights.shape[0] != category:
+                raise Exception('The class weights should be of 2-D numpy '
+                                'array with shape (?, category) !!!')
+
+            # Finish.
+            return
+
+
+    class FocusEnvSingle(FocusEnv):
+        r'''
+            Single instance implementation.
+        '''
+
+        def __init__(self, config, data_adapter):
+            r'''
+                Initialization.
+            '''
+            # Normal.
+            super().__init__(config, data_adapter)
+            # Declare the environment instance.
+            self._env_Ins = FocusEnvCore(config, data_adapter, is_separate=False)
+            # Sample Meta.
+            self._sample_meta = None
+            # Label holder and data identity.
+            self._label_holder = None
+            self._data_identity = None
+
+        @property
+        def acts_dim(self):
+            r'''
+                Get the valid actions quantity (dimension) of real environment.
+            '''
+            return self._env_Ins.acts_dim
+
+        @property
+        def Fake_Bbox(self):
+            r'''
+                The fake "Bounding-Box" used in real environment.
+            '''
+            return self._env_Ins.Fake_Bbox
+
+        def switch_phrase(self, p, max_iter):
+            r'''
+                Switch to target phrase. And reset the max iteration.
+                    Note that, one must switch the real environment at the same time.
+            '''
+            super().switch_phrase(p, max_iter)
+            self._env_Ins.switch_phrase(p=p)
+            return
+
+        def roll_out(self, segment_func, op_func, anim_type):
+            r'''
+                Roll out the environment for one time-step. It will return the experiences for
+                    training and some other variables.
+
+            Parameters:
+                segment_func: The function used to segmentation.
+                op_func: The function used to operate for step.
+                anim_type: The visualization type.
+
+            Return:
+                The tuple of (experiences, terminals, rewards, infos, reach_max, sample_ids, env_ids)
+                    when in "Train" phrase.
+                The tuple of (segmentations, labels, terminals, rewards, infos, reach_max, sample_ids, env_ids,
+                    data_identities) when in "Validate" or "Test" phrase.
+            '''
+
+            # Check the validity of execution logic.
+            if self._phrase is None or self._max_iter == -1:
+                raise Exception('One must call @Method{swith_phrase} once before calling '
+                                '@Method{roll_out} !!!')
+
+            # Check the validity of reach max iteration.
+            if self._phrase == 'Train':
+                miter_flag = self._train_Iid >= self._max_iter
+            elif self._phrase == 'Validate':
+                miter_flag = self._validate_Iid >= self._max_iter
+            elif self._phrase == 'Test':
+                miter_flag = self._test_Iid >= self._max_iter
+            else:
+                raise ValueError('Unknown phrase value !!!')
+            if miter_flag and self._env_Ins.finished:
+                raise Exception('Already reach the max iteration, can not be '
+                                'rolled out any more !!!')
+
+            # Different process logic according to the phrase.
+            if self._phrase == 'Train':
+                # Reset the environment.
+                if self._env_Ins.finished:
+                    image, label, clazz_weights, (mha_idx, inst_idx) = self._env_Ins.reset(sample_id=self._train_Iid,
+                                                                                           segment_func=segment_func)
+                    # Increase the instance id.
+                    self._train_Iid += 1
+                    # Determine the store type, and then determine the sample meta.
+                    conf_others = self._config['Others']
+                    store_type = conf_others.get('sample_type', 'light')
+                    if store_type == 'light':
+                        self._sample_meta = [mha_idx, inst_idx, clazz_weights]
+                    elif store_type == 'heave':
+                        self._sample_meta = [image, label, clazz_weights]
+                    else:
+                        raise ValueError('Unknown sample store type !!!')
+                # Step the environment.
+                state, action, terminal, anchors, BBOX_errs, \
+                    next_state, reward, info = self._env_Ins.step_comp(op_func=op_func)
+                # Package the experience.
+                if self._sample_meta is None:
+                    raise Exception('Invalid coding !!!')
+                experience = (tuple(self._sample_meta.copy()),
+                              state,
+                              action,
+                              terminal,
+                              anchors,
+                              BBOX_errs,
+                              next_state,
+                              reward)
+                # Render the environment.
+                if terminal:
+                    self._env_Ins.render(anim_type=anim_type)
+                # Check whether reach the max iteration or not.
+                reach_max = self._train_Iid >= self._max_iter and self._env_Ins.finished
+                # Return the experiences, terminals, rewards, infos, reach_max flag, sample_ids, env_ids.
+                return [experience], [terminal], [reward], [info], reach_max, [self._env_Ins.sample_id], [0]
+
+            # "Validate" or "Test" phrase.
+            else:
+                # Reset the environment.
+                if self._env_Ins.finished:
+                    if self._phrase == 'Validate':
+                        self._label_holder, self._data_identity = self._env_Ins.reset(
+                            sample_id=self._validate_Iid,
+                            segment_func=segment_func
+                        )
+                        # Increase the instance id.
+                        self._validate_Iid += 1
+                    else:
+                        self._label_holder, self._data_identity = self._env_Ins.reset(
+                            sample_id=self._test_Iid,
+                            segment_func=segment_func
+                        )
+                        # Increase the instance id.
+                        self._test_Iid += 1
+                label = self._label_holder.copy() if self._label_holder is not None else None
+                # Step the environment.
+                terminal, (segmentation, reward, info) = self._env_Ins.step_comp(op_func=op_func)
+                # Render the environment.
+                if terminal:
+                    self._env_Ins.render(anim_type=anim_type)
+                # Check whether reach the max iteration or not.
+                if self._phrase == 'Validate':
+                    reach_max = self._validate_Iid >= self._max_iter and self._env_Ins.finished
+                else:
+                    reach_max = self._test_Iid >= self._max_iter and self._env_Ins.finished
+                # Return the segmentations, labels, terminals, rewards, infos, reach_max,
+                #   sample_ids, env_ids, data_identities.
+                return [segmentation], [label], [terminal], [reward], [info], reach_max, \
+                       [self._env_Ins.sample_id], [0], [tuple(list(self._data_identity).copy())]
+
+
+    class FocusEnvMulti(FocusEnv):
+        r'''
+            Multi-instance implementation.
+        '''
+
+        def __init__(self, config, data_adapter):
+            r'''
+                Initialization.
+            '''
+            # Normal.
+            super().__init__(config, data_adapter)
+            # Declare the environment instance list.
+            conf_others = self._config['Others']
+            instance_num = conf_others.get('environment_instances', 16)
+            self._env_cands = []
+            # Sample Meta list.
+            self._sample_meta_cands = []
+            # Label holder list and data identities.
+            self._label_holder_cands = []
+            self._data_identity_cands = []
+            # Iteratively add.
+            for _ in range(instance_num):
+                self._env_cands.append(FocusEnvCore(config, data_adapter, is_separate=True))
+                self._sample_meta_cands.append(None)
+                self._label_holder_cands.append(None)
+                self._data_identity_cands.append(None)
+
+        @property
+        def acts_dim(self):
+            r'''
+                Get the valid actions quantity (dimension) of real environment.
+            '''
+            return self._env_cands[0].acts_dim
+
+        @property
+        def Fake_Bbox(self):
+            r'''
+                The fake "Bounding-Box" used in real environment.
+            '''
+            return self._env_cands[0].Fake_Bbox
+
+        def switch_phrase(self, p, max_iter):
+            r'''
+                Switch to target phrase. And reset the max iteration.
+                    Note that, one must switch the real environment at the same time.
+            '''
+            super().switch_phrase(p, max_iter)
+            for env in self._env_cands:
+                env.switch_phrase(p=p)
+            return
+
+        def roll_out(self, segment_func, op_func, anim_type):
+            r'''
+                Roll out the environment for one time-step. It will return the experiences for
+                    training and some other variables.
+
+            Parameters:
+                segment_func: The function used to segmentation.
+                op_func: The function used to operate for step.
+                anim_type: The visualization type.
+
+            Return:
+                The tuple of (experiences, terminals, rewards, infos, reach_max, sample_ids, env_ids)
+                    when in "Train" phrase.
+                The tuple of (segmentations, labels, terminals, rewards, infos, reach_max, sample_ids, env_ids,
+                    data_identities) when in "Validate" or "Test" phrase.
+            '''
+
+            # Check the validity of execution logic.
+            if self._phrase is None or self._max_iter == -1:
+                raise Exception('One must call @Method{swith_phrase} once before calling '
+                                '@Method{roll_out} !!!')
+
+            # Check the validity of reach max iteration.
+            if self._phrase == 'Train':
+                miter_flag = self._train_Iid >= self._max_iter
+            elif self._phrase == 'Validate':
+                miter_flag = self._validate_Iid >= self._max_iter
+            elif self._phrase == 'Test':
+                miter_flag = self._test_Iid >= self._max_iter
+            else:
+                raise ValueError('Unknown phrase value !!!')
+            for e in self._env_cands:
+                miter_flag = miter_flag and e.finished
+            if miter_flag:
+                raise Exception('Already reach the max iteration, can not be '
+                                'rolled out any more !!!')
+
+            # Different process logic according to the phrase.
+            if self._phrase == 'Train':
+                # The return elements.
+                experiences = []
+                terminals = []
+                rewards = []
+                infos = []
+                sample_ids = []
+                # step 01 elements.
+                state_elems = []
+                push_elems = []
+                exec_ids = []
+                # --------------------------- Reset and Step_1st ---------------------------
+                # Iteratively push forward (step 01) all the environment instance.
+                for eid, env in enumerate(self._env_cands):
+                    # Check whether fulfill the iteration or not. Do not assign new process if fulfilled.
+                    if self._train_Iid >= self._max_iter and env.finished:
+                        continue
+                    # Reset the environment.
+                    if env.finished:
+                        image, label, clazz_weights, (mha_idx, inst_idx) = env.reset(
+                            sample_id=self._train_Iid,
+                            segment_func=segment_func)
+                        # Increase the instance id.
+                        self._train_Iid += 1
+                        # Determine the store type, and then determine the sample meta.
+                        conf_others = self._config['Others']
+                        store_type = conf_others.get('sample_type', 'light')
+                        if store_type == 'light':
+                            self._sample_meta_cands[eid] = [mha_idx, inst_idx, clazz_weights]
+                        elif store_type == 'heave':
+                            self._sample_meta_cands[eid] = [image, label, clazz_weights]
+                        else:
+                            raise ValueError('Unknown sample store type !!!')
+                    # Step 1st the environment.
+                    state_e, push_e = env.step_1st()
+                    # Append related information.
+                    state_elems.append(state_e)
+                    push_elems.append(push_e)
+                    exec_ids.append(eid)
+                # --------------------------- Operation Function ---------------------------
+                # Execute the operation function to get the "Results".
+                results = op_func(state_elems, with_explore=True, with_reward=True)
+                # Re-package the results.
+                r_1, r_2, r_3, r_4 = results
+                r_all = []
+                for ri_1, ri_2, ri_3, ri_4 in zip(r_1, r_2, r_3, r_4):
+                    r_all.append((ri_1, ri_2, ri_3, ri_4))
+                results = r_all
+                # --------------------------- Step_2nd ---------------------------
+                # Iteratively get results and re-assign (step 02) for all the environment instance.
+                for ex_id, r, se, pe in zip(exec_ids, results, state_elems, push_elems):
+                    # Step 2nd the environment.
+                    state, action, terminal, anchors, BBOX_errs, \
+                        next_state, reward, info = self._env_cands[ex_id].step_2nd(results=r,
+                                                                                   state_elems=se,
+                                                                                   push_elems=pe)
+                    # Package the experience.
+                    if self._sample_meta_cands[ex_id] is None:
+                        raise Exception('Invalid coding !!!')
+                    exp = (tuple(self._sample_meta_cands[ex_id].copy()),
+                           state,
+                           action,
+                           terminal,
+                           anchors,
+                           BBOX_errs,
+                           next_state,
+                           reward)
+                    # Do some operation and render the environment.
+                    if terminal:
+                        self._env_cands[ex_id].render(anim_type=anim_type)
+                    # Package the each elements into batch.
+                    experiences.append(exp)
+                    terminals.append(terminal)
+                    rewards.append(reward)
+                    infos.append(info)
+                    sample_ids.append(self._env_cands[ex_id].sample_id)
+                # Check whether reach the max iteration or not.
+                reach_max = self._train_Iid >= self._max_iter
+                for e in self._env_cands:
+                    reach_max = reach_max and e.finished
+                # Return the experience, terminal, reward, info, reach_max flag, sample_ids, env_ids.
+                return experiences, terminals, rewards, infos, reach_max, sample_ids, exec_ids
+
+            # "Validate" or "Test" phrase.
+            else:
+                # The return elements.
+                segmentations = []
+                labels = []
+                data_identities = []
+                terminals = []
+                rewards = []
+                infos = []
+                sample_ids = []
+                # step 01 elements.
+                state_elems = []
+                push_elems = []
+                exec_ids = []
+                # --------------------------- Reset and Step_1st ---------------------------
+                # Iteratively push forward all the environment instance.
+                for eid, env in enumerate(self._env_cands):
+                    # Check whether fulfill the iteration or not. Do not assign new process if fulfilled.
+                    if self._phrase == 'Validate':
+                        if self._validate_Iid >= self._max_iter and env.finished:
+                            continue
+                    else:
+                        if self._test_Iid >= self._max_iter and env.finished:
+                            continue
+                    # Reset the environment.
+                    if env.finished:
+                        if self._phrase == 'Validate':
+                            self._label_holder_cands[eid], self._data_identity_cands[eid] = env.reset(
+                                sample_id=self._validate_Iid,
+                                segment_func=segment_func
+                            )
+                            # Increase the instance id.
+                            self._validate_Iid += 1
+                        else:
+                            self._label_holder_cands[eid], self._data_identity_cands[eid] = env.reset(
+                                sample_id=self._test_Iid,
+                                segment_func=segment_func
+                            )
+                            # Increase the instance id.
+                            self._test_Iid += 1
+                    # Package label and data identity into batch.
+                    lab = self._label_holder_cands[eid].copy() if self._label_holder_cands[eid] is not None else None
+                    labels.append(lab)
+                    data_id = tuple(list(self._data_identity_cands[eid]).copy()) \
+                        if self._data_identity_cands[eid] is not None else None
+                    data_identities.append(data_id)
+                    # Step 1st the environment.
+                    state_e, push_e = env.step_1st()
+                    # Append related information.
+                    state_elems.append(state_e)
+                    push_elems.append(push_e)
+                    exec_ids.append(eid)
+                # --------------------------- Operation Function ---------------------------
+                # Execute the operation function to get the "Results".
+                results = op_func(state_elems, with_explore=False, with_reward=self._phrase=='Validate')
+                # Re-package the results.
+                if self._phrase == 'Validate':
+                    r_1, r_2, r_3, r_4 = results
+                    r_all = []
+                    for ri_1, ri_2, ri_3, ri_4 in zip(r_1, r_2, r_3, r_4):
+                        r_all.append((ri_1, ri_2, ri_3, ri_4))
+                    results = r_all
+                else:
+                    r_1, r_2, r_3 = results
+                    r_all = []
+                    for ri_1, ri_2, ri_3 in zip(r_1, r_2, r_3):
+                        r_all.append((ri_1, ri_2, ri_3))
+                    results = r_all
+                # --------------------------- Step_2nd ---------------------------
+                # Iteratively get results and re-assign (step 02) for all the environment instance.
+                for ex_id, r, se, pe in zip(exec_ids, results, state_elems, push_elems):
+                    # Step 2nd the environment.
+                    terminal, (SEG_cur, reward, info) = self._env_cands[ex_id].step_2nd(results=r,
+                                                                                        state_elems=se,
+                                                                                        push_elems=pe)
+                    # Render the environment.
+                    if terminal:
+                        self._env_cands[ex_id].render(anim_type=anim_type)
+                    # Package the each elements into batch.
+                    segmentations.append(SEG_cur)
+                    terminals.append(terminal)
+                    rewards.append(reward)
+                    infos.append(info)
+                    sample_ids.append(self._env_cands[ex_id].sample_id)
+                # Check whether reach the max iteration or not.
+                if self._phrase == 'Validate':
+                    reach_max = self._validate_Iid >= self._max_iter
+                else:
+                    reach_max = self._test_Iid >= self._max_iter
+                for e in self._env_cands:
+                    reach_max = reach_max and e.finished
+                # Return the segmentations, labels, terminals, rewards, infos, reach_max,
+                #   sample_ids, env_ids, data_identities.
+                return segmentations, labels, terminals, rewards, infos, reach_max, \
+                    sample_ids, exec_ids, data_identities
+
 

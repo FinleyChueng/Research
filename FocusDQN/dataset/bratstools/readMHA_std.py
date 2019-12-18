@@ -34,6 +34,9 @@ class BRATS2015:
         self.test_batch_count = test_batch_count
         self.train = train
         self.test = test
+        # Clazz weights.
+        self.train_clazz_weights = None
+        self.test_clazz_weights = None
 
         if test:
             path = os.listdir(test_path)
@@ -217,7 +220,6 @@ class BRATS2015:
             self.train_batch_index = 0
             self.next_test_MHA()
             self.test_batch_index = 0
-        self.saveArr = None
 
     def __readimg__(self, mha_path, isot=False):
         mha = sitk.ReadImage(mha_path)
@@ -276,10 +278,25 @@ class BRATS2015:
         # if not self.test:
         #     self.arr_test_ot = to_categorical(self.arr_test_ot, num_classes=5)
 
+        # clazz weights.
+        if not self.test:
+            ot_samples = np.eye(5)[self.arr_train_ot]
+            clazz_sta = np.sum(ot_samples, axis=(1, 2))  # [b, cls]
+            clazz_sta = np.asarray(clazz_sta > 0, dtype=np.float32)  # [b, cls]
+            clazz_sta = np.sum(clazz_sta, axis=0)  # [cls]
+            clazz_weights = np.sum(clazz_sta) / clazz_sta  # [cls]
+            clazz_weights = np.where(clazz_sta == 0,
+                                     np.zeros_like(clazz_weights),
+                                     clazz_weights)  # [cls]
+            clazz_weights /= np.sum(clazz_weights)
+            self.test_clazz_weights = clazz_weights
+
         self.test_batch_count += 1
 
     def next_test_batch(self, batch_size):
         endbatch = np.shape(self.arr_test_imgs)[0]
+        # MHA id.
+        MHA_idx = self.test_batch_count - 1
         # get batch.
         if self.test_batch_index + batch_size >= endbatch:
             img = self.arr_test_imgs[self.test_batch_index:endbatch]
@@ -287,6 +304,7 @@ class BRATS2015:
                 label = self.arr_test_ot[self.test_batch_index:endbatch]
             else:
                 label = None
+            inst_idx = np.arange(self.test_batch_index, endbatch)
             self.test_batch_index = 0
             self.next_test_MHA()
         else:
@@ -295,13 +313,14 @@ class BRATS2015:
                 label = self.arr_test_ot[self.test_batch_index:self.test_batch_index + batch_size]
             else:
                 label = None
+            inst_idx = np.arange(self.test_batch_index, self.test_batch_index + batch_size)
             self.test_batch_index += batch_size
-        # return image and label.
-        return img, label
+        if self.test:
+            return img, label, MHA_idx, inst_idx
+        else:
+            return img, label, self.test_clazz_weights.copy(), MHA_idx, inst_idx
 
     def next_train_MHA(self):
-        # if self.train_batch_count > self.train_batch:
-
         self.train_batch_count = self.train_batch_count % self.train_batch
 
         # print(self.OT_path[self.train_batch_count])
@@ -338,14 +357,9 @@ class BRATS2015:
         # self.arr_train_ot[index]
         # self.arr_train_imgs[index]
 
-        # print(self.arr_train_imgs.shape)
-        self.train_batch_count += 1
-
-    def next_train_batch(self, batch_size):
-        endbatch = np.shape(self.arr_train_ot)[0]
         # clazz weights.
         ot_samples = np.eye(5)[self.arr_train_ot]
-        clazz_sta = np.sum(ot_samples, axis=(1, 2))     # [b, cls]
+        clazz_sta = np.sum(ot_samples, axis=(1, 2))  # [b, cls]
         clazz_sta = np.asarray(clazz_sta > 0, dtype=np.float32)  # [b, cls]
         clazz_sta = np.sum(clazz_sta, axis=0)  # [cls]
         clazz_weights = np.sum(clazz_sta) / clazz_sta  # [cls]
@@ -353,6 +367,13 @@ class BRATS2015:
                                  np.zeros_like(clazz_weights),
                                  clazz_weights)  # [cls]
         clazz_weights /= np.sum(clazz_weights)
+        self.train_clazz_weights = clazz_weights
+
+        # print(self.arr_train_imgs.shape)
+        self.train_batch_count += 1
+
+    def next_train_batch(self, batch_size):
+        endbatch = np.shape(self.arr_train_ot)[0]
         # MHA id.
         MHA_idx = self.train_batch_count - 1
         # get batch.
@@ -369,53 +390,46 @@ class BRATS2015:
             self.train_batch_index += batch_size
 
         # return
-        return img, label, clazz_weights, MHA_idx, inst_idx
+        return img, label, self.train_clazz_weights.copy(), MHA_idx, inst_idx
 
 
-    def saveItk(self, array, name):
+    def saveItk(self, MHA_id, array, name):
         array = np.asarray(array)
-        if self.saveArr is not None:
-            self.saveArr = np.concatenate([self.saveArr, array], axis=0)
+        if array.ndim != 3 or array.shape[-1] != 155:
+            raise Exception('The array\'s last dimension must be 155 !!!')
+        img = sitk.GetImageFromArray(array)
+        if self.test:
+            mhaIsTest = 'testing'
+            path = self.Flair_path[MHA_id]
+            # path = self.Flair_path[self.test_batch_count - 2]
         else:
-            self.saveArr = array
-        if self.test_batch_index == 0:
-            # print(np.shape(self.saveArr))
-            img = sitk.GetImageFromArray(self.saveArr)
-            if self.test:
-                mhaIsTest = 'testing'
-                path = self.Flair_path[self.test_batch_count - 2]
-            else:
-                mhaIsTest = 'training'
-                path = self.OT_path[self.test_batch_count + self.train_batch - 2]
-                truth_name = 'VSD.InstanceFCN_Truth' + re.findall(r"\.\d+\.", path)[0] + 'mha'
-                mhaGroundTruthPath = 'mhaSavePath/mha_ground_truth/'
-                if not os.path.exists(mhaGroundTruthPath):
-                    os.makedirs(mhaGroundTruthPath)
-                mhaGroundTruthFile = os.path.abspath(mhaGroundTruthPath) + "/" + truth_name
-                if not os.path.exists(mhaGroundTruthFile):
-                    shutil.copy(path, mhaGroundTruthFile)
-            save_name = 'VSD.CalDQN_' + name + re.findall(r"\.\d+\.", path)[0] + 'mha'
-            mhaTrainFuseSavePath = 'mhaSavePath/' + mhaIsTest + '_mha_' + '_' + name + '/'
-            if not os.path.exists(mhaTrainFuseSavePath):
-                os.makedirs(mhaTrainFuseSavePath)
-            sitk.WriteImage(sitk.Cast(img, sitk.sitkUInt8), os.path.join(mhaTrainFuseSavePath, save_name))
-            self.saveArr = None
+            mhaIsTest = 'training'
+            path = self.OT_path[MHA_id + self.train_batch]
+            # path = self.OT_path[self.test_batch_count + self.train_batch - 2]
+            truth_name = 'VSD.InstanceFCN_Truth' + re.findall(r"\.\d+\.", path)[0] + 'mha'
+            mhaGroundTruthPath = 'mhaSavePath/mha_ground_truth/'
+            if not os.path.exists(mhaGroundTruthPath):
+                os.makedirs(mhaGroundTruthPath)
+            mhaGroundTruthFile = os.path.abspath(mhaGroundTruthPath) + "/" + truth_name
+            if not os.path.exists(mhaGroundTruthFile):
+                shutil.copy(path, mhaGroundTruthFile)
+        save_name = 'VSD.CalDQN_' + name + re.findall(r"\.\d+\.", path)[0] + 'mha'
+        mhaTrainFuseSavePath = 'mhaSavePath/' + mhaIsTest + '_mha_' + '_' + name + '/'
+        if not os.path.exists(mhaTrainFuseSavePath):
+            os.makedirs(mhaTrainFuseSavePath)
+        sitk.WriteImage(sitk.Cast(img, sitk.sitkUInt8), os.path.join(mhaTrainFuseSavePath, save_name))
 
 
-    def save_train_Itk(self, array):
+    def save_train_Itk(self, MHA_id, array, name):
         array = np.asarray(array)
-        if self.saveArr is not None:
-            self.saveArr = np.concatenate([self.saveArr, array], axis=0)
-        else:
-            self.saveArr = array
-        if self.train_batch_index == 0:
-            # print(np.shape(self.saveArr))
-            img = sitk.GetImageFromArray(self.saveArr)
-            path = self.OT_path[self.train_batch_count - 2]
-            name = 'VSD.CalDQN' + re.findall(r"\.\d+\.", path)[0] + 'mha'
-            shutil.copy(path, 'mha_ground_truth/' + name)
-            sitk.WriteImage(sitk.Cast(img, sitk.sitkUInt8), os.path.join('mhaSavePath/', name), )
-            self.saveArr = None
+        if array.ndim != 3 or array.shape[-1] != 155:
+            raise Exception('The array\'s last dimension must be 155 !!!')
+        img = sitk.GetImageFromArray(self.saveArr)
+        path = self.OT_path[MHA_id]
+        # path = self.OT_path[self.train_batch_count - 2]
+        name = 'VSD.CalDQN_' + name + re.findall(r"\.\d+\.", path)[0] + 'mha'
+        shutil.copy(path, 'mha_ground_truth/' + name)
+        sitk.WriteImage(sitk.Cast(img, sitk.sitkUInt8), os.path.join('mhaSavePath/', name), )
 
 
     def precise_find_train_sample(self, mha_idx, inst_idx):

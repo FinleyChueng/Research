@@ -26,20 +26,14 @@ class MaskVisual:
         # The file name mask used in "Train" phrase.
         self._train_anim_fn_mask = vision_path + 'train/' + name_scope + '-anim-%05d.'
         self._train_result_fn_mask = vision_path + 'train/' + name_scope + '-result-%05d.jpg'
-        # The index of current animation used in "Train" phrase.
-        self._train_vision_index = -1
 
         # The file name mask used in "Validate" phrase.
         self._val_anim_fn_mask = vision_path + 'validate/' + name_scope + '-anim-%05d.'
         self._val_result_fn_mask = vision_path + 'validate/' + name_scope + 'result-%05d.jpg'
-        # The index of current animation used in "Validate" phrase.
-        self._val_vision_index = -1
 
         # The file name mask used in "Inference" phrase.
         self._test_anim_fn_mask = vision_path + 'test/' + name_scope + '-anim-%05d.'
         self._test_result_fn_mask = vision_path + 'test/' + name_scope + '-result-%05d.jpg'
-        # The index of current animation used in "Inference" phrase.
-        self._test_vision_index = -1
 
         # Visualization parameters.
         self._fps = fps
@@ -112,18 +106,15 @@ class PictureVisual:
 
         # The file name mask used in "Train" phrase.
         self._train_result_fn_mask = file_path + 'train/' + name_scope + '-result-%05d.jpg'
-        self._train_vision_index = -1
         # The file name mask used in "Validate" phrase.
         self._val_result_fn_mask = file_path + 'validate/' + name_scope + '-result-%05d.jpg'
-        self._val_vision_index = -1
         # The file name mask used in "Inference" phrase.
         self._test_result_fn_mask = file_path + 'test/' + name_scope + '-result-%05d.jpg'
-        self._test_vision_index = -1
         # Finish.
         return
 
 
-    def visualize(self, data, mode):
+    def visualize(self, inst_id, data, mode):
         r'''
             Visualize the data, that is, save the data in picture-form in file system.
         '''
@@ -155,14 +146,11 @@ class PictureVisual:
 
         # Specify the saving path.
         if mode == 'Train':
-            self._train_vision_index += 1
-            result_file_name = self._train_result_fn_mask % self._train_vision_index
+            result_file_name = self._train_result_fn_mask % inst_id
         elif mode == 'Validate':
-            self._val_vision_index += 1
-            result_file_name = self._val_result_fn_mask % self._val_vision_index
+            result_file_name = self._val_result_fn_mask % inst_id
         elif mode == 'Test':
-            self._test_vision_index += 1
-            result_file_name = self._test_result_fn_mask % self._test_vision_index
+            result_file_name = self._test_result_fn_mask % inst_id
         else:
             raise ValueError('Unknown mode value !!!')
         # Save the result.
@@ -295,6 +283,7 @@ class MaskVisualVMPY(MaskVisual):
         self._t2 = None
         self._f = None
         self._label = None
+        self._instance_id = None
         # The result categories.
         self._res_cate = result_categories
 
@@ -337,12 +326,20 @@ class MaskVisualVMPY(MaskVisual):
         self._act_pos_history.clear()
 
         # Check validity.
-        if not isinstance(origin, tuple) or len(origin) != 2:
-            raise TypeError('The origin must be a tuple containing 2 element !!!')
+        if not isinstance(origin, tuple) or len(origin) != 3:
+            raise TypeError('The origin must be a tuple containing 3 element !!!')
+
+        # Get the instance id.
+        inst_id = origin[0]
+        # Check the validity of origin[1].
+        if not isinstance(inst_id, (int, np.int, np.int32, np.int64)) or inst_id < 0:
+            raise TypeError('The origin[0] must be non-negative integer !!!')
+        # Assign.
+        self._instance_id = inst_id
 
         # Get the holders.
-        modalities = origin[0]
-        # Check the validity of origin[0].
+        modalities = origin[1]
+        # Check the validity of origin[1].
         if not isinstance(modalities, np.ndarray):
             raise TypeError('The origin[0] must be of @Type{numpy.ndarray} !!!')
         else:
@@ -355,14 +352,14 @@ class MaskVisualVMPY(MaskVisual):
         self._t2 = self._normalization(modalities[:, :, 2], self._normal_value)
         self._f = self._normalization(modalities[:, :, 3], self._normal_value)
 
-        # Check the validity of origin[1].
-        if origin[1] is None:
+        # Check the validity of origin[2].
+        if origin[2] is None:
             pass
         else:
-            if not isinstance(origin[1], np.ndarray) or origin[1].ndim != 2:
-                raise TypeError('The origin[1] must be None or 2-D array (@Type{numpy.ndarray}) !!!')
+            if not isinstance(origin[2], np.ndarray) or origin[2].ndim != 2:
+                raise TypeError('The origin[2] must be None or 2-D array (@Type{numpy.ndarray}) !!!')
         # Reset the label and gradient image.
-        lab = origin[1]
+        lab = origin[2]
         if lab is None:
             lab = np.zeros((self._image_height, self._image_width), dtype=np.int64)
         self._label = self._normalization(lab, self._normal_value, max_val=self._res_cate)
@@ -578,30 +575,20 @@ class MaskVisualVMPY(MaskVisual):
         if len(self._act_pos_history) == 0:
             raise Exception('Nothing to show !!! One must call the @Method{record} before calling @Method{show}')
 
-        # Auto-increase the index of animation file.
-        if mode == 'Train':
-            self._train_vision_index += 1
-        elif mode == 'Validate':
-            self._val_vision_index += 1
-        elif mode == 'Test':
-            self._test_vision_index += 1
-        else:
-            raise ValueError('Unknown mode value !!!')
-
         # Calculate the duration of current animation.
         duration = len(self._act_pos_history) / self._fps
 
         # Record animation if enabled.
-        if anim_type is not None:
+        if anim_type in ['gif', 'video']:
             # Generate the animation using defined frame-generation method.
             a1 = mpy.VideoClip(self._make_frame, duration=duration)
             # Specify the saving path.
             if mode == 'Train':
-                filename = self._train_anim_fn_mask % self._train_vision_index
+                filename = self._train_anim_fn_mask % self._instance_id
             elif mode == 'Validate':
-                filename = self._val_anim_fn_mask % self._val_vision_index
+                filename = self._val_anim_fn_mask % self._instance_id
             elif mode == 'Test':
-                filename = self._test_anim_fn_mask % self._test_vision_index
+                filename = self._test_anim_fn_mask % self._instance_id
             else:
                 raise ValueError('Unknown mode value !!!')
             # Save the animation (GIF) into file system.
@@ -614,19 +601,21 @@ class MaskVisualVMPY(MaskVisual):
             else:
                 raise ValueError('Unknown animation type !!!')
 
-        # Get result.
-        result = self._make_frame(duration - 1.0/self._fps)
-        # Specify the saving path.
-        if mode == 'Train':
-            result_file_name = self._train_result_fn_mask % self._train_vision_index
-        elif mode == 'Validate':
-            result_file_name = self._val_result_fn_mask % self._val_vision_index
-        elif mode == 'Test':
-            result_file_name = self._test_result_fn_mask % self._test_vision_index
-        else:
-            raise ValueError('Unknown mode value !!!')
-        # Save the result.
-        cv2.imwrite(result_file_name, result)
+        # Record the picture if enabled.
+        if anim_type in ['pic']:
+            # Get result.
+            result = self._make_frame(duration - 1.0/self._fps)
+            # Specify the saving path.
+            if mode == 'Train':
+                result_file_name = self._train_result_fn_mask % self._instance_id
+            elif mode == 'Validate':
+                result_file_name = self._val_result_fn_mask % self._instance_id
+            elif mode == 'Test':
+                result_file_name = self._test_result_fn_mask % self._instance_id
+            else:
+                raise ValueError('Unknown mode value !!!')
+            # Save the result.
+            cv2.imwrite(result_file_name, result)
 
         # Finish.
         return
