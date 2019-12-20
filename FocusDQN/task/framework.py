@@ -139,20 +139,24 @@ class DeepQNetwork(DQN):
 
 
     # num_epochs: train epochs
-    def train(self, epochs, max_iteration):
+    def train(self, epochs, max_instances):
         r'''
             The "Training" phrase. Train the whole model many times.
 
         Parameters:
             epochs: Indicates the total epochs that whole model should train.
-            max_iteration: Specify the max iteration of one epoch.
+            max_instances: Specify the max instances of one epoch.
         '''
 
         # Check validity.
-        if not isinstance(epochs, int) or not isinstance(max_iteration, int):
-            raise TypeError('The epochs and max_iteration must be integer !!!')
-        if epochs <= 0 or max_iteration <= 0:
-            raise ValueError('The epochs and iteration should be positive !!!')
+        if not isinstance(epochs, (int, np.int, np.int32, np.int64)) or \
+                not isinstance(max_instances, (int, np.int, np.int32, np.int64)):
+            raise TypeError('The epochs and max_instances must be integer !!!')
+        if epochs <= 0 or max_instances <= 0:
+            raise ValueError('The epochs and max_instances should be positive !!!')
+
+        # Compute the max iterations from max instances.
+        max_iteration = max_instances * self._data_adapter.slices_3d
 
         # Get config.
         conf_train = self._config['Training']
@@ -180,9 +184,12 @@ class DeepQNetwork(DQN):
         total_turns = (epochs - pre_epochs) * max_iteration
         epsilon_book = []
         for k in epsilon_dict.keys():
-            iter = int(float(k) * total_turns)
-            epsilon_book.append((iter, epsilon_dict[k]))
+            ep_iter = int(float(k) * total_turns)
+            epsilon_book.append((ep_iter, epsilon_dict[k]))
         print('### --> Epsilon book: {}'.format(epsilon_book))
+
+        # Compute the steps of single instance when in "Pre-training" phrase.
+        pre_single_instance_steps = int(np.ceil(self._data_adapter.slices_3d / batch_size))
 
         # ---------------- Pre-train the "Segmentation" branch (model). ----------------
         print('\n\nPre-training the SEGMENTATION model !!!')
@@ -190,7 +197,9 @@ class DeepQNetwork(DQN):
         if restore_from_bp:
             # Compute last iter.
             pre_step = int(self._pre_step.eval(self._sess))
-            last_iter = pre_step * batch_size
+            pre_complete_instance_iters = (pre_step // pre_single_instance_steps) * self._data_adapter.slices_3d
+            pre_remain_iters = (pre_step % pre_single_instance_steps) * batch_size
+            last_iter = pre_complete_instance_iters + pre_remain_iters
             # Compute the start epoch and iteration.
             if last_iter < pre_epochs * max_iteration:
                 start_epoch = last_iter // max_iteration
@@ -204,8 +213,13 @@ class DeepQNetwork(DQN):
         for epoch in range(start_epoch, pre_epochs):
             # Reset the start position of iteration.
             self._data_adapter.reset_position(start_iter)
+            # Compute the start loop and max loops using the {start_pos, start_epoch} and {max_epoch}.
+            start_instance = start_iter // self._data_adapter.slices_3d
+            start_ins_index = start_iter % self._data_adapter.slices_3d
+            start_loop = start_instance * pre_single_instance_steps + start_ins_index // batch_size
+            max_loop = max_instances * pre_single_instance_steps
             # Start training.
-            self._customize_pretrain(max_iteration, start_iter)
+            self._customize_pretrain(cur_epoch=epoch, max_loop=max_loop, start_loop=start_loop)
             # Re-assign the start position iteration to zero.
             #   Note that, only the first epoch is specified,
             #   others start from zero.
@@ -221,6 +235,14 @@ class DeepQNetwork(DQN):
             params_dir += '/warm-up/'
             self._saver.save(self._sess, params_dir, 233)   # immediate folder.
 
+        # Determine the total pre-train steps according to the learning policy.
+        if learning_policy == 'fixed':
+            total_presteps = 0
+        elif learning_policy == 'continuous':
+            total_presteps = pre_epochs * max_instances * pre_single_instance_steps
+        else:
+            raise ValueError('Unknown learning rate policy !!!')
+
         # ---------------- Train the whole model (End-to-end) many times. (Depend on epochs) ----------------
         print('\n\nEnd-to-End Training !!!')
         # Determine the start position.
@@ -228,13 +250,7 @@ class DeepQNetwork(DQN):
             # Compute last iter.
             glo_step = int(self._global_step.eval(self._sess))
             # Compute the start epoch and iteration.
-            if learning_policy == 'fixed':
-                e2e_step = glo_step
-            elif learning_policy == 'continuous':
-                total_presteps = pre_epochs * max_iteration // batch_size
-                e2e_step = glo_step - total_presteps
-            else:
-                raise ValueError('Unknown learning rate policy !!!')
+            e2e_step = glo_step - total_presteps
             last_iter = e2e_step * replay_iter
             start_epoch = last_iter // max_iteration
             start_iter = last_iter % max_iteration
@@ -245,7 +261,7 @@ class DeepQNetwork(DQN):
             # Reset the start position of iteration.
             self._data_adapter.reset_position(start_iter)
             # Start training.
-            self._train(max_iteration, epoch, start_iter, epsilon_book)
+            self._train(max_iteration, epoch, start_iter, epsilon_book, total_presteps)
             # Re-assign the start position iteration to zero.
             #   Note that, only the first epoch is specified,
             #   others start from zero.
@@ -275,7 +291,11 @@ class DeepQNetwork(DQN):
             raise TypeError('The is_e2e must be a boolean !!!')
 
         # Indicating -------------------
-        self._logger.info('Testing...')
+        if is_validate:
+            self._logger.info('Validate...')
+        else:
+            self._logger.info('Testing...')
+        self._logger.info('\t Instance Number: {}'.format(instances_num))
         sys.stdout.flush()
         # ------------------------------
 
@@ -326,7 +346,7 @@ class DeepQNetwork(DQN):
         return
 
 
-    def _customize_pretrain(self, max_iteration, start_pos):
+    def _customize_pretrain(self, cur_epoch, max_loop, start_loop):
         r'''
             Pre-train the "Segmentation" network for better performance.
         '''
@@ -344,10 +364,9 @@ class DeepQNetwork(DQN):
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
         conf_others = self._config['Others']
-        save_steps = conf_others.get('save_steps', 100)
-        save_steps *= 4
-        validate_steps = conf_others.get('validate_steps', 500)
-        validate_steps //= 4
+        save_steps = conf_others.get('pre_save_steps', 400)
+        validate_steps = conf_others.get('pre_validate_steps', 500)
+        valnum_per = conf_others.get('instances_per_validate', 2)
         params_dir = conf_others.get('net_params')
 
         # Get origin input part.
@@ -384,7 +403,7 @@ class DeepQNetwork(DQN):
         his_len = np.zeros(batch_size, dtype=np.int32)
 
         # Start to train.
-        for ite in range(start_pos // batch_size, max_iteration // batch_size + 1):
+        for ite in range(start_loop, max_loop):
             # Visual info.
             st_time = time.time()
 
@@ -413,7 +432,8 @@ class DeepQNetwork(DQN):
             _, v1_cost = self._sess.run([self._pre_op, sloss], feed_dict=feed_dict)
 
             # Print some info. --------------------------------------------
-            self._logger.info("Iter {} --> SEG loss: {}, cost time: {} ".format(ite, v1_cost, time.time() - st_time))
+            self._logger.info("Epoch: {}, Iter: [{}/{}] --> SEG loss: {}, cost time: {} ".format(
+                cur_epoch, ite+1, max_loop, v1_cost, time.time() - st_time))
             # ------------------------------------------------------------
 
             # Get the pretrain step lately used to determine whether to save model or not.
@@ -425,9 +445,10 @@ class DeepQNetwork(DQN):
                 s2 = self._summary[self._name_space + '/BRATS_metric']
                 out_summary = self._summary[self._name_space + '/SEG_Summaries']
                 # Execute "Validate".
-                _1, DICE_list, BRATS_list = self.test(2, is_validate=True, is_e2e=False)
+                _1, DICE_list, BRATS_list = self.test(valnum_per, is_validate=True, is_e2e=False)
                 # Print some info. --------------------------------------------
-                self._logger.info("Iter {} --> DICE: {}, BRATS: {} ".format(ite, DICE_list, BRATS_list))
+                self._logger.info("Epoch: {}, Iter: [{}/{}] --> DICE: {}, BRATS: {} ".format(
+                    cur_epoch, ite+1, max_loop, DICE_list, BRATS_list))
                 # ------------------------------------------------------------
                 # Compute the summary value and add into statistic graph.
                 feed_dict[s1] = DICE_list
@@ -442,7 +463,7 @@ class DeepQNetwork(DQN):
         return
 
 
-    def _train(self, max_iteration, cur_epoch, start_pos, epsilon_book):
+    def _train(self, max_iteration, cur_epoch, start_pos, epsilon_book, total_presteps):
         r'''
             End-to-end train the whole model.
         '''
@@ -453,10 +474,12 @@ class DeepQNetwork(DQN):
         conf_others = self._config['Others']
         memory_size = conf_others.get('replay_memories')
         eins_num = conf_others.get('environment_instances', 16)
-        validate_steps = conf_others.get('validate_steps', 500)
+        validate_steps = conf_others.get('e2e_validate_steps', 500)
         conf_train = self._config['Training']
         batch_size = conf_train.get('batch_size', 32)
         replay_iter = conf_train.get('replay_iter', 1)
+        conf_others = self._config['Others']
+        visualize_interval = conf_others.get('visualize_interval_per_2dimage', 25)
 
         # Declare the store function for "Experience Store".
         def store_2mem(experiences):
@@ -479,13 +502,24 @@ class DeepQNetwork(DQN):
             # Finish.
             return
 
+        # Calculate the max loops for current epoch.
+        max_turn = validate_steps * replay_iter
+
         # Calculate the instance that "Focus Model" already finished.
         #   It's also the start instance id for very beginning loop.
         model_finished = cur_epoch * max_iteration + start_pos
         # Calculate the loop threshold for very beginning loop.
-        loop_thres = validate_steps * replay_iter - (start_pos % (validate_steps * replay_iter))
+        loop_thres = max_turn - (start_pos % max_turn)
         # Calculate the remain loops.
-        remain_loops = (max_iteration - start_pos) // (validate_steps * replay_iter) + 1
+        remain_loops = int(np.ceil((max_iteration - start_pos) / max_turn))
+
+        # # Calculate the instance that "Focus Model" already finished.
+        # #   It's also the start instance id for very beginning loop.
+        # model_finished = cur_epoch * max_iteration + start_pos
+        # # Calculate the loop threshold for very beginning loop.
+        # loop_thres = validate_steps * replay_iter - (start_pos % (validate_steps * replay_iter))
+        # # Calculate the remain loops.
+        # remain_loops = (max_iteration - start_pos) // (validate_steps * replay_iter) + 1
 
         # ------------------------ Train Loop Part ------------------------
         for loop_id in range(remain_loops):
@@ -519,11 +553,20 @@ class DeepQNetwork(DQN):
                 # Ensure environment works in "Train" mode, what's more, reset the max iteration of environment.
                 self._env.switch_phrase(p='Train', max_iter=tp_maxIter)
 
+                # # Determine whether should record picture or not.
+                # apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
+                # if apos_count > 0:
+                #     anim_type = 'pic'
+                #     prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
+                # else:
+                #     anim_type = None
+
                 # Determine whether should record picture or not.
-                apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
+                apos_remain = prev_aniPos // visualize_interval * visualize_interval
+                apos_count = (model_finished - apos_remain) // visualize_interval
                 if apos_count > 0:
                     anim_type = 'pic'
-                    prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
+                    prev_aniPos = model_finished
                 else:
                     anim_type = None
 
@@ -547,8 +590,12 @@ class DeepQNetwork(DQN):
                     if t:
                         # Show some info. --------------------------------------------
                         self._logger.debug(
-                            "Iter {} --> total_steps: {} total_rewards: {}, epsilon: {}, cost time: {}".format(
-                                sid - cur_epoch * max_iteration, turn_steps[eid], turn_rewards[eid],
+                            "Epoch: {}, Loop: [{}/{}], Iter: [{}/{}, id - {}] "
+                            "--> total_steps: {} total_rewards: {}, epsilon: {}, cost time: {}".format(
+                                cur_epoch, loop_id+1, remain_loops,
+                                model_finished + 1 - cur_epoch * max_iteration, max_iteration,
+                                sid - cur_epoch * max_iteration,
+                                turn_steps[eid], turn_rewards[eid],
                                 self._epsilon, time.time() - turn_sts[eid]))
                         # ------------------------------------------------------------
                         turn_steps[eid] = 0
@@ -570,11 +617,14 @@ class DeepQNetwork(DQN):
                         # Metric used to see the training time.
                         train_time = time.time()
                         # Really training the DQN agent.
-                        v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train()
+                        v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train(total_presteps)
                         # Debug. ------------------------------------------------------
-                        self._logger.info("Iter {}, TrainCount: {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
+                        self._logger.info("Epoch: {}, Loop: [{}/{}], Iter: [{}/{}], "
+                                          "TrainCount: {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
                                           "Reward Bias: {}, Training time: {}".format(
-                            model_finished, tc, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
+                            cur_epoch, loop_id+1, remain_loops,
+                            model_finished - cur_epoch * max_iteration - loop_id * max_turn, max_turn,
+                            tc, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
                         )
                         # -------------------------------------------------------------
 
@@ -584,21 +634,29 @@ class DeepQNetwork(DQN):
             # -------------------------- End of training core part -----------------------------
 
             # Check the validity of total finished number.
-            MF_valid = cur_epoch * max_iteration + (loop_id + 1) * (validate_steps * replay_iter)
+            MF_valid = min(cur_epoch * max_iteration + (loop_id + 1) * max_turn, max_iteration)
             if model_finished != MF_valid:
                 raise Exception('Error coding !!!')
             # Reset the loop threshold.
-            loop_thres = validate_steps * replay_iter
+            loop_thres = min(max_iteration - model_finished, max_turn)
+
+            # # Check the validity of total finished number.
+            # MF_valid = cur_epoch * max_iteration + (loop_id + 1) * max_turn
+            # if model_finished != MF_valid:
+            #     raise Exception('Error coding !!!')
+            # # Reset the loop threshold.
+            # loop_thres = validate_steps * replay_iter
 
             # Print some information.
-            self._logger.debug("Epoch{}, loop: {}, cost time: {}".format(cur_epoch, loop_id, time.time() - loop_time))
+            self._logger.debug("Epoch: {}, Loop: [{}/{}], finished !!!, cost time: {}".format(
+                cur_epoch, loop_id, remain_loops, time.time() - loop_time))
 
         # Finish one epoch.
         return
 
 
     # The real training code.
-    def __do_train(self):
+    def __do_train(self, total_presteps):
         r'''
             The function is used to really execute the one-iteration training for whole model.
 
@@ -618,9 +676,10 @@ class DeepQNetwork(DQN):
         gamma = conf_dqn.get('discount_factor', 0.9)
 
         conf_others = self._config['Others']
-        store_type = conf_others.get('sample_type', 'light')
-        save_steps = conf_others.get('save_steps', 100)
-        validate_steps = conf_others.get('validate_steps', 500)
+        store_type = conf_others.get('sample_type', 'heave')
+        save_steps = conf_others.get('e2e_save_steps', 100)
+        validate_steps = conf_others.get('e2e_validate_steps', 500)
+        valnum_per = conf_others.get('instances_per_validate', 2)
         params_dir = conf_others.get('net_params')
 
         # ------------------------------- Data Preparation ------------------------
@@ -787,6 +846,7 @@ class DeepQNetwork(DQN):
         # ------------------------------- Save Model Parameters ------------------------
         # Get the global step lately used to determine whether to save model or not.
         step = self._global_step.eval(self._sess)
+        step -= total_presteps  # rectify the global step if needed.
         # Calculate the summary to get the statistic graph.
         if step > 0 and step % validate_steps == 0:
             # Get summary holders.
@@ -795,16 +855,16 @@ class DeepQNetwork(DQN):
             s3 = self._summary[self._name_space + '/BRATS_metric']
             out_summary = self._summary[self._name_space + '/WHOLE_Summaries']
             # Reset the sample id for "Validate" mode.
-            val_sampleId = (step//validate_steps-1) * 2 * self._data_adapter.slices_3d
+            val_sampleId = (step//validate_steps-1) * valnum_per * self._data_adapter.slices_3d
             self._env.reset_instance_id(p='Validate', ins_id=val_sampleId)
             # Execute "Validate".
-            reward_list, DICE_list, BRATS_list = self.test(2, is_validate=True)
+            reward_list, DICE_list, BRATS_list = self.test(valnum_per, is_validate=True)
             # Compute the summary value and add into statistic graph.
             feed_dict[s1] = reward_list
             feed_dict[s2] = DICE_list
             feed_dict[s3] = BRATS_list
             summary = self._sess.run(out_summary, feed_dict=feed_dict)
-            self._summary_writer.add_summary(summary, step)
+            self._summary_writer.add_summary(summary, step + total_presteps)
             self._summary_writer.flush()
         # Save the model (parameters) within the fix period.
         if step > 0 and step % save_steps == 0:
@@ -1144,6 +1204,8 @@ class DeepQNetwork(DQN):
         conf_base = self._config['Base']
         clazz_dim = conf_base.get('classification_dimension')
         img_h, img_w = conf_base.get('input_shape')[1:3]
+        conf_others = self._config['Others']
+        visualize_interval = conf_others.get('visualize_interval_per_2dimage', 25)
 
         # Check whether need additional iteration to deal with 3-D data.
         if self._data_adapter.slices_3d <= 0:
@@ -1180,10 +1242,11 @@ class DeepQNetwork(DQN):
         # Start to Testing ...
         while True:
             # Determine whether should record animation or not.
-            apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
+            apos_remain = prev_aniPos // visualize_interval * visualize_interval
+            apos_count = (model_finished - apos_remain) // visualize_interval
             if apos_count > 0:
                 anim_type = 'video'
-                prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
+                prev_aniPos = model_finished
             else:
                 anim_type = None
 
@@ -1283,8 +1346,7 @@ class DeepQNetwork(DQN):
         pos_method = conf_cus.get('position_info', 'map')
         CR_method = conf_cus.get('result_fusion', 'prob')
         conf_others = self._config['Others']
-        validate_steps = conf_others.get('validate_steps', 500)
-        validate_steps //= 4
+        validate_steps = conf_others.get('pre_validate_steps', 500)
 
         # Get origin input part.
         if double_q is None:
@@ -1326,7 +1388,7 @@ class DeepQNetwork(DQN):
 
         # Calculate the instance id.
         step = self._pre_step.eval(self._sess)
-        last_insId = (step//validate_steps-1) * instances_num * (self._data_adapter.slices_3d//batch_size+1)
+        last_insId = (step//validate_steps-1) * instances_num * int(np.ceil(self._data_adapter.slices_3d/batch_size))
 
         # Start validate/test loop ...
         BRATSs = []
