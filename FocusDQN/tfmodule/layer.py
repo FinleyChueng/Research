@@ -57,6 +57,7 @@ def base_conv2d(input_tensor,
                 name_space,
                 pre_activate=True,
                 activation='relu',
+                dilate_rate=1,
                 use_bias=False,
                 reuse=False,
                 regularizer=None,
@@ -78,9 +79,10 @@ def base_conv2d(input_tensor,
         output_channels: The dimension (channels) of output tensors.
         kernel_size: The kernel size of convolution.
         stride: The stride for convolution.
-        name_space: The name space for conv2d block.
+        name_space: The name space for 2D convolution block.
         pre_activate: Whether enable "Pre-activate" or not.
         activation: The activation function.
+        dilate_rate: The dilate rate for the convolution.
         use_bias: Whether use bias or not for convolution.
         reuse: Whether to reuse the conv kernel (and bias) or not.
         regularizer: Whether to add regularization to convolution or not.
@@ -113,6 +115,7 @@ def base_conv2d(input_tensor,
     # Define the sub-function used to conduct 2D-conv.
     def convolution_2d(x):
         y = tf.layers.conv2d(x, output_channels, kernel_size, stride, 'same',
+                             dilation_rate=dilate_rate,
                              use_bias=use_bias,
                              reuse=reuse,
                              kernel_regularizer=regularizer,
