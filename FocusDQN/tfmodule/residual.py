@@ -78,6 +78,7 @@ def __residual_v2(input_tensor,
                                           activation=activation,
                                           keep_prob=keep_prob,
                                           feature_normalization=feature_normalization,
+                                          reuse=reuse,
                                           bn_decay=0.9,
                                           bn_training=True)     # The BN parameters keep same as base conv.
 

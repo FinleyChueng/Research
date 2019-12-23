@@ -8,6 +8,7 @@ def base_activate_block(input_tensor,
                         activation,
                         keep_prob,
                         feature_normalization,
+                        reuse=False,
                         bn_decay=None,
                         bn_training=None):
     r'''
@@ -22,6 +23,7 @@ def base_activate_block(input_tensor,
         activation: The activation function.
         keep_prob: Whether enable the "Dropout" or not.
         feature_normalization: The feature normalization method.
+        reuse: Whether to reuse the conv kernel (and bias) or not.
         bn_decay: The decay rate for "Batch Normalization". (This parameter only
             works when feature normalization method is "batch")
         bn_training: The training flag for "Batch Normalization". This parameter only
@@ -36,6 +38,7 @@ def base_activate_block(input_tensor,
     output_tensor = tf_norl.feature_normalize(input_tensor,
                                               feature_normalization,
                                               name_space,
+                                              reuse=reuse,
                                               bn_training=bn_training,
                                               bn_decay=bn_decay)
     # 2. Activate.
