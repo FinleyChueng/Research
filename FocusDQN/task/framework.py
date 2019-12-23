@@ -504,22 +504,19 @@ class DeepQNetwork(DQN):
 
         # Calculate the max loops for current epoch.
         max_turn = validate_steps * replay_iter
+        # Calculate the decrease extent of global step.
+        #   Coz there's remainder util the end of each epoch.
+        decrease_extent = cur_epoch * ((max_iteration - (max_iteration // max_turn) * max_turn) // replay_iter)
 
         # Calculate the instance that "Focus Model" already finished.
         #   It's also the start instance id for very beginning loop.
         model_finished = cur_epoch * max_iteration + start_pos
         # Calculate the loop threshold for very beginning loop.
         loop_thres = max_turn - (start_pos % max_turn)
+        # Calculate the finished loops from start position.
+        finished_loops = int(np.floor(start_pos / max_turn))
         # Calculate the remain loops.
-        remain_loops = int(np.ceil((max_iteration - start_pos) / max_turn))
-
-        # # Calculate the instance that "Focus Model" already finished.
-        # #   It's also the start instance id for very beginning loop.
-        # model_finished = cur_epoch * max_iteration + start_pos
-        # # Calculate the loop threshold for very beginning loop.
-        # loop_thres = validate_steps * replay_iter - (start_pos % (validate_steps * replay_iter))
-        # # Calculate the remain loops.
-        # remain_loops = (max_iteration - start_pos) // (validate_steps * replay_iter) + 1
+        remain_loops = int(np.ceil(max_iteration / max_turn)) - finished_loops
 
         # ------------------------ Train Loop Part ------------------------
         for loop_id in range(remain_loops):
@@ -552,14 +549,6 @@ class DeepQNetwork(DQN):
 
                 # Ensure environment works in "Train" mode, what's more, reset the max iteration of environment.
                 self._env.switch_phrase(p='Train', max_iter=tp_maxIter)
-
-                # # Determine whether should record picture or not.
-                # apos_count = (model_finished - prev_aniPos) // (self._data_adapter.slices_3d // 6)
-                # if apos_count > 0:
-                #     anim_type = 'pic'
-                #     prev_aniPos = apos_count * (self._data_adapter.slices_3d // 6)
-                # else:
-                #     anim_type = None
 
                 # Determine whether should record picture or not.
                 apos_remain = prev_aniPos // visualize_interval * visualize_interval
@@ -617,13 +606,13 @@ class DeepQNetwork(DQN):
                         # Metric used to see the training time.
                         train_time = time.time()
                         # Really training the DQN agent.
-                        v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train(total_presteps)
+                        v1_cost, v2_cost, v3_cost, bias_rew = self.__do_train(total_presteps, decrease_extent)
                         # Debug. ------------------------------------------------------
                         self._logger.info("Epoch: {}, Loop: [{}/{}], Iter: [{}/{}], "
                                           "TrainCount: {} - Net Loss: {}, SEG Loss: {}, DQN Loss: {}, "
                                           "Reward Bias: {}, Training time: {}".format(
                             cur_epoch, loop_id+1, remain_loops,
-                            model_finished - cur_epoch * max_iteration - loop_id * max_turn, max_turn,
+                            model_finished - cur_epoch * max_iteration - (finished_loops + loop_id) * max_turn, max_turn,
                             tc, v1_cost, v2_cost, v3_cost, bias_rew, time.time() - train_time)
                         )
                         # -------------------------------------------------------------
@@ -634,18 +623,12 @@ class DeepQNetwork(DQN):
             # -------------------------- End of training core part -----------------------------
 
             # Check the validity of total finished number.
-            MF_valid = min(cur_epoch * max_iteration + (loop_id + 1) * max_turn, max_iteration)
+            MF_valid = min(cur_epoch * max_iteration + (finished_loops + loop_id + 1) * max_turn,
+                           (cur_epoch + 1) * max_iteration)
             if model_finished != MF_valid:
-                raise Exception('Error coding !!!')
+                raise Exception('Error coding !!! model_finished: {}, MF_valid: {}'.format(model_finished, MF_valid))
             # Reset the loop threshold.
-            loop_thres = min(max_iteration - model_finished, max_turn)
-
-            # # Check the validity of total finished number.
-            # MF_valid = cur_epoch * max_iteration + (loop_id + 1) * max_turn
-            # if model_finished != MF_valid:
-            #     raise Exception('Error coding !!!')
-            # # Reset the loop threshold.
-            # loop_thres = validate_steps * replay_iter
+            loop_thres = min((cur_epoch + 1) * max_iteration - model_finished, max_turn)
 
             # Print some information.
             self._logger.debug("Epoch: {}, Loop: [{}/{}], finished !!!, cost time: {}".format(
@@ -656,7 +639,7 @@ class DeepQNetwork(DQN):
 
 
     # The real training code.
-    def __do_train(self, total_presteps):
+    def __do_train(self, total_presteps, decrease_extent):
         r'''
             The function is used to really execute the one-iteration training for whole model.
 
@@ -846,7 +829,9 @@ class DeepQNetwork(DQN):
         # ------------------------------- Save Model Parameters ------------------------
         # Get the global step lately used to determine whether to save model or not.
         step = self._global_step.eval(self._sess)
-        step -= total_presteps  # rectify the global step if needed.
+        # Rectify the global step.
+        step -= total_presteps
+        step -= decrease_extent
         # Calculate the summary to get the statistic graph.
         if step > 0 and step % validate_steps == 0:
             # Get summary holders.
@@ -864,7 +849,7 @@ class DeepQNetwork(DQN):
             feed_dict[s2] = DICE_list
             feed_dict[s3] = BRATS_list
             summary = self._sess.run(out_summary, feed_dict=feed_dict)
-            self._summary_writer.add_summary(summary, step + total_presteps)
+            self._summary_writer.add_summary(summary, step + total_presteps + decrease_extent)
             self._summary_writer.flush()
         # Save the model (parameters) within the fix period.
         if step > 0 and step % save_steps == 0:
