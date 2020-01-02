@@ -418,3 +418,4 @@ def count_flops():
     flops = tf.profiler.profile(graph, options=tf.profiler.ProfileOptionBuilder.float_operation())
     print('FLOPs: {}'.format(flops.total_float_ops))
 
+

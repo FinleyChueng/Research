@@ -1902,7 +1902,7 @@ class DqnAgent:
             elif loss_type == 'Smooth-L1':
                 smoothL1_sign = tf.stop_gradient(tf.to_float(tf.less(tf.abs(q_diff), 1.)))
                 abs_x_lt_1 = tf.square(q_diff) / 2. * smoothL1_sign
-                abs_x_gt_1 = (q_diff - 0.5) * (1. - smoothL1_sign)
+                abs_x_gt_1 = (tf.abs(q_diff) - 0.5) * (1. - smoothL1_sign)
                 pure_loss = tf.add(abs_x_lt_1, abs_x_gt_1, name='SmoothL1_loss')    # [?,]
             else:
                 raise ValueError('Unknown regression loss type !!!')
@@ -1992,4 +1992,5 @@ class DqnAgent:
 
             # Plain return.
             return
+
 
