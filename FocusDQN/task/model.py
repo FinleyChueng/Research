@@ -1871,8 +1871,10 @@ class DqnAgent:
 
         # Get configuration.
         conf_dqn = self._config['DQN']
+        conf_cus = self._config['Custom']
         # Get detailed parameters.
         prioritized_replay = conf_dqn.get('prioritized_replay', True)
+        loss_type = conf_cus.get('regression_loss', 'MSE')
 
         # ---------------------- Definition of UN cross-entropy loss ------------------------
         LOSS_name = name_space + '/DQNLoss'
@@ -1894,6 +1896,17 @@ class DqnAgent:
             # The difference between prediction and target Q values.
             q_diff = tf.subtract(tf.add(target_q_vals, pred_rewards), pred_q_vals, name='Q_diff')   # [?]
 
+            # Different loss type applied to DQN (Regression) loss.
+            if loss_type == 'MSE':
+                pure_loss = tf.square(q_diff, name='MSE_loss')  # [?,]
+            elif loss_type == 'Smooth-L1':
+                smoothL1_sign = tf.stop_gradient(tf.to_float(tf.less(tf.abs(q_diff), 1.)))
+                abs_x_lt_1 = tf.square(q_diff) / 2. * smoothL1_sign
+                abs_x_gt_1 = (q_diff - 0.5) * (1. - smoothL1_sign)
+                pure_loss = tf.add(abs_x_lt_1, abs_x_gt_1, name='SmoothL1_loss')    # [?,]
+            else:
+                raise ValueError('Unknown regression loss type !!!')
+
             # Define placeholder for IS weights if use "Prioritized Replay".
             if prioritized_replay:
                 # Updated priority for input experience.
@@ -1904,12 +1917,12 @@ class DqnAgent:
                                                           name='IS_weights')
                 # Construct the prioritized loss.
                 DQN_loss = tf.reduce_mean(
-                    tf.multiply(IS_weights, tf.square(q_diff)),  # [?]
+                    tf.multiply(IS_weights, pure_loss),     # [?]
                     name='DQN_loss'
                 )
             else:
                 # Construct the simple loss.
-                DQN_loss = tf.reduce_mean(tf.square(q_diff), name='DQN_loss')
+                DQN_loss = tf.reduce_mean(pure_loss, name='DQN_loss')
 
             # Print some information.
             print('### Finish the definition of DQN loss, Shape: {}'.format(DQN_loss.shape))
