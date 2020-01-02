@@ -81,10 +81,12 @@ class FocusEnvCore:
 
         # Action quantity.
         conf_dqn = self._config['DQN']
-        if conf_dqn.get('restriction_action'):
-            self._act_dim = 9
+        restrict_mode = conf_dqn.get('restriction_action')
+        aban_par = conf_dqn.get('abandon_parents')
+        if restrict_mode:
+            self._act_dim = 8 if aban_par else 9
         else:
-            self._act_dim = 17
+            self._act_dim = 13 if aban_par else 17
 
         # Clazz weights (for segmentation).
         self._clazz_weights = None
@@ -454,13 +456,13 @@ class FocusEnvCore:
         # Generate anchors.
         conf_dqn = self._config['DQN']
         anchor_scale = conf_dqn.get('anchors_scale', 2)
-        if self._act_dim == 9:
+        if self._act_dim == 8 or self._act_dim == 9:
             # "Restrict" mode.
-            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 9,
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim,
                                     arg=self._RelDir_prev[-1])   # the newest relative direction.
-        elif self._act_dim == 17:
+        elif self._act_dim == 13 or self._act_dim == 17:
             # "Whole Candidates" mode.
-            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 17)
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim == 17)
         else:
             raise Exception('Unknown action dimension, there is no logic with respect to '
                             'current act_dim, please check your code !!!')
@@ -615,13 +617,13 @@ class FocusEnvCore:
         # Generate anchors.
         conf_dqn = self._config['DQN']
         anchor_scale = conf_dqn.get('anchors_scale', 2)
-        if self._act_dim == 9:
+        if self._act_dim == 8 or self._act_dim == 9:
             # "Restrict" mode.
-            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 9,
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim,
                                     arg=self._RelDir_prev[-1])   # the newest relative direction.
-        elif self._act_dim == 17:
+        elif self._act_dim == 13 or self._act_dim == 17:
             # "Whole Candidates" mode.
-            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, 17)
+            anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim)
         else:
             raise Exception('Unknown action dimension, there is no logic with respect to '
                             'current act_dim, please check your code !!!')
@@ -947,7 +949,41 @@ class FocusEnvCore:
         s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
 
         # Now select anchors to return according to the mode.
-        if adim == 9:
+        if adim == 8:   # restrict, abandon
+            # Check validity.
+            if arg is None:
+                raise Exception('One must assign the arg with previous action when adim = 8 !!!')
+            # Select candidates for relative direction.
+            relative = arg
+            if relative == 'left-up':
+                cands = [
+                    0, 1, 2, 3,     # all children
+                    14, 15, 11  # peers - right, bottom, right-bottom
+                ]
+            elif relative == 'right-up':
+                cands = [
+                    0, 1, 2, 3,  # all children
+                    12, 10, 15  # peers - left, left-bottom, bottom
+                ]
+            elif relative == 'left-bottom':
+                cands = [
+                    0, 1, 2, 3,  # all children
+                    13, 9, 14   # peers - up, right-up, right
+                ]
+            elif relative == 'right-bottom':
+                cands = [
+                    0, 1, 2, 3,  # all children
+                    8, 13, 12   # peers - left-up, up, left
+                ]
+            else:
+                raise Exception('Invalid relative value !!!')
+            # Iteratively get corresponding anchors.
+            r_anchors = []
+            for c in cands:
+                r_anchors.append(s_anchors[c])
+            return r_anchors
+        # Restrict, not-abandon.
+        elif adim == 9:
             # Check validity.
             if arg is None:
                 raise Exception('One must assign the arg with previous action when adim = 9 !!!')
@@ -984,7 +1020,17 @@ class FocusEnvCore:
             for c in cands:
                 r_anchors.append(s_anchors[c])
             return r_anchors
-        # No restriction.
+        elif adim == 13:
+            cands = [
+                0, 1, 2, 3,  # all children
+                8, 9, 10, 11, 12, 13, 14, 15    # all peers
+            ]
+            # Iteratively get corresponding anchors.
+            r_anchors = []
+            for c in cands:
+                r_anchors.append(s_anchors[c])
+            return r_anchors
+        # Not-restrict, not-abandon .
         elif adim == 17:
             # Return all the anchors.
             return s_anchors
@@ -1035,7 +1081,15 @@ class FocusEnvCore:
         terminal = False
 
         # Execute the given action. Different procedure according to action quantity.
-        if self._act_dim == 9:
+        if self._act_dim == 8:  # restrict, abandon
+            # --> select children.
+            if action <= 6:
+                pass
+            # --> stop, terminal.
+            else:
+                terminal = True
+        # Restrict, not-abandon
+        elif self._act_dim == 9:
             # --> select children.
             if action <= 3:
                 # push the relative direction. -- focus in.
@@ -1060,7 +1114,15 @@ class FocusEnvCore:
             # --> stop, terminal.
             else:
                 terminal = True
-        # "Normal" mode.
+        # Not restrict, abandon.
+        elif self._act_dim == 13:
+            # --> select children.
+            if action <= 11:
+                pass
+            # --> stop, terminal.
+            else:
+                terminal = True
+        # Not restrict, not-abandon.
         elif self._act_dim == 17:
             # Fake relative direction for "Out-of-Boundary" error check.
             fake_RD = self._RELATIVE_DIRECTION[0]

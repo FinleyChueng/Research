@@ -42,10 +42,12 @@ class DqnAgent:
 
         # Determine the action dimension according to the config.
         conf_dqn = self._config['DQN']
-        if conf_dqn.get('restriction_action'):
-            self._action_dim = 9
+        restrict_mode = conf_dqn.get('restriction_action')
+        aban_par = conf_dqn.get('abandon_parents')
+        if restrict_mode:
+            self._action_dim = 8 if aban_par else 9
         else:
-            self._action_dim = 17
+            self._action_dim = 13 if aban_par else 17
 
         # Finish initialization
         return
