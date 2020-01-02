@@ -1,5 +1,6 @@
 import tensorflow as tf
 import numpy as np
+import cv2
 
 
 def placeholder_wrapper(dic, dtype, shape, name):
@@ -320,6 +321,58 @@ def gen_focus_maps_4bbox(bbox, cor_size, name):
         return _y
     y, = tf.py_func(_gen_map, inp=[bbox], Tout=[tf.bool])
     y = tf.reshape(y, [-1, h, w, 1], name=name)  # [?, h, w, 1]
+    return y
+
+
+def fuzzy_4bbox(x, bbox, name):
+    r'''
+        Fuzzy the specific region of the input tensor according to the given "Bounding-box".
+
+    Parameters:
+        x: The input tensor, must be 4-D.
+        bbox: The bounding-box tensor, indicates the bbox coordinates.
+        name: The operation (output tensor) name.
+
+    Return:
+        The tensor, whose bbox-region clear and outside region fuzzy.
+    '''
+    # Check validity.
+    if not isinstance(x, tf.Tensor) or len(x.shape) != 4:
+        raise TypeError('The x must be 4-D tensor !!!')
+    if not isinstance(bbox, tf.Tensor) or len(bbox.shape) != 2 or bbox.shape[1] != 4:
+        raise TypeError('The bbox must be [?, 4] Tensor !!!')
+    # Record the input tensor shape and calculate the slices.
+    rs = [-1,]
+    rs.extend(x.get_shape().as_list()[1:])
+    slice = int(np.ceil(x.get_shape().as_list()[-1] / 512))
+    # Declare the sub-function used to fuzzy the region outside the "Focus Bbox".
+    def _gause_fuzzy(_inp1, _inp2):
+        _y = []
+        for _x1, _x2 in zip(_inp1, _inp2):
+            _yi = None
+            for s in range(slice):
+                begin = s * 512
+                end = min((s+1) * 512, x.get_shape().as_list()[-1])
+                # _y1 = cv2.GaussianBlur(_x1[:, :, begin: end], (9, 9), 0)  # [h, w, c]
+                _y1 = cv2.GaussianBlur(_x1[:, :, begin: end], (3, 3), 0.8)  # [h, w, c]
+                _map = np.zeros_like(_x1[:, :, begin: end], dtype=np.bool)
+                _mh, _mw = _map.shape[:-1]
+                _my1 = max(0, int(_mh * _x2[0]))
+                _mx1 = max(0, int(_mw * _x2[1]))
+                _my2 = min(_mh, int(_mh * _x2[2]))
+                _mx2 = min(_mw, int(_mw * _x2[3]))
+                _map[_my1: _my2, _mx1: _mx2, :] = True
+                _yii = np.where(_map, _x1[:, :, begin: end], _y1)   # [h, w, c]
+                if _yi is None:
+                    _yi = _yii
+                else:
+                    _yi = np.concatenate((_yi, _yii), axis=-1)
+            _y.append(_yi)
+        _y = np.asarray(_y)
+        return _y
+    # Restore the tensor shape.
+    y, = tf.py_func(_gause_fuzzy, inp=[x, bbox], Tout=[tf.float32])
+    y = tf.reshape(y, rs, name=name)    # [?, h, w, c]
     return y
 
 

@@ -411,7 +411,9 @@ class DeepQNetwork(DQN):
             images, labels, weights, _4 = self._data_adapter.next_image_pair('Train', batch_size=batch_size)
             if clazz_weights is not None:
                 weights = np.asarray([clazz_weights])
-                weights = weights * np.ones((batch_size, clazz_dim))
+            else:
+                weights = np.asarray([weights])
+            weights = weights * np.ones((batch_size, clazz_dim))
             # The length of input batches, mainly for last slice.
             last_len = images.shape[0]
             # Generate the basic feed dictionary lately used for training the "Segmentation" network.

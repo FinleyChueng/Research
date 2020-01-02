@@ -288,22 +288,6 @@ class DqnAgent:
                 y = tf.image.crop_and_resize(x, bbox, bbox_ids, size, name=name + '_focus_crop')
                 return y
 
-            # Declare the function used to fuzzy the region outside the "Focus Bbox".
-            def region_fuzzy(x, map, name):
-                rs = [-1,]
-                rs.extend(x.get_shape().as_list()[1:])
-                def _gause_fuzzy(_inp1, _inp2):
-                    _y = []
-                    for _x1, _x2 in zip(_inp1, _inp2):
-                        _y1 = cv2.GaussianBlur(_x1, (9, 9), 0)  # [h, w, c]
-                        _yi = np.where(_x2, _x1, _y1)    # [h, w, c]
-                        _y.append(_yi)
-                    _y = np.asarray(_y)
-                    return _y
-                y, = tf.py_func(_gause_fuzzy, inp=[x, map], Tout=[tf.float32])
-                y = tf.reshape(y, rs, name=name)    # [?, h, w, c]
-                return y
-
             # Define the "Position Information" placeholder.
             pos_name = 'position_info'
             if pos_method == 'map':
@@ -399,7 +383,7 @@ class DqnAgent:
                 input_tensor = raw_image
             elif input_type == 'fuzzy':
                 # Fuzzy the region outside the "Focus Region".
-                input_tensor = region_fuzzy(raw_image, focus_map, name='Fuzzy_input')
+                input_tensor = net_util.fuzzy_4bbox(raw_image, focus_bbox, name='Fuzzy_input')
             else:
                 raise ValueError('Unknown input type !!!')
 
@@ -459,66 +443,72 @@ class DqnAgent:
         else:
             stage_prefix = self._name_space
 
-        # Declare the function used to fuse the "Past Local Information".
-        def history_fuse(x, glo_info, bbox, valid_his, scales, s_id, his_flag):
-            # generate flag.
-            bh = tf.expand_dims(tf.abs(bbox[:, 2] - bbox[:, 0]), axis=-1)   # [b*his, 1]
-            bw = tf.expand_dims(tf.abs(bbox[:, 3] - bbox[:, 1]), axis=-1)   # [b*his, 1]
-            ph = tf.greater_equal(bh, scales)   # [b*his, s]
-            pw = tf.greater_equal(bw, scales)   # [b*his, s]
-            p = tf.logical_or(ph, pw)   # [b*his, s]
-            pind = tf.expand_dims(tf.range(scales.get_shape().as_list()[-1]), axis=0)   # [1, s]
-            pind = tf.multiply(tf.to_int32(p), pind)    # [b*his, s]
-            pind = tf.reduce_min(pind, axis=-1)     # [b*his]
-            flag = tf.equal(pind, s_id)     # [b*his]
-            flag = tf.logical_and(flag, his_flag)   # [b*his]
+        # Get the "Scaled Focus Bounding-box".
+        local_focus = self.__mediates[stage_prefix + '/Scale_FoBbox']
+
+        # # Declare the function used to fuse the "Focus Information".
+        # def focus_fuse(x, fusion_info, bbox, scales, s_id):
+        #     # generate flag.
+        #     bh = tf.expand_dims(tf.abs(bbox[:, 2] - bbox[:, 0]), axis=-1)  # [b, 1]
+        #     bw = tf.expand_dims(tf.abs(bbox[:, 3] - bbox[:, 1]), axis=-1)  # [b, 1]
+        #     ph = tf.less_equal(bh, scales)  # [b, s]
+        #     pw = tf.less_equal(bw, scales)  # [b, s]
+        #     p = tf.logical_or(ph, pw)  # [b, s]
+        #     pind = tf.expand_dims(tf.range(scales.get_shape().as_list()[-1]), axis=0)  # [1, s]
+        #     pind = tf.multiply(tf.to_int32(p), pind)  # [b, s]
+        #     pind = tf.reduce_min(pind, axis=-1)  # [b]
+        #     flag = tf.equal(pind, s_id)  # [b]
+        #     # generate the "local feature maps".
+        #     l_h, l_w, l_c = x.get_shape().as_list()[1:]
+        #     lfm = tf.image.resize_bilinear(fusion_info, size=(l_h, l_w))    # [b, lh, lw, gc]
+        #     lfm = cus_res.residual_block(lfm, l_c, 1,
+        #                                  reuse=tf.AUTO_REUSE,
+        #                                  dilate_rate=1,
+        #                                  feature_normalization=fe_norm,
+        #                                  activation=activation,
+        #                                  keep_prob=conv_kprob,
+        #                                  regularizer=regularizer,
+        #                                  name_space='Local_Feats_' + str(s_id))  # [b, lh, lw, lc]
+        #     # filter the invalid history.
+        #     flag_map = tf.expand_dims(tf.expand_dims(tf.expand_dims(flag, axis=-1), axis=-1),
+        #                               axis=-1)  # [b, 1, 1, 1]
+        #     flag_map = tf.logical_and(flag_map, tf.ones_like(lfm, dtype=tf.bool))  # [b, lh, lw, lc]
+        #     lfm = tf.where(flag_map, lfm, tf.zeros_like(lfm))  # [b, lh, lw, lc]
+        #     # fuse the "local feature maps" into the raw input.
+        #     y = tf.add(x, lfm, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, lc]
+        #     return y
+
+        # Declare the function used to fuse the "Focus Information".
+        def focus_fuse(x, bbox, s_id):
             # generate the "local feature maps".
-            lfm = tf.expand_dims(glo_info, axis=1)     # [b, 1, gh, gw, gc]
-            lfm = tf.tile(lfm, multiples=[1, his_thres, 1, 1, 1])   # [b, his, gh, gw, gc]
-            g_h, g_w, g_c = glo_info.get_shape().as_list()[1:]
-            l_h, l_w, l_c = x.get_shape().as_list()[1:]
-            lfm = tf.reshape(lfm, [-1, g_h, g_w, g_c])  # [b*his, gh, gw, gc]
-            b_ids = tf.range(tf.reduce_sum(tf.ones_like(bbox, dtype=tf.int32)[:, 0]))    # [b*his]
-            lfm = tf.image.crop_and_resize(lfm, bbox, b_ids, crop_size=(l_h, l_w))  # [b*his, lh, lw, gc]
-            lfm = cus_layers.base_conv2d(lfm, l_c, 1, 1,
+            fuzzy_x = net_util.fuzzy_4bbox(x, bbox=bbox, name='Local_Fusion')   # [b, h, w, c]
+            lfm = cus_res.residual_block(fuzzy_x, fuzzy_x.get_shape().as_list()[-1], 1,
                                          reuse=tf.AUTO_REUSE,
+                                         dilate_rate=1,
                                          feature_normalization=fe_norm,
                                          activation=activation,
                                          keep_prob=conv_kprob,
                                          regularizer=regularizer,
-                                         name_space='Local_Feats_'+str(s_id))   # [b*his, lh, lw, lc]
-            # filter the invalid history.
-            flag = tf.expand_dims(tf.expand_dims(tf.expand_dims(flag, axis=-1), axis=-1),
-                                  axis=-1)  # [b*his, 1, 1, 1]
-            flag = tf.logical_and(flag, tf.ones_like(lfm, dtype=tf.bool))  # [b*his, lh, lw, lc]
-            lfm = tf.reshape(lfm, [-1, his_thres, l_h, l_w, l_c])   # [b, his, lh, lw, lc]
-            flag = tf.reshape(flag, [-1, his_thres, l_h, l_w, l_c])     # [b, his, lh, lw, lc]
-            lfm = tf.where(flag, lfm, tf.zeros_like(lfm))   # [b, his, lh, lw, lc]
-            lfm = tf.reduce_sum(lfm, axis=1)  # [b, lh, lw, lc]
+                                         name_space='Local_Feats_' + str(s_id))  # [b, lh, lw, lc]
             # fuse the "local feature maps" into the raw input.
-            y = tf.add(x, lfm, name='Local_Fusion_'+str(s_id))  # [b, lh, lw, lc]
+            y = tf.add(x, lfm, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, lc]
             return y
         # ------------------------- end of sub-func ----------------------------
 
         # Start definition.
         FE_name = name_space + '/FeatExt'
         with tf.variable_scope(FE_name):
-            # Generate the "Scales Ruler".
-            scales_ruler = []
-            for p in range(len(layer_units)):
-                scales_ruler.append(1/np.exp2(p+1))
-            scales_ruler.append(0.)
-            scales_ruler = tf.constant([scales_ruler], name='Scales_Ruler')     # [1, scales]
-            # Get the "History Length".
-            his_len = self._inputs[stage_prefix + '/History_Length']    # [b]
-            # Get the "History Flag", which indicates the valid length of "History Information".
-            his_flag = self.__mediates[stage_prefix+'/History_Flag']    # [b, his]
-            his_flag = tf.reshape(his_flag, [-1], name='flat_history_flag')     # [b*his]
-            # Get "Global Information", that is, the raw image.
-            glo_info = self._inputs[stage_prefix+'/image']  # [?, h, w, c]
-            # Get "History Information".
-            bbox_his = self._inputs[stage_prefix+'/Bbox_History']
-            bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
+            # # Generate the "Scales Ruler".
+            # scales_ruler = []
+            # for p in range(len(layer_units)):
+            #     scales_ruler.append(1 / np.exp2(p + 1))
+            # scales_ruler.reverse()
+            # scales_ruler.append(1.)
+            # scales_ruler = tf.constant([scales_ruler], name='Scales_Ruler')     # [1, scales]
+            # # Generate the "Local Fusion Information".
+            # glo_info = self._inputs[stage_prefix+'/image']  # [?, h, w, c]
+            # raw_focus = self._inputs[stage_prefix+'/Focus_Bbox']    # [?, h, w, c]
+            # local_fuse = net_util.region_fuzzy(x=glo_info, bbox=raw_focus, name='Local_Fusion')
 
             # The feature maps dictionary, which is lately used in up-sample part.
             DS_feats = []
@@ -531,8 +521,7 @@ class DqnAgent:
                                                regularizer=regularizer,
                                                name_space='ResNet_bconv')  # [?, 112, 112, ?]
             # Fuse "History Information" of this scale level.
-            base_conv = history_fuse(base_conv, glo_info, bbox=bbox_his, valid_his=his_len,
-                                     scales=scales_ruler, s_id=0, his_flag=his_flag)
+            base_conv = focus_fuse(base_conv, local_focus, s_id=0)
 
             # Record the 2x - feature maps.
             DS_feats.append(base_conv)
@@ -555,8 +544,7 @@ class DqnAgent:
                                                             regularizer=regularizer,
                                                             name_space='ResNet_Trans0' + str(idx + 1))
                 # Fuse "History Information" of this scale level.
-                block_tensor = history_fuse(block_tensor, glo_info, bbox=bbox_his, valid_his=his_len,
-                                            scales=scales_ruler, s_id=idx+1, his_flag=his_flag)
+                block_tensor = focus_fuse(block_tensor, local_focus, s_id=idx+1)
                 # Pass through the residual block.
                 block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx + 1], layer_units[idx] - 1,
                                                       feature_normalization=fe_norm,
@@ -629,6 +617,9 @@ class DqnAgent:
         # Regularization Related.
         regularize_coef = conf_train.get('regularize_coef', 0.0)
         regularizer = tf_layers.l2_regularizer(regularize_coef)
+        # Get max length of "Bbox History".
+        conf_dqn = self._config['DQN']
+        his_thres = conf_dqn.get('step_threshold', 10)
 
         # Get the "Scaled Focus Bbox" here.
         dqn_names = self._config['DQN'].get('double_dqn', None)
@@ -637,6 +628,17 @@ class DqnAgent:
         else:
             stage_prefix = self._name_space
         focus_bbox = self.__mediates[stage_prefix + '/Scale_FoBbox']
+
+        # Get the "History Length".
+        his_len = self._inputs[stage_prefix + '/History_Length']  # [b]
+        # Get the "History Flag", which indicates the valid length of "History Information".
+        his_flag = self.__mediates[stage_prefix + '/History_Flag']  # [b, his]
+        his_flag = tf.reshape(his_flag, [-1], name='flat_history_flag')  # [b*his]
+        # Get "Global Information", that is, the raw image.
+        glo_info = self._inputs[stage_prefix + '/image']  # [?, h, w, c]
+        # Get "History Information".
+        bbox_his = self._inputs[stage_prefix + '/Bbox_History']
+        bbox_his = tf.reshape(bbox_his, [-1, 4], name='flat_bbox_his')  # [b*his, 4]
 
         # Declare the scores fusion block. Pass through a 1x1 conv and bilinear.
         def gen_scores(x, out_chans, name_idx):
@@ -698,6 +700,48 @@ class DqnAgent:
             else:
                 raise ValueError('Unknown FPN up-sample structure !!!')
             return w
+
+        # Declare the function used to fuse the "Past Local Information".
+        def history_fuse(x, lhi, bbox, valid_his, scales, s_id, his_flag):
+            # generate flag.
+            bh = tf.expand_dims(tf.abs(bbox[:, 2] - bbox[:, 0]), axis=-1)  # [b*his, 1]
+            bw = tf.expand_dims(tf.abs(bbox[:, 3] - bbox[:, 1]), axis=-1)  # [b*his, 1]
+            ph = tf.greater_equal(bh, scales)  # [b*his, s]
+            pw = tf.greater_equal(bw, scales)  # [b*his, s]
+            p = tf.logical_and(ph, pw)  # [b*his, s]
+            pind = tf.expand_dims(tf.range(scales.get_shape().as_list()[-1]), axis=0)  # [1, s]
+            pind = tf.multiply(tf.to_int32(p), pind)  # [b*his, s]
+            pind = tf.reduce_min(pind, axis=-1)  # [b*his]
+            flag = tf.equal(pind, s_id)  # [b*his]
+            flag = tf.logical_and(flag, his_flag)  # [b*his]
+            # generate the "local feature maps".
+            l_h, l_w, l_c = x.get_shape().as_list()[1:]
+            lfm = tf.image.resize_bilinear(lhi, size=(l_h, l_w))  # [b*his, lh, lw, gc]
+            lfm = tf.stop_gradient(lfm)  # fast train
+            lfm = cus_res.residual_block(lfm, l_c, 1,
+                                         reuse=tf.AUTO_REUSE,
+                                         feature_normalization=fe_norm,
+                                         activation=activation,
+                                         keep_prob=conv_kprob,
+                                         regularizer=regularizer,
+                                         name_space='Local_Feats_' + str(s_id))  # [b*his, lh, lw, lc]
+            # filter the invalid history.
+            flag_map = tf.expand_dims(tf.expand_dims(tf.expand_dims(flag, axis=-1), axis=-1),
+                                      axis=-1)  # [b*his, 1, 1, 1]
+            flag_map = tf.logical_and(flag_map, tf.ones_like(lfm, dtype=tf.bool))  # [b*his, lh, lw, lc]
+            lfm = tf.reshape(lfm, [-1, his_thres, l_h, l_w, l_c])  # [b, his, lh, lw, lc]
+            flag_map = tf.reshape(flag_map, [-1, his_thres, l_h, l_w, l_c])  # [b, his, lh, lw, lc]
+            lfm = tf.where(flag_map, lfm, tf.zeros_like(lfm))  # [b, his, lh, lw, lc]
+            lfm = tf.reduce_sum(lfm, axis=1)  # [b, lh, lw, lc]
+            num_present = tf.to_float(tf.reshape(flag, [-1, his_thres]))  # [b, his]
+            num_present = tf.reduce_sum(num_present, axis=-1)  # [b,]
+            num_present = tf.where(tf.equal(num_present, 0.), tf.ones_like(num_present), num_present)  # [b,]
+            num_present = tf.expand_dims(tf.expand_dims(tf.expand_dims(num_present,
+                                                                       axis=-1), axis=-1), axis=-1)  # [b, h, w, c]
+            lfm = tf.divide(lfm, num_present)
+            # fuse the "local feature maps" into the raw input.
+            y = tf.add(x, lfm, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, lc]
+            return y
 
         # --------------------------------- "Segmentation" branch. ------------------------------------
         # Get configuration for ResNet
@@ -782,6 +826,11 @@ class DqnAgent:
             else:
                 raise ValueError('Unknown "Skip Connection" method !!!')
 
+            # Add "History Information".
+            if skip_conn is not None:
+                skip_conn = history_fuse(skip_conn, lhi, bbox=bbox_his, valid_his=his_len,
+                                         scales=scales_ruler, s_id=index + 1, his_flag=his_flag)
+
             # Now determine the features fusion method.
             if skip_conn is not None:
                 if up_fuse == 'add':
@@ -826,6 +875,22 @@ class DqnAgent:
             # Finish block.
             return y
         # ----------------------------- end of up-block -----------------------------
+
+        # Generate the "Scales Ruler".
+        scales_ruler = []
+        for p in range(len(layer_units) // scale_exp):
+            scales_ruler.append(1 / np.exp2(p * scale_exp + 1))
+        scales_ruler.append(0.)
+        scales_ruler = tf.constant([scales_ruler], name='Scales_Ruler')  # [1, scales]
+        # Generate the "Local History Information".
+        lhi = tf.expand_dims(glo_info, axis=1)  # [b, 1, gh, gw, gc]
+        lhi = tf.tile(lhi, multiples=[1, his_thres, 1, 1, 1])  # [b, his, gh, gw, gc]
+        g_h, g_w, g_c = glo_info.get_shape().as_list()[1:]
+        lhi = tf.reshape(lhi, [-1, g_h, g_w, g_c])  # [b*his, gh, gw, gc]
+        # lhi = net_util.region_fuzzy(lhi, bbox=bbox_his, name='Gause_fuzzy')   # [b*his, gh, gw, gc]
+        maps = net_util.gen_focus_maps_4bbox(bbox_his, cor_size=glo_info.get_shape().as_list()[1:3],
+                                             name='History_maps')  # [b*his, h, w, 1]
+        lhi = tf.multiply(lhi, tf.to_float(maps))  # [b*his, gh, gw, gc]
 
         # Declare the loss holder (list).
         CEloss_tensors = []
@@ -1516,7 +1581,7 @@ class DqnAgent:
         crop_method = conf_cus.get('size_matcher', 'crop')
         logit_type = conf_cus.get('result_tensor', 'complete')
         clazz_imb = conf_cus.get('class_imbalance', 'bbox')
-        clzImb_thres = conf_cus.get('class_imbalance_threshold', 0.9)
+        clzImb_thres = conf_cus.get('class_imbalance_threshold', [0.995, 0.9, 0.9, 0.9, 0.9])
         loss_type = conf_cus.get('segmentation_loss', 'DICE')
 
         # Get the stage prefix for conveniently inferring inputs holders.
@@ -1593,14 +1658,31 @@ class DqnAgent:
             if clazz_imb == 'bbox':
                 # Filter the region outside the "Focus Map".
                 clazz_weights = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
-                                            name='filter_focus')    # [?, h, w]
+                                            name='filter_focus')  # [?, h, w]
             elif clazz_imb == 'threshold':
                 # Filter the gradients of whose probabilities greater than threshold.
                 filt_prob = tf.reduce_sum(tf.multiply(SEG_logits, cw_mask), axis=-1,
-                                          name='filter_prob')   # [?, h, w]
-                thres_map = tf.less(filt_prob, clzImb_thres, name='clzImb_thres_map')   # [?, h, w]
+                                          name='filter_prob')  # [?, h, w]
+                filt_thres = tf.reduce_sum(
+                    tf.multiply(tf.expand_dims(tf.expand_dims(tf.expand_dims(clzImb_thres, axis=0), axis=0), axis=0),
+                                cw_mask),
+                    axis=-1, name='filter_thres')  # [?, h, w]
+                thres_map = tf.less(filt_prob, filt_thres, name='clzImb_thres_map')  # [?, h, w]
                 clazz_weights = tf.multiply(clazz_weights, tf.to_float(thres_map),
-                                            name='filter_thres')    # [?, h, w]
+                                            name='filter_thres')  # [?, h, w]
+            elif clazz_imb == 'bbox-thres':
+                # Filter the gradients of whose probabilities greater than threshold.
+                filt_prob = tf.reduce_sum(tf.multiply(SEG_logits, cw_mask), axis=-1,
+                                          name='filter_prob')  # [?, h, w]
+                filt_thres = tf.reduce_sum(
+                    tf.multiply(tf.expand_dims(tf.expand_dims(tf.expand_dims(clzImb_thres, axis=0), axis=0), axis=0),
+                                cw_mask),
+                    axis=-1, name='filter_thres')  # [?, h, w]
+                thres_map = tf.less(filt_prob, filt_thres, name='clzImb_thres_map')  # [?, h, w]
+                clazz_weights = tf.multiply(clazz_weights, tf.to_float(thres_map),
+                                            name='filter_fusion01')  # [?, h, w]
+                clazz_weights = tf.multiply(clazz_weights, tf.to_float(focus_map[:, :, :, 0]),
+                                            name='filter_fusion02')  # [?, h, w]
             elif clazz_imb == 'W/O':
                 # Do nothing.
                 pass

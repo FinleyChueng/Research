@@ -4,8 +4,8 @@ from dataset.adapter.bratsAdapter import *
 # from task.priorityDQNmodel import *
 from util.visualization import *
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 
