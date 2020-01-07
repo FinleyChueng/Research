@@ -1325,8 +1325,10 @@ class DqnAgent:
             # Convert to the binary mask.
             FE_h, FE_w, FE_c = FE_tensor.get_shape().as_list()[1:]  # [fe_h, fe_w, fe_c]
             SEG_info = tf.one_hot(SEG_info, depth=clazz_dim, name='DQN_segOtMask')  # [?, fe_h, fe_w, cls]
-            SEG_info = tf.image.resize_bilinear(SEG_info, [FE_h, FE_w],
-                                                name='DQN_segBi')[:, :, :, 1:]  # [?, fe_h, fe_w, cls-1]
+            # SEG_info = tf.image.resize_bilinear(SEG_info, [FE_h, FE_w],
+            #                                     name = 'DQN_segBi')[:,:,:, 1:]  # [?, fe_h, fe_w, cls-1]
+            SEG_info = tf.image.resize_nearest_neighbor(SEG_info, [FE_h, FE_w],
+                                                        name='DQN_segNN')[:, :, :, 1:]  # [?, fe_h, fe_w, cls-1]
             # Stop gradients from DQN-to-SEG if specified.
             SEG_info = tf.stop_gradient(SEG_info, name='grad_nop')
             # Reshape the tensors for conveniently process.
