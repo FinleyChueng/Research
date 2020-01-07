@@ -127,6 +127,9 @@ class FocusEnvCore:
         fx2_1px = 1 / image_width
         self._FAKE_BBOX = np.asarray([0.0, 0.0, fy2_1px, fx2_1px])  # [y1, x1, y2, x2]
 
+        # The "Focus Boundary" used to restrict the range of target.
+        self._FOCUS_boundary = None
+
         # Get "Position Information" fusion method.
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
@@ -273,6 +276,9 @@ class FocusEnvCore:
         # Reset the "Focus Bounding-box".
         self._focus_bbox = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float32)   # (y1, x1, y2, x2)
 
+        # Reset the "Focus Boundary".
+        self._FOCUS_boundary = (0.0, 0.0, 1.0, 1.0)     # (y1, x1, y2, x2)
+
         # Reset the "Action History".
         self._ACTION_his = collections.deque([-1,] * his_len)
 
@@ -280,7 +286,7 @@ class FocusEnvCore:
         self._BBOX_his = collections.deque([self._FAKE_BBOX] * step_thres)
 
         # Reset the "Previous Relative Directions".
-        self._RelDir_prev = ['left-up']     # add default outermost direction.
+        self._RelDir_prev = []     # clear.
 
         # Reset the time-step.
         self._time_step = 0
@@ -353,22 +359,23 @@ class FocusEnvCore:
                         (self._focus_bbox.copy(), None, None, self._SEG_prev.copy(), None))  # Need copy !!!
                 # Assign the "Focus Bbox".
                 init_region = np.where(segmentation != 0)
-                init_y1 = max(0, min(init_region[0]) - initFB_pad) / image_height
-                init_x1 = max(0, min(init_region[1]) - initFB_pad) / image_width
-                init_y2 = min(image_height, max(init_region[0]) + initFB_pad) / image_height
-                init_x2 = min(image_width, max(init_region[1]) + initFB_pad) / image_width
+                init_y1 = max(0, np.min(init_region[0]) - initFB_pad) / image_height
+                init_x1 = max(0, np.min(init_region[1]) - initFB_pad) / image_width
+                init_y2 = min(image_height, np.max(init_region[0]) + initFB_pad) / image_height
+                init_x2 = min(image_width, np.max(init_region[1]) + initFB_pad) / image_width
                 self._focus_bbox = np.asarray([init_y1, init_x1, init_y2, init_x2])
+                # Re-assign the "Focus Boundary".
+                self._FOCUS_boundary = (init_y1, init_x1, init_y2, init_x2)
                 # Assign the "Current Segmentation" holders.
                 self._SEG_prev = segmentation
                 # Append region result into "Complete Results".
                 self._COMP_result.append(COMP_res)
                 self._COMP_result.popleft()
-                # Append the "Relative Direction" history (for wide range).
-                self._RelDir_prev.append('right-bottom')
-                # Increase the time-step, and record the current bbox to the history.
-                self._time_step += 1
+                # Record the current bbox to the history.
                 self._BBOX_his.append(self._focus_bbox.copy())
                 self._BBOX_his.popleft()
+                # Increase the time-step
+                self._time_step += 1
 
         # Whether return the train samples meta according to phrase.
         if self._phrase == 'Train':
@@ -839,6 +846,8 @@ class FocusEnvCore:
         y1, x1, y2, x2 = bbox
         h = y2 - y1
         w = x2 - x1
+        # Get the four boundaries (normalized).
+        B_y1, B_x1, B_y2, B_x2 = self._FOCUS_boundary
 
         # -------> Generate the whole situation for convenient selection.
         s_anchors = []
@@ -848,24 +857,24 @@ class FocusEnvCore:
         # S1: Child left-up.
         s1_y1 = y1
         s1_x1 = x1
-        s1_y2 = min(1.0, y1 + cld_h)
-        s1_x2 = min(1.0, x1 + cld_w)
+        s1_y2 = min(B_y2, y1 + cld_h)
+        s1_x2 = min(B_x2, x1 + cld_w)
         s_anchors.append([s1_y1, s1_x1, s1_y2, s1_x2])
         # S2: Child right-up.
-        s2_y1 = max(0.0, y2 - cld_h)
+        s2_y1 = max(B_y1, y2 - cld_h)
         s2_x1 = x1
         s2_y2 = y2
-        s2_x2 = min(1.0, x1 + cld_w)
+        s2_x2 = min(B_x2, x1 + cld_w)
         s_anchors.append([s2_y1, s2_x1, s2_y2, s2_x2])
         # S3: Child left-bottom.
         s3_y1 = y1
-        s3_x1 = max(0.0, x2 - cld_w)
-        s3_y2 = min(1.0, y1 + cld_h)
+        s3_x1 = max(B_x1, x2 - cld_w)
+        s3_y2 = min(B_y2, y1 + cld_h)
         s3_x2 = x2
         s_anchors.append([s3_y1, s3_x1, s3_y2, s3_x2])
         # S4: Child right-bottom.
-        s4_y1 = max(0.0, y2 - cld_h)
-        s4_x1 = max(0.0, x2 - cld_w)
+        s4_y1 = max(B_y1, y2 - cld_h)
+        s4_x1 = max(B_x1, x2 - cld_w)
         s4_y2 = y2
         s4_x2 = x2
         s_anchors.append([s4_y1, s4_x1, s4_y2, s4_x2])
@@ -873,80 +882,188 @@ class FocusEnvCore:
         par_h = h * scale
         par_w = w * scale
         # S5: Parent left-up.
-        s5_y1 = max(0.0, y2 - par_h)
-        s5_x1 = max(0.0, x2 - par_w)
+        s5_y1 = max(B_y1, y2 - par_h)
+        s5_x1 = max(B_x1, x2 - par_w)
         s5_y2 = y2
         s5_x2 = x2
         s_anchors.append([s5_y1, s5_x1, s5_y2, s5_x2])
         # S6: Parent right-up.
         s6_y1 = y1
-        s6_x1 = max(0.0, x2 - par_w)
-        s6_y2 = min(1.0, y1 + par_h)
+        s6_x1 = max(B_x1, x2 - par_w)
+        s6_y2 = min(B_y2, y1 + par_h)
         s6_x2 = x2
         s_anchors.append([s6_y1, s6_x1, s6_y2, s6_x2])
         # S7: Parent left-bottom.
-        s7_y1 = max(0.0, y2 - par_h)
+        s7_y1 = max(B_y1, y2 - par_h)
         s7_x1 = x1
         s7_y2 = y2
-        s7_x2 = min(1.0, x1 + par_w)
+        s7_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s7_y1, s7_x1, s7_y2, s7_x2])
         # S8: Parent right-bottom.
         s8_y1 = y1
         s8_x1 = x1
-        s8_y2 = min(1.0, y1 + par_h)
-        s8_x2 = min(1.0, x1 + par_w)
+        s8_y2 = min(B_y2, y1 + par_h)
+        s8_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s8_y1, s8_x1, s8_y2, s8_x2])
         # ---> Peers situation.
         pee_h = h
         pee_w = w
         # S9: Peer left-up.
-        s9_y1 = max(0.0, y2 - par_h)
-        s9_x1 = max(0.0, x2 - par_w)
-        s9_y2 = max(0.0, y2 - par_h + pee_h)
-        s9_x2 = max(0.0, x2 - par_w + pee_w)
+        s9_y1 = max(B_y1, y2 - par_h)
+        s9_x1 = max(B_x1, x2 - par_w)
+        s9_y2 = max(B_y1, y2 - par_h + pee_h)
+        s9_x2 = max(B_x1, x2 - par_w + pee_w)
         s_anchors.append([s9_y1, s9_x1, s9_y2, s9_x2])
         # S10: Peer right-up.
-        s10_y1 = min(1.0, y1 + par_h - pee_h)
-        s10_x1 = max(0.0, x2 - par_w)
-        s10_y2 = min(1.0, y1 + par_h)
-        s10_x2 = max(0.0, x2 - par_w + pee_w)
+        s10_y1 = min(B_y2, y1 + par_h - pee_h)
+        s10_x1 = max(B_x1, x2 - par_w)
+        s10_y2 = min(B_y2, y1 + par_h)
+        s10_x2 = max(B_x1, x2 - par_w + pee_w)
         s_anchors.append([s10_y1, s10_x1, s10_y2, s10_x2])
         # S11: Peer left-bottom.
-        s11_y1 = max(0.0, y2 - par_h)
-        s11_x1 = min(1.0, x1 + par_w - pee_w)
-        s11_y2 = max(0.0, y2 - par_h + pee_h)
-        s11_x2 = min(1.0, x1 + par_w)
+        s11_y1 = max(B_y1, y2 - par_h)
+        s11_x1 = min(B_x2, x1 + par_w - pee_w)
+        s11_y2 = max(B_y1, y2 - par_h + pee_h)
+        s11_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s11_y1, s11_x1, s11_y2, s11_x2])
         # S12: Peer right-bottom.
-        s12_y1 = min(1.0, y1 + par_h - pee_h)
-        s12_x1 = min(1.0, x1 + par_w - pee_w)
-        s12_y2 = min(1.0, y1 + par_h)
-        s12_x2 = min(1.0, x1 + par_w)
+        s12_y1 = min(B_y2, y1 + par_h - pee_h)
+        s12_x1 = min(B_x2, x1 + par_w - pee_w)
+        s12_y2 = min(B_y2, y1 + par_h)
+        s12_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s12_y1, s12_x1, s12_y2, s12_x2])
         # S13: Peer pure-left.
-        s13_y1 = max(0.0, y2 - par_h)
+        s13_y1 = max(B_y1, y2 - par_h)
         s13_x1 = x1
-        s13_y2 = max(0.0, y2 - par_h + pee_h)
+        s13_y2 = max(B_y1, y2 - par_h + pee_h)
         s13_x2 = x2
         s_anchors.append([s13_y1, s13_x1, s13_y2, s13_x2])
         # S14: Peer pure-up.
         s14_y1 = y1
-        s14_x1 = max(0.0, x2 - par_w)
+        s14_x1 = max(B_x1, x2 - par_w)
         s14_y2 = y2
-        s14_x2 = max(0.0, x2 - par_w + pee_w)
+        s14_x2 = max(B_x1, x2 - par_w + pee_w)
         s_anchors.append([s14_y1, s14_x1, s14_y2, s14_x2])
         # S15: Peer pure-right.
-        s15_y1 = min(1.0, y1 + par_h - pee_h)
+        s15_y1 = min(B_y2, y1 + par_h - pee_h)
         s15_x1 = x1
-        s15_y2 = min(1.0, y1 + par_h)
+        s15_y2 = min(B_y2, y1 + par_h)
         s15_x2 = x2
         s_anchors.append([s15_y1, s15_x1, s15_y2, s15_x2])
         # S16: Peer pure-bottom.
         s16_y1 = y1
-        s16_x1 = min(1.0, x1 + par_w - pee_w)
+        s16_x1 = min(B_x2, x1 + par_w - pee_w)
         s16_y2 = y2
-        s16_x2 = min(1.0, x1 + par_w)
+        s16_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
+
+        # # -------> Generate the whole situation for convenient selection.
+        # s_anchors = []
+        # # ---> Children situation.
+        # cld_h = h / scale
+        # cld_w = w / scale
+        # # S1: Child left-up.
+        # s1_y1 = y1
+        # s1_x1 = x1
+        # s1_y2 = min(1.0, y1 + cld_h)
+        # s1_x2 = min(1.0, x1 + cld_w)
+        # s_anchors.append([s1_y1, s1_x1, s1_y2, s1_x2])
+        # # S2: Child right-up.
+        # s2_y1 = max(0.0, y2 - cld_h)
+        # s2_x1 = x1
+        # s2_y2 = y2
+        # s2_x2 = min(1.0, x1 + cld_w)
+        # s_anchors.append([s2_y1, s2_x1, s2_y2, s2_x2])
+        # # S3: Child left-bottom.
+        # s3_y1 = y1
+        # s3_x1 = max(0.0, x2 - cld_w)
+        # s3_y2 = min(1.0, y1 + cld_h)
+        # s3_x2 = x2
+        # s_anchors.append([s3_y1, s3_x1, s3_y2, s3_x2])
+        # # S4: Child right-bottom.
+        # s4_y1 = max(0.0, y2 - cld_h)
+        # s4_x1 = max(0.0, x2 - cld_w)
+        # s4_y2 = y2
+        # s4_x2 = x2
+        # s_anchors.append([s4_y1, s4_x1, s4_y2, s4_x2])
+        # # ---> Parents situation.
+        # par_h = h * scale
+        # par_w = w * scale
+        # # S5: Parent left-up.
+        # s5_y1 = max(0.0, y2 - par_h)
+        # s5_x1 = max(0.0, x2 - par_w)
+        # s5_y2 = y2
+        # s5_x2 = x2
+        # s_anchors.append([s5_y1, s5_x1, s5_y2, s5_x2])
+        # # S6: Parent right-up.
+        # s6_y1 = y1
+        # s6_x1 = max(0.0, x2 - par_w)
+        # s6_y2 = min(1.0, y1 + par_h)
+        # s6_x2 = x2
+        # s_anchors.append([s6_y1, s6_x1, s6_y2, s6_x2])
+        # # S7: Parent left-bottom.
+        # s7_y1 = max(0.0, y2 - par_h)
+        # s7_x1 = x1
+        # s7_y2 = y2
+        # s7_x2 = min(1.0, x1 + par_w)
+        # s_anchors.append([s7_y1, s7_x1, s7_y2, s7_x2])
+        # # S8: Parent right-bottom.
+        # s8_y1 = y1
+        # s8_x1 = x1
+        # s8_y2 = min(1.0, y1 + par_h)
+        # s8_x2 = min(1.0, x1 + par_w)
+        # s_anchors.append([s8_y1, s8_x1, s8_y2, s8_x2])
+        # # ---> Peers situation.
+        # pee_h = h
+        # pee_w = w
+        # # S9: Peer left-up.
+        # s9_y1 = max(0.0, y2 - par_h)
+        # s9_x1 = max(0.0, x2 - par_w)
+        # s9_y2 = max(0.0, y2 - par_h + pee_h)
+        # s9_x2 = max(0.0, x2 - par_w + pee_w)
+        # s_anchors.append([s9_y1, s9_x1, s9_y2, s9_x2])
+        # # S10: Peer right-up.
+        # s10_y1 = min(1.0, y1 + par_h - pee_h)
+        # s10_x1 = max(0.0, x2 - par_w)
+        # s10_y2 = min(1.0, y1 + par_h)
+        # s10_x2 = max(0.0, x2 - par_w + pee_w)
+        # s_anchors.append([s10_y1, s10_x1, s10_y2, s10_x2])
+        # # S11: Peer left-bottom.
+        # s11_y1 = max(0.0, y2 - par_h)
+        # s11_x1 = min(1.0, x1 + par_w - pee_w)
+        # s11_y2 = max(0.0, y2 - par_h + pee_h)
+        # s11_x2 = min(1.0, x1 + par_w)
+        # s_anchors.append([s11_y1, s11_x1, s11_y2, s11_x2])
+        # # S12: Peer right-bottom.
+        # s12_y1 = min(1.0, y1 + par_h - pee_h)
+        # s12_x1 = min(1.0, x1 + par_w - pee_w)
+        # s12_y2 = min(1.0, y1 + par_h)
+        # s12_x2 = min(1.0, x1 + par_w)
+        # s_anchors.append([s12_y1, s12_x1, s12_y2, s12_x2])
+        # # S13: Peer pure-left.
+        # s13_y1 = max(0.0, y2 - par_h)
+        # s13_x1 = x1
+        # s13_y2 = max(0.0, y2 - par_h + pee_h)
+        # s13_x2 = x2
+        # s_anchors.append([s13_y1, s13_x1, s13_y2, s13_x2])
+        # # S14: Peer pure-up.
+        # s14_y1 = y1
+        # s14_x1 = max(0.0, x2 - par_w)
+        # s14_y2 = y2
+        # s14_x2 = max(0.0, x2 - par_w + pee_w)
+        # s_anchors.append([s14_y1, s14_x1, s14_y2, s14_x2])
+        # # S15: Peer pure-right.
+        # s15_y1 = min(1.0, y1 + par_h - pee_h)
+        # s15_x1 = x1
+        # s15_y2 = min(1.0, y1 + par_h)
+        # s15_x2 = x2
+        # s_anchors.append([s15_y1, s15_x1, s15_y2, s15_x2])
+        # # S16: Peer pure-bottom.
+        # s16_y1 = y1
+        # s16_x1 = min(1.0, x1 + par_w - pee_w)
+        # s16_y2 = y2
+        # s16_x2 = min(1.0, x1 + par_w)
+        # s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
 
         # Now select anchors to return according to the mode.
         if adim == 8:   # restrict, abandon
@@ -1053,10 +1170,8 @@ class FocusEnvCore:
                 BBOX_err[idx] = True
                 info[idx] = 'Zero-scale Bbox !'
         # Check if it's the outermost level.
-        RelDir_his = self._RelDir_prev.copy()
-        RelDir_his.pop()
-        if len(RelDir_his) == 0:
-            for _idx in range(self._act_dim - 1):
+        if len(self._RelDir_prev) == 0:
+            for _idx in range(4, self._act_dim - 1):
                 BBOX_err[_idx] = True
                 info[_idx] = 'Out-of-Boundary !'
 
@@ -1079,8 +1194,11 @@ class FocusEnvCore:
 
         # Terminal flag.
         terminal = False
+        # The out-most flag.
+        outmost = len(self._RelDir_prev) == 0
 
-        # Execute the given action. Different procedure according to action quantity.
+        # Execute the relative direction procedure for given action.
+        #   Different procedure according to action quantity.
         if self._act_dim == 8:  # restrict, abandon
             # --> select children.
             if action <= 3:
@@ -1089,16 +1207,18 @@ class FocusEnvCore:
                 self._RelDir_prev.append(rel_dirc)
             # --> select peers.
             elif action <= 6:
-                # translate the current (newest) relative direction.  -- focus peer.
-                cur_Rdirc = self._RelDir_prev.pop()
-                # metaphysics formulation.
-                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
-                NRD_idx = action - 4
-                if NRD_idx - CRD_idx <= 0:
-                    NRD_idx -= 1
-                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
-                # pop out and push new relative direction.
-                self._RelDir_prev.append(next_Rdirc)
+                # only enable when it isn't out-most.
+                if not outmost:
+                    # translate the current (newest) relative direction.  -- focus peer.
+                    cur_Rdirc = self._RelDir_prev.pop()
+                    # metaphysics formulation.
+                    CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
+                    NRD_idx = action - 4
+                    if NRD_idx - CRD_idx <= 0:
+                        NRD_idx -= 1
+                    next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
+                    # pop out and push new relative direction.
+                    self._RelDir_prev.append(next_Rdirc)
             # --> stop, terminal.
             else:
                 terminal = True
@@ -1111,26 +1231,35 @@ class FocusEnvCore:
                 self._RelDir_prev.append(rel_dirc)
             # --> select parent.
             elif action == 4:
-                # pop out the relative direction. -- focus out.
-                self._RelDir_prev.pop()
+                # only enable when it isn't out-most.
+                if not outmost:
+                    # pop out the relative direction. -- focus out.
+                    self._RelDir_prev.pop()
             # --> select peers.
             elif action <= 7:
-                # translate the current (newest) relative direction.  -- focus peer.
-                cur_Rdirc = self._RelDir_prev.pop()
-                # metaphysics formulation.
-                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
-                NRD_idx = action - 4
-                if NRD_idx - CRD_idx <= 0:
-                    NRD_idx -= 1
-                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
-                # pop out and push new relative direction.
-                self._RelDir_prev.append(next_Rdirc)
+                # only enable when it isn't out-most.
+                if not outmost:
+                    # translate the current (newest) relative direction.  -- focus peer.
+                    cur_Rdirc = self._RelDir_prev.pop()
+                    # metaphysics formulation.
+                    CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
+                    NRD_idx = action - 4
+                    if NRD_idx - CRD_idx <= 0:
+                        NRD_idx -= 1
+                    next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
+                    # pop out and push new relative direction.
+                    self._RelDir_prev.append(next_Rdirc)
             # --> stop, terminal.
             else:
                 terminal = True
         # Not restrict, abandon.
         elif self._act_dim == 13:
-            # --> select children.
+            # Fake relative direction for "Out-of-Boundary" error check.
+            fake_RD = self._RELATIVE_DIRECTION[0]
+            # --> select children. -- focus in. push
+            if action <= 3:
+                self._RelDir_prev.append(fake_RD)
+            # --> select peers.
             if action <= 11:
                 pass
             # --> stop, terminal.
@@ -1145,8 +1274,10 @@ class FocusEnvCore:
                 self._RelDir_prev.append(fake_RD)
             # --> select parent. -- focus out. pop
             elif action <= 7:
-                # check if it's the outermost level.
-                self._RelDir_prev.pop()
+                # only enable when it isn't out-most.
+                if not outmost:
+                    # check if it's the outermost level.
+                    self._RelDir_prev.pop()
             # --> select peers. -- do nothing ...
             elif action <= 15:
                 pass
