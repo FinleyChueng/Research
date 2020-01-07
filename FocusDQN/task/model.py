@@ -221,7 +221,7 @@ class DqnAgent:
             # No need the two holders.
             SEG_logits = CEloss_tensors = None
         # Select next region to deal with. (Generate the DQN output)
-        SEG_info = self.__mediates[self._name_space + '/Region_tensor']
+        SEG_info = self.__mediates[self._name_space + '/SEG_suit_output']
         DQN_output = self.__region_selection(FE_tensor, SEG_info, action_dim, name_space)
 
         # Package some outputs.
@@ -491,9 +491,10 @@ class DqnAgent:
                                          activation=activation,
                                          keep_prob=conv_kprob,
                                          regularizer=regularizer,
-                                         name_space='Local_Feats_' + str(s_id))  # [b, lh, lw, lc]
+                                         name_space='Local_Feats_' + str(s_id))     # [b, lh, lw, lc]
             # fuse the "local feature maps" into the raw input.
-            y = tf.add(x, lfm, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, lc]
+            y = tf.concat([x, lfm], axis=-1, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, 2*lc]
+            # y = tf.add(x, lfm, name='Local_Fusion_' + str(s_id))  # [b, lh, lw, lc]
             return y
         # ------------------------- end of sub-func ----------------------------
 
@@ -548,7 +549,8 @@ class DqnAgent:
                 # Fuse "History Information" of this scale level.
                 block_tensor = focus_fuse(block_tensor, local_focus, s_id=idx+1)
                 # Pass through the residual block.
-                block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx + 1], layer_units[idx] - 1,
+                block_tensor = cus_res.residual_block(block_tensor, 2 * kernel_numbers[idx + 1], layer_units[idx] - 1,
+                # block_tensor = cus_res.residual_block(block_tensor, kernel_numbers[idx + 1], layer_units[idx] - 1,
                                                       feature_normalization=fe_norm,
                                                       activation=activation,
                                                       keep_prob=conv_kprob,
@@ -1339,25 +1341,35 @@ class DqnAgent:
         # Check for the introduction method of "Position Information".
         conf_cus = self._config['Custom']
         pos_method = conf_cus.get('position_info', 'map')
-        grad_DQN2SEG = conf_cus.get('grad_DQN2SEG', True)
 
         # Start definition.
         DQN_name = name_space + '/DQN'
         with tf.variable_scope(DQN_name):
-            # Stop gradients from DQN-to-SEG if specified.
-            if not grad_DQN2SEG:
-                SEG_info = tf.stop_gradient(SEG_info, name='grad_nop')
-            # Reshape the FUSE_result as a part of DQN input.
+            # Convert to the binary mask.
             FE_h, FE_w, FE_c = FE_tensor.get_shape().as_list()[1:]  # [fe_h, fe_w, fe_c]
-            FE_prop = (suit_h // FE_h) * (suit_w // FE_w) * clazz_dim
-            DQN_in = tf.reshape(SEG_info, [-1, FE_h, FE_w, FE_prop],
-                                name='SEG_info_4DQN')   # [?, fe_h, fe_w, prop^2]
+            SEG_info = tf.one_hot(SEG_info, depth=clazz_dim, name='DQN_segOtMask')  # [?, fe_h, fe_w, cls]
+            SEG_info = tf.image.resize_bilinear(SEG_info, [FE_h, FE_w],
+                                                name='DQN_segBi')[:, :, :, 1:]  # [?, fe_h, fe_w, cls-1]
+            # Stop gradients from DQN-to-SEG if specified.
+            SEG_info = tf.stop_gradient(SEG_info, name='grad_nop')
+            # Reshape the tensors for conveniently process.
+            FETs = tf.expand_dims(FE_tensor, axis=-1, name='FETs')  # [?, fe_h, fe_w, fe_c, 1]
+            clz_indt = tf.ones([1, 1, 1, 1, clazz_dim - 1])  # [1, 1, 1, 1, cls-1]
+            FETs = tf.multiply(FETs, clz_indt)  # [?, fe_h, fe_w, fe_c, cls-1]
+            SEG_info = tf.expand_dims(SEG_info, axis=-2)  # [?, fe_h, fe_w, 1, cls-1]
+            DQN_in = tf.multiply(FETs, tf.to_float(SEG_info), name='DQN_attCls')  # [?, fe_h, fe_w, fe_c, cls-1]
+            DQN_in = tf.reshape(DQN_in, [-1, FE_h, FE_w, FE_c], name='DQN_attCls_4D')  # [b*(cls-1), fe_h, fe_w, fe_c]
             DQN_in = cus_res.residual_block(DQN_in, FE_c, 1,
                                             feature_normalization=fe_norm,
                                             activation=activation,
                                             keep_prob=conv_kprob,
                                             regularizer=regularizer,
-                                            name_space='SEG_info_res1')     # [?, fe_h, fe_w, fe_c]
+                                            name_space='DQN_att_res')  # [b*(cls-1), fe_h, fe_w, fe_c]
+            DQN_in = tf.reshape(DQN_in, [-1, FE_h, FE_w, FE_c, clazz_dim - 1],
+                                name='DQN_att_res_5D')  # [?, fe_h, fe_w, fe_c, cls-1]
+            DQN_in = tf.reduce_max(DQN_in, axis=-1, name='DQN_prev_attention')  # [?, fe_h, fe_w, fe_c]
+
+            # Fuse the information from segmentation branch according to the different method.
             if seg_fuse == 'add':
                 DQN_in = tf.add(FE_tensor, DQN_in, name='Fuse_IN')  # [?, fe_h, fe_w, fe_c]
             elif seg_fuse == 'concat':
@@ -1808,7 +1820,8 @@ class DqnAgent:
             elif reward_form == 'DR-DICE':
                 candidates_reward = tf.subtract(candidates_value, tf.expand_dims(current_value, axis=1),
                                                 name='Candidates_diff')  # [?, acts-1, cls]
-                candidates_reward = tf.reduce_mean(candidates_reward, axis=-1, name='Candidates_Raw')   # [?, acts-1]
+                candidates_reward = tf.reduce_mean(candidates_reward, axis=-1, name='Candidates_mean')   # [?, acts-1]
+                candidates_reward = tf.multiply(0.5, candidates_reward, name='Candidates_Raw')  # [?, acts-1]
             else:
                 raise ValueError('Unknown reward form !!!')
 
