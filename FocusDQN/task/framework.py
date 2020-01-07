@@ -130,8 +130,8 @@ class DeepQNetwork(DQN):
         # check saved model
         self._check_model()
 
-        # # finalize the graph
-        # self._sess.graph.finalize()
+        # finalize the graph
+        self._sess.graph.finalize()
 
         # Finish initialization.
         return
@@ -858,8 +858,8 @@ class DeepQNetwork(DQN):
             self._saver.save(self._sess, params_dir, 233)
         # Regularly copy the parameters to "Target" DQN network.
         if double_q is not None and step % save_steps == 0:
-            self._model.notify_copy2_DDQN(self._sess, only_head=False)
-
+            copy_ops = self._losses[self._name_space + '/copy_params']
+            self._sess.run(copy_ops)
         # Finish one turn train. Return the cost value.
         return v1_cost, v2_cost, v3_cost, bias_reward
 

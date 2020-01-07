@@ -74,6 +74,9 @@ class DqnAgent:
             DQN_output, SEG_logits, CEloss_tensors = self._architecture(self._action_dim, ORG_name)
             self._architecture(self._action_dim, TAR_name, with_segmentation=False)
 
+        # Generate the "Parameters Copy" operation if needed.
+        self._notify_copy2_DDQN(only_head=False)
+
         # Construct the loss function after building model.
         self._loss_summary(DQN_output, SEG_logits, CEloss_tensors)
 
@@ -106,32 +109,6 @@ class DqnAgent:
 
         # Return the inputs, outputs, losses, summary and visual holder.
         return self._inputs, self._outputs, self._losses, self._summary, self._visual
-
-
-    def notify_copy2_DDQN(self, tf_sess, only_head=False):
-        r'''
-            Copy the parameters from Origin DQN to the Target DQN. To support the "Double DQN".
-
-        :param tf_sess: The tensorflow session supplied by caller method.
-        :return:
-        '''
-        # Get the name space if enable the "Double DQN".
-        conf_dqn = self._config['DQN']
-        double_dqn = conf_dqn.get('double_dqn', None)
-        # Only execute when specify the name scope pair.
-        if double_dqn is not None:
-            # Get name scope pair.
-            from_namespace, to_namespace = double_dqn
-            # Only copy the parameters of head if specified.
-            if only_head:
-                from_namespace += '/DQN'
-                to_namespace += '/DQN'
-            # Operation to copy parameters.
-            ops_base = net_util.copy_model_parameters(from_namespace, to_namespace)
-            # Execute the operation.
-            tf_sess.run(ops_base)
-        # Plain return.
-        return
 
 
 
@@ -2005,5 +1982,27 @@ class DqnAgent:
 
             # Plain return.
             return
+
+
+    #### --------------------- Additional Functions Declaraion Related ----------------------------
+    def _notify_copy2_DDQN(self, only_head=False):
+        r'''
+            Copy the parameters from Origin DQN to the Target DQN. To support the "Double DQN".
+        '''
+        # Get the name space if enable the "Double DQN".
+        conf_dqn = self._config['DQN']
+        double_dqn = conf_dqn.get('double_dqn', None)
+        # Only execute when specify the name scope pair.
+        if double_dqn is not None:
+            # Get name scope pair.
+            from_namespace, to_namespace = double_dqn
+            # Only copy the parameters of head if specified.
+            if only_head:
+                from_namespace += '/DQN'
+                to_namespace += '/DQN'
+            # Operation to copy parameters.
+            ops_base = net_util.copy_model_parameters(from_namespace, to_namespace)
+            # Package the operation.
+            self._losses[self._name_space + '/copy_params'] = ops_base
 
 

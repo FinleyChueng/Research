@@ -1083,8 +1083,22 @@ class FocusEnvCore:
         # Execute the given action. Different procedure according to action quantity.
         if self._act_dim == 8:  # restrict, abandon
             # --> select children.
-            if action <= 6:
-                pass
+            if action <= 3:
+                # push the relative direction. -- focus in.
+                rel_dirc = self._RELATIVE_DIRECTION[action]  # coz just the same order.
+                self._RelDir_prev.append(rel_dirc)
+            # --> select peers.
+            elif action <= 6:
+                # translate the current (newest) relative direction.  -- focus peer.
+                cur_Rdirc = self._RelDir_prev.pop()
+                # metaphysics formulation.
+                CRD_idx = self._RELATIVE_DIRECTION.index(cur_Rdirc)
+                NRD_idx = action - 4
+                if NRD_idx - CRD_idx <= 0:
+                    NRD_idx -= 1
+                next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
+                # pop out and push new relative direction.
+                self._RelDir_prev.append(next_Rdirc)
             # --> stop, terminal.
             else:
                 terminal = True
