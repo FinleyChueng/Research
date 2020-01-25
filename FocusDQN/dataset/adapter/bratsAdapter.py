@@ -29,7 +29,8 @@ class BratsAdapter(Adapter):
         self._enable_data_enhance = enable_data_enhance
 
         # The actual class and parameters.
-        self._train_brats = BRATS2015(train=True, test=False, validation_set_num=10)
+        self._train_brats = BRATS2015(train=True, test=False, validation_set_num=14)
+        # self._train_brats = BRATS2015(train=True, test=False, validation_set_num=10)
         self._test_brats = BRATS2015(train=False, test=True)
 
         # The variables used in enhance.

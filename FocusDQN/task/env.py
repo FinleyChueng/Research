@@ -523,7 +523,7 @@ class FocusEnvCore:
         self._ACTION_his.append(action)
         self._ACTION_his.popleft()
         # Append the current bbox into "Bbox History".
-        self._BBOX_his.append(dst_bbox.copy())
+        self._BBOX_his.append(self._focus_bbox.copy())
         self._BBOX_his.popleft()
         # Append the current region result into "Complete Result".
         self._COMP_result.append(COMP_res)

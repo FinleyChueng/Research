@@ -1199,7 +1199,6 @@ class DqnAgent:
                 FUSE_result = tf.divide(FUSE_result, fmean_factor, name='Fuse_result')  # [?, h, w, cls]
                 # Translate to result.
                 SEG_output = tf.argmax(FUSE_result, axis=-1, name='SEG_suit_output')  # [?, h, w]
-            # elif fusion_method == 'mask':
             elif fusion_method in ['mask-lap', 'mask-vote']:
                 # The placeholder of "Complete Result". --> Mask.
                 complete_result = net_util.placeholder_wrapper(self._inputs, tf.int64,
