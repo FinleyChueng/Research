@@ -572,7 +572,7 @@ dqn = DeepQNetwork(config=config,
                    data_adapter=data_adapter)
 
 # Train.
-dqn.train(epochs=2, max_instances=260)
+dqn.train(epochs=10, max_instances=260)
 # Test.
 dqn.test(110, is_validate=False)
 

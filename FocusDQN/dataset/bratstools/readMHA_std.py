@@ -395,12 +395,12 @@ class BRATS2015:
 
     def saveItk(self, MHA_id, array, name):
         array = np.asarray(array)
-        if array.ndim != 3 or array.shape[-1] != 155:
+        if array.ndim != 3 or array.shape[0] != 155:
             raise Exception('The array\'s last dimension must be 155 !!!')
         img = sitk.GetImageFromArray(array)
         if self.test:
             mhaIsTest = 'testing'
-            path = self.Flair_path[MHA_id]
+            path = self.Flair_path[int(MHA_id)]
             # path = self.Flair_path[self.test_batch_count - 2]
         else:
             mhaIsTest = 'training'

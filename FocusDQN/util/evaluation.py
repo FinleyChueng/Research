@@ -71,7 +71,7 @@ def DICE_Bi(pred, label):
     label = label.astype(np.bool).astype(np.int64)
     # Calculate.
     intersection = np.sum(pred * label)
-    union = np.sum(pred) + np.sum(label)
+    union = np.sum(pred + label)
     if union == 0:
         return 1.0
     else:

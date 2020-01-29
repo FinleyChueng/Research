@@ -84,9 +84,9 @@ class FocusEnvCore:
         restrict_mode = conf_dqn.get('restriction_action')
         aban_par = conf_dqn.get('abandon_parents')
         if restrict_mode:
-            self._act_dim = 8 if aban_par else 9
+            self._act_dim = 9 if aban_par else 10
         else:
-            self._act_dim = 13 if aban_par else 17
+            self._act_dim = 14 if aban_par else 18
 
         # Clazz weights (for segmentation).
         self._clazz_weights = None
@@ -463,11 +463,11 @@ class FocusEnvCore:
         # Generate anchors.
         conf_dqn = self._config['DQN']
         anchor_scale = conf_dqn.get('anchors_scale', 2)
-        if self._act_dim == 8 or self._act_dim == 9:
+        if self._act_dim == 9 or self._act_dim == 10:
             # "Restrict" mode.
             anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim,
                                     arg=self._RelDir_prev[-1])   # the newest relative direction.
-        elif self._act_dim == 13 or self._act_dim == 17:
+        elif self._act_dim == 14 or self._act_dim == 18:
             # "Whole Candidates" mode.
             anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim == 17)
         else:
@@ -479,6 +479,13 @@ class FocusEnvCore:
 
         # Execute the operation function to conduct "Segment" and "Focus".
         if self._label is not None:
+            explore_flag = self._phrase == 'Train'
+            # Generate the "Valid Action List". Which will be used in "Exploration".
+            valid_actions = BBOX_errs.copy()
+            valid_actions.append(False)
+            valid_actions = np.asarray(valid_actions) == False
+            valid_actions = [valid_actions,] if explore_flag else None
+            # Execute op function.
             segmentation, COMP_res, action, reward = op_func([(self._image.copy(),
                                                               SEG_prev.copy(),
                                                               position_info.copy(),
@@ -491,7 +498,8 @@ class FocusEnvCore:
                                                               BBOX_errs.copy(),
                                                               self._label.copy(),
                                                               self._clazz_weights.copy())],
-                                                             with_explore=self._phrase == 'Train',
+                                                             with_explore=explore_flag,
+                                                             explore_valids=valid_actions,
                                                              with_reward=True)
             segmentation = segmentation[0]
             COMP_res = COMP_res[0]
@@ -507,6 +515,7 @@ class FocusEnvCore:
                                                       his_plen,
                                                       comp_prev.copy())],
                                                      with_explore=False,
+                                                     explore_valids=None,
                                                      with_reward=False)
             segmentation= segmentation[0]
             COMP_res = COMP_res[0]
@@ -594,6 +603,8 @@ class FocusEnvCore:
                 clazz_weights: The class weights for current image.
             push_elems: The elements used to "Push Forward Environment". Detail as belows:
                 (anchors, BBOX_errs, infos)
+            valid_actions: Only used in "Training" phrase, which specially used as
+                the indicator for "Exploration Policy".
         '''
 
         # Check whether should use this "Step" version.
@@ -624,11 +635,11 @@ class FocusEnvCore:
         # Generate anchors.
         conf_dqn = self._config['DQN']
         anchor_scale = conf_dqn.get('anchors_scale', 2)
-        if self._act_dim == 8 or self._act_dim == 9:
+        if self._act_dim == 9 or self._act_dim == 10:
             # "Restrict" mode.
             anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim,
                                     arg=self._RelDir_prev[-1])   # the newest relative direction.
-        elif self._act_dim == 13 or self._act_dim == 17:
+        elif self._act_dim == 14 or self._act_dim == 18:
             # "Whole Candidates" mode.
             anchors = self._anchors(self._focus_bbox.copy(), anchor_scale, self._act_dim)
         else:
@@ -638,6 +649,11 @@ class FocusEnvCore:
         # Get the "Bbox Error" vector for all the candidates (anchors).
         BBOX_errs, infos = self._check_candidates(anchors)
 
+        # Generate the "Valid Action List". Which will be used in "Exploration".
+        valid_actions = BBOX_errs.copy()
+        valid_actions.append(False)
+        valid_actions = np.asarray(valid_actions) == False
+
         # Update the "Step" state.
         self._exec_1st = True
 
@@ -646,11 +662,13 @@ class FocusEnvCore:
             return (self._image.copy(), SEG_prev.copy(), position_info.copy(),
                     cur_bbox.copy(), acts_prev.copy(), bboxes_prev.copy(), his_plen, comp_prev.copy(),
                     anchors.copy(), BBOX_errs.copy(), self._label.copy(), self._clazz_weights.copy()), \
-                   (anchors.copy(), BBOX_errs.copy(), infos)
+                   (anchors.copy(), BBOX_errs.copy(), infos), \
+                   valid_actions
         else:
             return (self._image.copy(), SEG_prev.copy(), position_info.copy(),
                     cur_bbox.copy(), acts_prev.copy(), bboxes_prev.copy(), his_plen, comp_prev.copy()), \
-                   (anchors.copy(), BBOX_errs.copy(), infos)
+                   (anchors.copy(), BBOX_errs.copy(), infos), \
+                   valid_actions
 
 
     def step_2nd(self, results, state_elems, push_elems):
@@ -956,9 +974,11 @@ class FocusEnvCore:
         s16_y2 = y2
         s16_x2 = min(B_x2, x1 + par_w)
         s_anchors.append([s16_y1, s16_x1, s16_y2, s16_x2])
+        # ---> Self situation.
+        s_anchors.append([B_y1, B_x1, B_y2, B_x2])
 
         # Now select anchors to return according to the mode.
-        if adim == 8:   # restrict, abandon
+        if adim == 9:   # restrict, abandon
             # Check validity.
             if arg is None:
                 raise Exception('One must assign the arg with previous action when adim = 8 !!!')
@@ -967,22 +987,26 @@ class FocusEnvCore:
             if relative == 'left-up':
                 cands = [
                     0, 1, 2, 3,     # all children
-                    14, 15, 11  # peers - right, bottom, right-bottom
+                    14, 15, 11,     # peers - right, bottom, right-bottom
+                    16  # self
                 ]
             elif relative == 'right-up':
                 cands = [
-                    0, 1, 2, 3,  # all children
-                    12, 10, 15  # peers - left, left-bottom, bottom
+                    0, 1, 2, 3,     # all children
+                    12, 10, 15,     # peers - left, left-bottom, bottom
+                    16  # self
                 ]
             elif relative == 'left-bottom':
                 cands = [
-                    0, 1, 2, 3,  # all children
-                    13, 9, 14   # peers - up, right-up, right
+                    0, 1, 2, 3,     # all children
+                    13, 9, 14,  # peers - up, right-up, right
+                    16  # self
                 ]
             elif relative == 'right-bottom':
                 cands = [
-                    0, 1, 2, 3,  # all children
-                    8, 13, 12   # peers - left-up, up, left
+                    0, 1, 2, 3,     # all children
+                    8, 13, 12,  # peers - left-up, up, left
+                    16  # self
                 ]
             else:
                 raise Exception('Invalid relative value !!!')
@@ -992,7 +1016,7 @@ class FocusEnvCore:
                 r_anchors.append(s_anchors[c])
             return r_anchors
         # Restrict, not-abandon.
-        elif adim == 9:
+        elif adim == 10:
             # Check validity.
             if arg is None:
                 raise Exception('One must assign the arg with previous action when adim = 9 !!!')
@@ -1002,25 +1026,29 @@ class FocusEnvCore:
                 cands = [
                     0, 1, 2, 3,     # all children
                     7,  # parent - right-bottom
-                    14, 15, 11  # peers - right, bottom, right-bottom
+                    14, 15, 11,     # peers - right, bottom, right-bottom
+                    16  # self
                 ]
             elif relative == 'right-up':
                 cands = [
-                    0, 1, 2, 3,  # all children
+                    0, 1, 2, 3,     # all children
                     6,  # parent - left-bottom
-                    12, 10, 15  # peers - left, left-bottom, bottom
+                    12, 10, 15,     # peers - left, left-bottom, bottom
+                    16  # self
                 ]
             elif relative == 'left-bottom':
                 cands = [
-                    0, 1, 2, 3,  # all children
+                    0, 1, 2, 3,     # all children
                     5,  # parent - right-up
-                    13, 9, 14   # peers - up, right-up, right
+                    13, 9, 14,  # peers - up, right-up, right
+                    16  # self
                 ]
             elif relative == 'right-bottom':
                 cands = [
-                    0, 1, 2, 3,  # all children
+                    0, 1, 2, 3,     # all children
                     4,  # parent - left-up
-                    8, 13, 12   # peers - left-up, up, left
+                    8, 13, 12,  # peers - left-up, up, left
+                    16  # self
                 ]
             else:
                 raise Exception('Invalid relative value !!!')
@@ -1029,10 +1057,11 @@ class FocusEnvCore:
             for c in cands:
                 r_anchors.append(s_anchors[c])
             return r_anchors
-        elif adim == 13:
+        elif adim == 14:
             cands = [
-                0, 1, 2, 3,  # all children
-                8, 9, 10, 11, 12, 13, 14, 15    # all peers
+                0, 1, 2, 3,     # all children
+                8, 9, 10, 11, 12, 13, 14, 15,   # all peers
+                16  # self
             ]
             # Iteratively get corresponding anchors.
             r_anchors = []
@@ -1040,7 +1069,7 @@ class FocusEnvCore:
                 r_anchors.append(s_anchors[c])
             return r_anchors
         # Not-restrict, not-abandon .
-        elif adim == 17:
+        elif adim == 18:
             # Return all the anchors.
             return s_anchors
         else:
@@ -1063,7 +1092,7 @@ class FocusEnvCore:
                 info[idx] = 'Zero-scale Bbox !'
         # Check if it's the outermost level.
         if len(self._RelDir_prev) == 0:
-            for _idx in range(4, self._act_dim - 1):
+            for _idx in range(4, self._act_dim - 2):    # exclude children and self.
                 BBOX_err[_idx] = True
                 info[_idx] = 'Out-of-Boundary !'
 
@@ -1091,7 +1120,7 @@ class FocusEnvCore:
 
         # Execute the relative direction procedure for given action.
         #   Different procedure according to action quantity.
-        if self._act_dim == 8:  # restrict, abandon
+        if self._act_dim == 9:  # restrict, abandon
             # --> select children.
             if action <= 3:
                 # push the relative direction. -- focus in.
@@ -1111,11 +1140,14 @@ class FocusEnvCore:
                     next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
                     # pop out and push new relative direction.
                     self._RelDir_prev.append(next_Rdirc)
+            # --> select self.
+            elif action == 7:
+                pass
             # --> stop, terminal.
             else:
                 terminal = True
         # Restrict, not-abandon
-        elif self._act_dim == 9:
+        elif self._act_dim == 10:
             # --> select children.
             if action <= 3:
                 # push the relative direction. -- focus in.
@@ -1141,24 +1173,27 @@ class FocusEnvCore:
                     next_Rdirc = self._RELATIVE_DIRECTION[NRD_idx]
                     # pop out and push new relative direction.
                     self._RelDir_prev.append(next_Rdirc)
+            # --> select self.
+            elif action == 8:
+                pass
             # --> stop, terminal.
             else:
                 terminal = True
         # Not restrict, abandon.
-        elif self._act_dim == 13:
+        elif self._act_dim == 14:
             # Fake relative direction for "Out-of-Boundary" error check.
             fake_RD = self._RELATIVE_DIRECTION[0]
             # --> select children. -- focus in. push
             if action <= 3:
                 self._RelDir_prev.append(fake_RD)
-            # --> select peers.
-            if action <= 11:
+            # --> select peers and self.
+            if action <= 12:
                 pass
             # --> stop, terminal.
             else:
                 terminal = True
         # Not restrict, not-abandon.
-        elif self._act_dim == 17:
+        elif self._act_dim == 18:
             # Fake relative direction for "Out-of-Boundary" error check.
             fake_RD = self._RELATIVE_DIRECTION[0]
             # --> select children. -- focus in. push
@@ -1170,8 +1205,8 @@ class FocusEnvCore:
                 if not outmost:
                     # check if it's the outermost level.
                     self._RelDir_prev.pop()
-            # --> select peers. -- do nothing ...
-            elif action <= 15:
+            # --> select peers and self. -- do nothing ...
+            elif action <= 16:
                 pass
             # --> stop, terminal.
             else:
@@ -1628,6 +1663,7 @@ class FocusEnvWrapper:
                 # step 01 elements.
                 state_elems = []
                 push_elems = []
+                valid_actions = []
                 exec_ids = []
                 # --------------------------- Reset and Step_1st ---------------------------
                 # Iteratively push forward (step 01) all the environment instance.
@@ -1652,14 +1688,15 @@ class FocusEnvWrapper:
                         else:
                             raise ValueError('Unknown sample store type !!!')
                     # Step 1st the environment.
-                    state_e, push_e = env.step_1st()
+                    state_e, push_e, valid_e = env.step_1st()
                     # Append related information.
                     state_elems.append(state_e)
                     push_elems.append(push_e)
+                    valid_actions.append(valid_e)
                     exec_ids.append(eid)
                 # --------------------------- Operation Function ---------------------------
                 # Execute the operation function to get the "Results".
-                results = op_func(state_elems, with_explore=True, with_reward=True)
+                results = op_func(state_elems, with_explore=True, explore_valids=valid_actions, with_reward=True)
                 # Re-package the results.
                 r_1, r_2, r_3, r_4 = results
                 r_all = []
@@ -1748,14 +1785,15 @@ class FocusEnvWrapper:
                         if self._data_identity_cands[eid] is not None else None
                     data_identities.append(data_id)
                     # Step 1st the environment.
-                    state_e, push_e = env.step_1st()
+                    state_e, push_e, _3 = env.step_1st()
                     # Append related information.
                     state_elems.append(state_e)
                     push_elems.append(push_e)
                     exec_ids.append(eid)
                 # --------------------------- Operation Function ---------------------------
                 # Execute the operation function to get the "Results".
-                results = op_func(state_elems, with_explore=False, with_reward=self._phrase=='Validate')
+                results = op_func(state_elems, with_explore=False, explore_valids=None,
+                                  with_reward=self._phrase=='Validate')
                 # Re-package the results.
                 if self._phrase == 'Validate':
                     r_1, r_2, r_3, r_4 = results
